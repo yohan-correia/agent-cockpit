@@ -5,7 +5,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 let failed = false;
-for (const dir of ['lib', 'public', 'bin', 'testes']) {
+// `scripts` é interno (não vai na cópia pública), então pode não existir no checkout: pular
+// diretório ausente em vez de estourar ENOENT.
+for (const dir of ['lib', 'public', 'bin', 'testes', 'scripts']) {
+  if (!fs.existsSync(path.join(root, dir))) continue;
   for (const file of fs.readdirSync(path.join(root, dir))) {
     if (!/\.(js|mjs)$/.test(file)) continue;
     const r = spawnSync(process.execPath, ['--check', path.join(root, dir, file)], { stdio: 'inherit' });

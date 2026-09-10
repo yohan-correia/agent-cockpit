@@ -141,6 +141,8 @@ The token grants control over panes and files accessible to the server's user. D
 
 Internal details: [architecture](docs/arquitetura.md). To prepare a distribution, see [publication](docs/publicacao.md).
 
+What is coming: [roadmap](ROADMAP.md).
+
 ## License
 
 Code is licensed under [MIT](LICENSE). Inter fonts are licensed under [SIL OFL 1.1](public/fontes/OFL.txt). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). This is an independent project, not an official Anthropic or OpenAI product.

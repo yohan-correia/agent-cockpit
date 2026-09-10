@@ -141,6 +141,8 @@ O token dá controle sobre as panes e arquivos acessíveis ao usuário do servid
 
 Detalhes internos: [arquitetura](docs/arquitetura.md). Para preparar uma distribuição, veja [publicação](docs/publicacao.md).
 
+O que vem por aí: [roadmap](ROADMAP.md).
+
 ## Licença
 
 Código sob [MIT](LICENSE). Fontes Inter sob [SIL OFL 1.1](public/fontes/OFL.txt). Veja [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Este projeto é independente e não é um produto oficial da Anthropic ou da OpenAI.

@@ -15,7 +15,12 @@ Object.assign(env, { HOME: temp, CODEX_HOME: path.join(temp, '.codex'), HOST: '1
 delete env.PORT;
 delete env.PORTA_PAINEL;
 const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'gate-envio-skill-codex.js',
-  'gate-fila-pendente.js', 'gate-jobs-disco.js', 'gate-jobs-rota.js', 'gate-ui.js', 'gate-codex.js'];
+  'gate-fila-pendente.js', 'gate-jobs-disco.js', 'gate-jobs-rota.js', 'gate-ui.js', 'gate-codex.js',
+  // Os dois ecos (bash mode e comando de barra) entraram aqui em 10/09/2026: o gate-eco-bash
+  // vivia FORA desta lista e passou dois dias vermelho sem ninguém ver — a fixture dele tinha
+  // data cravada e venceu o teto de 30 min da pendente. Gate que não roda no `npm test` não é
+  // gate, é documentação.
+  'gate-eco-bash.js', 'gate-eco-comando.js'];
 try {
   for (const test of tests) {
     console.log(`\n${test}`);

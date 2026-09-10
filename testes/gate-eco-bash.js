@@ -3,7 +3,11 @@
 const assert = require('node:assert/strict');
 const externo = require('../lib/externo');
 const abas = require('../lib/abas');
-const quando = '2026-09-08T20:03:25.891Z';
+// RELATIVO ao agora, nunca cravado: o teto da pendente é de 30 min (lib/abas.js,
+// `MS_PENDENTE_TETO`), então uma data fixa faz este gate passar no dia em que foi escrito
+// e ficar VERMELHO no dia seguinte — `podarVencidas` some com a fixture antes do assert.
+// Foi o que aconteceu com a data de 08/09/2026, achado em 10/09.
+const quando = new Date(Date.now() - 1000).toISOString();
 const chave = 'fixture-eco-bash';
 const comando = "! printf 'fixture'";
 const linha = (texto, extra = {}) => ({ type:'user', timestamp:quando, message:{content:texto}, ...extra });

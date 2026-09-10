@@ -11,7 +11,7 @@ const target = process.argv[2];
 if (!target || !path.isAbsolute(target)) throw new Error('Uso: node bin/prepara-publicacao.js /caminho/novo');
 const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 if (git(['status', '--porcelain'])) throw new Error('Faça commit das mudanças antes de exportar.');
-const roots = new Set(['README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'SECURITY.md',
+const roots = new Set(['README.md', 'README.en.md', 'ROADMAP.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'SECURITY.md',
   'CONTRIBUTING.md', 'CHANGELOG.md', 'package.json', '.env.example', '.gitignore', 'server.js']);
 const docs = new Set(['docs/acesso-remoto.md', 'docs/operacao.md', 'docs/arquitetura.md', 'docs/publicacao.md', 'docs/configuracao.md']);
 const files = git(['ls-files']).split('\n').filter(file => roots.has(file) || docs.has(file)
