@@ -1,0 +1,15 @@
+node_modules/
+*.log
+.env
+.env.*
+!.env.example
+.cockpit/
+*.pem
+*.key
+*.p12
+*.pfx
+__pycache__/
+release-publica/
+SHA256SUMS
+# Relatórios internos gerados
+docs/design-review/

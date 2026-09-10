@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" id="meta-tema" content="#0f1115">
+<title>Cockpit de Agentes</title>
+<!-- <base> antes de qualquer href relativo: sob `tailscale serve` a página é servida em
+     /cockpit, e sem isto o navegador resolve "estilo.css" para "/estilo.css" e nada carrega.
+     Mesma armadilha que o painel-externo levou no commit a84cc96. -->
+<script>
+  (function () {
+    var p = location.pathname;
+    var base = p.indexOf('/cockpit') === 0 ? '/cockpit/' : '/';
+    document.write('<base href="' + base + '">');
+  })();
+</script>
+<!-- Tema guardado no aparelho, aplicado ANTES da primeira pintura. Se isto morasse no
+     app.js, toda abertura piscaria no tema padrão antes de trocar para o escolhido. -->
+<script>
+  (function () {
+    try {
+      var tema = localStorage.getItem('cockpit-tema');
+      if (tema) document.documentElement.setAttribute('data-tema', tema);
+    } catch (e) { /* modo privado: fica no tema padrão, e tudo bem */ }
+  })();
+</script>
+<link rel="stylesheet" href="estilo.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icone.svg" type="image/svg+xml">
+<link rel="icon" href="icone-192.png" type="image/png" sizes="192x192">
+<!-- iOS ignora o manifest inteiro: o icone da tela de inicio vem daqui, e tem que ser
+     PNG opaco. Com transparencia ou canto ja arredondado, ele fica com moldura preta. -->
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cockpit">
+<meta name="mobile-web-app-capable" content="yes">
+</head>
+<body>
+<div class="app" id="app" data-vista="lista">
+
+  <aside class="lateral">
+    <div class="lateral-topo">
+      <div class="marca">Cockpit<small>as conversas do terminal</small></div>
+      <!-- "Às vezes buga" e não havia como forçar uma atualização sem fechar o app. Aqui ele
+           refaz a lista de abas; o gêmeo no cabeçalho da conversa reabre o fluxo daquela aba.
+           Nunca `location.reload()`: isso apagaria o que estava digitado na caixa. -->
+      <div class="lateral-acoes">
+      <div class="lateral-acoes-grupo" aria-label="Navegação">
+      <button class="icone-so recarregar" id="btn-recarregar" type="button"
+              title="Recarregar a lista de abas" aria-label="Recarregar a lista de abas"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3v6h6"/><path d="M3.5 9a9 9 0 1 1 .8 6.4"/></svg></button>
+      <!-- A porta do painel de configuração. Os quatro controles que moram lá dentro viviam
+           empilhados no rodapé desta lateral, e no celular a lateral É a tela da lista: a
+           altura que eles comiam era a da LISTA DE ABAS, que é a razão de o cockpit existir.
+           Aqui em cima o polegar alcança, e o rodapé saiu de cena. -->
+      <button class="icone-so engrenagem" id="btn-config" type="button" aria-haspopup="dialog"
+              title="Configuração" aria-label="Configuração"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+      <!-- Abrir aba nova no terminal. Aqui em cima porque é onde a D32 já pôs as ações da
+           LISTA, com os mesmos 40px de toque — e porque no celular a lateral É a tela da
+           lista. O caminho da aba nova NÃO vem daqui: o navegador manda o NOME do projeto e
+           quem resolve o caminho é o servidor (#22). -->
+      </div>
+      <div class="lateral-acoes-grupo" data-grupo="acoes" aria-label="Ações">
+      <button class="btn btn-principal novo" id="btn-nova-aba" type="button" aria-haspopup="dialog"
+              title="Abrir uma aba nova" aria-label="Abrir uma aba nova"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg><span>Nova aba</span></button>
+      <!-- Arquivos: mandar e receber pelo Taildrop, sem passar pelo clipe. Aqui no cabeçalho
+           pelos mesmos motivos do `+`: são as ações da LISTA, com os mesmos 40px de toque, e
+           no celular a lateral É a tela da lista. `title` é complemento (#31): o que vale é o
+           aria-label e o texto dentro do painel. O painel é o nono <dialog>, lá embaixo. -->
+      <button class="btn arquivos" id="btn-arquivos" type="button" aria-haspopup="dialog"
+              title="Arquivos" aria-label="Arquivos: mandar e receber pelo Taildrop"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3v14M8 17l-4-4M8 17l4-4M16 21V7M16 7l4 4M16 7l-4 4"/></svg><span>Arquivos</span></button>
+      </div>
+      </div>
+    </div>
+    <!-- A lista é só as abas do tmux do usuário. O cockpit não abre nem fecha conversa:
+         quem faz isso é o usuário, no terminal, e aqui a lista só reflete. Ver lib/abas.js. -->
+    <!-- A área da lista existe para ANCORAR o selo do gesto. A `.conversas` não serve de
+         âncora: quem desce colado no dedo é ela, e um selo filho dela desceria junto — o
+         contrário do que a fita faz, onde o rolador fica parado e só a `#fita` desce. Ela
+         também é reescrita inteira pelo `desenharLista`, então um nó solto ali morreria na
+         primeira atualização. -->
+    <div class="lista-area">
+      <!-- O gêmeo do `#puxar-selo` da conversa, com o MESMO CSS e as MESMAS constantes: o
+           gesto é um só, em duas listas. Ver o bloco do selo no estilo.css. -->
+      <div class="puxar-selo" id="puxar-selo-lista" aria-hidden="true"><span class="puxar-anel"></span></div>
+      <div class="conversas" id="abas"></div>
+    </div>
+  </aside>
+
+  <main class="chat" id="chat">
+    <!-- O ☰ é a porta da lista e por isso está SEMPRE na tela (31/08).
+         Duas versões anteriores falharam por serem condicionais: dentro do #chat-topo ele
+         sumia sem conversa aberta, e preso a `data-lateral="fechada"` ele sumia em janela
+         estreita. Agora não depende de conversa nem do estado da lista — só do desktop, já
+         que no celular a lista é uma tela inteira e quem volta para ela é o botão ←. -->
+    <button class="icone-so abrir-lateral" id="btn-lateral" type="button"
+            aria-label="Mostrar ou esconder a lista de conversas" title="Lista de conversas"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div class="vazio" id="vazio">
+      <!-- M3 (04/09): o resumo de relance — o que já dá para saber sem abrir nada. Só
+           "job rodando" quando há job DE VERDADE rodando (P4): o servidor só manda jobs
+           `running`, então "último job há Xmin" não é implementável sem mexer no server.js,
+           que está fora do escopo. Repintado por `desenharAbas()` e `atualizarFaixaJobs()`. -->
+      <p class="vazio-resumo" id="vazio-resumo"></p>
+      <h2>Escolha uma conversa</h2>
+      <p>Do lado está cada aba aberta no seu terminal. Abra uma e fale com o agente daqui, do celular ou do desktop &mdash; o trabalho continua rodando mesmo com o app fechado.</p>
+      <p class="vazio-nota" id="vazio-nota">Use o <strong>+</strong> no topo da lista para abrir uma aba nova. Para fechar, abra a conversa e use o <strong>&times;</strong> no cabeçalho. A lista acompanha o terminal sozinha.</p>
+    </div>
+
+    <!-- `.chat-topo` e `.mensagens` de cada conversa nascem no app.js (`criarPainel`), num
+         `.painel` dentro de `.paineis` — split view, fase 2 (docs/superpowers/plans/
+         2026-09-08-split-view-plano.md). O markup de antes está lá, célula por célula, sem
+         `id` nenhum (R17 da spec): só `className` com a mesma palavra do id de ontem. -->
+    <div class="paineis" id="paineis"></div>
+  </main>
+</div>
+
+<dialog id="dialogo-diagnostico">
+  <div class="dialogo-corpo">
+    <h2>N&atilde;o deu para ligar as notifica&ccedil;&otilde;es</h2>
+    <div id="lista-diagnostico"></div>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-diagnostico" type="button">Fechar</button>
+      <button class="btn btn-principal" id="btn-copiar-diagnostico" type="button">Copiar</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dialogo-acesso">
+  <div class="dialogo-corpo">
+    <h2>Link de acesso</h2>
+    <p>Abra este endere&ccedil;o uma vez no outro aparelho. Ele guarda o token sozinho e some da barra de endere&ccedil;o. Vale para qualquer aparelho seu no tailnet.</p>
+    <textarea id="txt-acesso" class="acesso-campo" rows="3" readonly spellcheck="false"></textarea>
+    <p class="acesso-aviso">Quem tiver este link conversa com os agentes na sua m&aacute;quina. Trate como senha.</p>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-acesso" type="button">Fechar</button>
+      <button class="btn btn-principal" id="btn-copiar-de-novo" type="button">Copiar</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dialogo-token">
+  <form class="dialogo-corpo" id="form-token">
+    <h2>Este cockpit pede token</h2>
+    <p>O servidor exige uma chave porque o tailnet tem mais gente do que voc&ecirc;. Abra uma vez o endere&ccedil;o com <code>?token=SUACHAVE</code> e o aparelho guarda sozinho, ou cole a chave aqui.</p>
+    <label class="campo">
+      <span>Token</span>
+      <input id="inp-token" type="password" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="dialogo-acoes">
+      <button class="btn btn-principal" type="submit">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Configuração: as quatro coisas que quase nunca se mexe. Elas continuam sendo os MESMOS
+     controles, com os MESMOS ids — o app.js e o gate-ui os procuram por id, e renomear
+     quebraria os dois lados sem ganho nenhum. Só o lugar mudou: saíram do rodapé da lateral,
+     que no celular disputava altura com a lista de abas.
+
+     Abre e fecha pelo caminho de <dialog> que o resto do arquivo já usa, e de propósito NÃO
+     empilha entrada no histórico: o voltar do Android chega neste painel como pedido de
+     fechar (o CloseWatcher do navegador) e o gesto morre aqui, sem sair da conversa. Um
+     `pushState` "para o voltar funcionar" faria justo o contrário — ver armadilha #39. -->
+<dialog id="dialogo-config">
+  <div class="dialogo-corpo">
+    <h2>Configura&ccedil;&atilde;o</h2>
+    <div class="config-lista">
+      <!-- Dois grupos, por ALCANCE — a D34 (atalhos no localStorage, por aparelho) e a D32
+           (tema/notificação no mesmo lugar) saindo do comentário e virando o que se vê. -->
+      <div class="config-grupo">
+        <h3 class="config-grupo-titulo">Este aparelho</h3>
+        <button class="lateral-acao ajuste" id="btn-avisos" type="button" hidden>
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span class="ajuste-rotulo" id="avisos-rotulo">Ativar notificações</span>
+          <span class="ajuste-valor" id="avisos-valor"></span>
+        </button>
+        <label class="lateral-tema lateral-idioma ajuste">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></svg>
+          <span class="ajuste-rotulo">Idioma</span>
+          <span class="ajuste-valor" id="idioma-valor"></span>
+          <select id="sel-idioma" aria-label="Idioma da interface">
+            <option value="pt-BR">Português</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <label class="lateral-tema ajuste">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+          <span class="ajuste-rotulo">Tema</span>
+          <span class="ajuste-valor" id="tema-valor"></span>
+          <select id="sel-tema" aria-label="Tema de cores"></select>
+        </label>
+        <!-- É o `#btn-atalhos-abrir` que já existia (fora deste grupo) — vestido de `.ajuste`,
+             nenhum controle novo nasce. O onclick continua revelando `#atalhos-corpo`. -->
+        <button class="lateral-acao atalhos-abrir ajuste" id="btn-atalhos-abrir" type="button" hidden>
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/></svg>
+          <span class="ajuste-rotulo">Atalhos de teclado</span>
+          <span class="ajuste-valor" id="atalhos-valor"></span>
+        </button>
+      </div>
+      <div class="config-grupo">
+        <h3 class="config-grupo-titulo">O servidor</h3>
+        <!-- O nível de esforço do agente. Mora AQUI porque é GLOBAL do servidor: `/effort`
+             grava `effortLevel` na config do CLI e vale para toda aba nova. Um botão dentro
+             da conversa mentiria sobre o alcance; o grupo já diz o alcance, e o rótulo o
+             confirma com todas as letras.
+
+             As opções são estáticas no HTML — diferente do `sel-tema`, que monta no JS —
+             porque a lista é fixa, curta e vem do CLI, não de dado nosso. O que ele MOSTRA é
+             o nível global de agora (`GET /api/effort` ← config do CLI), e nunca o `esforco`
+             do .jsonl: aquele é o histórico DAQUELA conversa e mora no chip do medidor. -->
+        <label class="lateral-effort ajuste">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 18a8 8 0 0 1 16 0"/><path d="M12 18l4-6"/></svg>
+          <span class="ajuste-rotulo">Esforço do agente — vale para as abas novas</span>
+          <span class="ajuste-valor" id="effort-valor"></span>
+          <select id="sel-effort" aria-label="Nível de esforço do agente">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
+        </label>
+        <button class="lateral-acao ajuste" id="btn-plano" type="button">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
+          <span class="ajuste-rotulo">Consumo do plano</span>
+          <span class="ajuste-valor" id="plano-valor"></span>
+          <svg class="ajuste-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="lateral-acao ajuste" id="btn-uso" type="button">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10a2 2 0 0 1 2-1.5h1a2 2 0 0 1 0 4h-1a2 2 0 0 0 0 4h1a2 2 0 0 0 2-1.5"/></svg>
+          <span class="ajuste-rotulo">Para onde vão meus tokens</span>
+          <svg class="ajuste-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="lateral-acao ajuste" id="btn-copiar-acesso" type="button">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 15l6-6M8 13l-1.5 1.5a3 3 0 0 0 4 4L12 17M16 11l1.5-1.5a3 3 0 0 0-4-4L12 7"/></svg>
+          <span class="ajuste-rotulo" id="acesso-rotulo">Link de acesso</span>
+        </button>
+      </div>
+      <!-- O recado da troca vive aqui dentro, e não como bolha na fita: o painel é um
+           <dialog> MODAL, a fita fica atrás dele, e uma bolha ali nasceria invisível. -->
+      <small class="config-nota" id="effort-nota"></small>
+    </div>
+    <!-- Os atalhos de teclado (note e desktop) — a legenda E a configuração no mesmo lugar
+         (§2.1.1 da spec: um segundo diálogo só de ajuda seria o "segundo mecanismo" que a D32
+         recusa). No celular a seção RECOLHE (uma linha, tocável) em vez de sumir: sumir
+         apostaria num sinal que não existe — teclado conectado não muda o ponteiro primário
+         (§3.5.1). O botão que abre (`#btn-atalhos-abrir`) mora agora no grupo "Este
+         aparelho", acima; aqui fica só o corpo que ele revela. -->
+    <div class="atalhos" id="atalhos">
+      <div id="atalhos-corpo">
+        <h3>Atalhos de teclado</h3>
+        <div id="atalhos-lista"></div>
+        <button class="btn" id="btn-atalhos-padrao" type="button">Voltar ao padrão</button>
+        <small class="config-nota" id="nota-atalhos" aria-live="polite"></small>
+      </div>
+    </div>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-config" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- O consumo da ASSINATURA, que não depende de conversa nenhuma: as janelas do plano
+     valem para tudo que roda no servidor, cockpit ou terminal. Por isso sobreviveu ao corte
+     do painel "esta conversa", que era medido a partir dos arquivos de turno do cockpit. -->
+<dialog id="dialogo-plano">
+  <div class="dialogo-corpo">
+    <h2>Consumo do plano</h2>
+    <div class="uso-plano">
+      <div class="uso-rotulo">
+        <span>Janelas</span>
+        <button class="uso-atualiza" id="btn-atualiza-limite" type="button">atualizar</button>
+      </div>
+      <div id="uso-plano-janelas"></div>
+      <div id="uso-plano-lista"></div>
+    </div>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-plano" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
+
+<!-- Os números do medidor por extenso. Existe porque `title` é TOOLTIP DE MOUSE: no celular
+     ele simplesmente não aparece, e era lá que estavam os tokens exatos, o teto e o nome
+     cheio do modelo — inalcançáveis justo no aparelho que motivou o medidor. O `title`
+     continua, para quem está no desktop; isto não é ou-um-ou-outro. -->
+<dialog id="dialogo-contexto">
+  <div class="dialogo-corpo">
+    <h2>Contexto desta conversa</h2>
+    <p>Quanto da janela do agente j&aacute; est&aacute; ocupado. O n&uacute;mero sai do arquivo da pr&oacute;pria conversa &mdash; n&atilde;o custa turno da assinatura.</p>
+    <div class="contexto-destaque" id="contexto-destaque" hidden>
+      <div class="contexto-destaque-topo"><span>Janela usada</span><strong id="contexto-percentual"></strong></div>
+      <div class="contexto-trilho"><i id="contexto-cheio"></i></div>
+      <p id="contexto-legenda"></p>
+    </div>
+    <dl class="uso-grade" id="contexto-grade"></dl>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-contexto" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Abrir uma aba nova no terminal — o SÉTIMO <dialog>, no mesmo padrão .dialogo-corpo +
+     .dialogo-acoes dos outros seis (D32: nenhum jeito novo de abrir painel).
+
+     A lista de projetos vem de GET /api/projetos, que devolve SÓ o nome. O caminho de disco
+     nunca chega ao navegador, e o corpo do POST leva `projeto`, nunca `cwd` — é a #22, que o
+     anexo já pagou uma vez. Digitar /home/voce/projetos/... no teclado do telefone
+     seria o pior caminho de todos, e é justamente o aparelho que motivou o cockpit. -->
+<dialog id="dialogo-nova-aba">
+  <div class="dialogo-corpo">
+    <h2>Abrir uma aba nova</h2>
+    <p>Escolha o projeto e o agente. A aba nasce no seu terminal com ele rodando, como se voc&ecirc; tivesse aberto &agrave; m&atilde;o.</p>
+    <label class="campo">
+      <span>Projeto</span>
+      <select id="sel-projeto-novo" aria-label="Projeto da aba nova"></select>
+    </label>
+    <!-- O agente vem do servidor (GET /api/agentes), nunca chumbado aqui: quem sabe quais
+         existem é o registro em lib/agentes.js, e o dia em que o Cursor entrar esta lista
+         cresce sozinha. Só {id, rotulo} chega — o caminho do binário fica no servidor (#22). -->
+    <label class="campo">
+      <span>Agente</span>
+      <select id="sel-agente-novo" aria-label="Agente da aba nova"></select>
+    </label>
+    <!-- O aviso é ANTES, não depois. O cockpit marca a pasta como confiável para o agente
+         ao criar a aba (lib/abas.js, `confiarNaPasta`), e dizer isso só quando já aconteceu
+         seria um toast — que este app não tem e não quer ("sem toast, sem biblioteca").
+         Aqui a frase é fixa, chega antes do clique e some do caminho depois. -->
+    <small class="config-nota" id="nota-trust-nova-aba">Abrir aqui marca a pasta como confi&aacute;vel para o agente. Sem isso a aba nasce travada no aviso de seguran&ccedil;a dele, e o cockpit n&atilde;o consegue responder por voc&ecirc;.</small>
+    <!-- O recado de erro vive aqui DENTRO, e não como bolha na fita: o painel é um <dialog>
+         MODAL, a fita fica atrás dele e uma bolha ali nasceria invisível. Mesmo lugar e
+         mesma razão do #effort-nota. -->
+    <small class="config-nota" id="nota-nova-aba"></small>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-nova-aba" type="button">Cancelar</button>
+      <button class="btn btn-principal" id="btn-criar-aba" type="button">Criar</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Fechar a aba — o OITAVO <dialog>. A confirmação escreve O ESTADO da aba, tirado da
+     lista que a tela já tem: fechar uma aba que está TRABALHANDO mata o turno em andamento,
+     e ele tem direito de saber disso antes, não depois.
+
+     Não existe trava por estado: a D13 é explícita — "não quero trava porque pode me travar
+     sem eu querer, eu já conheço os riscos". O que existe é o aviso. -->
+<dialog id="dialogo-matar-aba">
+  <div class="dialogo-corpo">
+    <h2>Fechar esta aba?</h2>
+    <p id="matar-aba-estado"></p>
+    <p class="acesso-aviso">A aba some do seu terminal. Isso n&atilde;o d&aacute; para desfazer.</p>
+    <small class="config-nota" id="nota-matar-aba"></small>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-matar-aba" type="button">Cancelar</button>
+      <button class="btn btn-principal" id="btn-confirma-matar-aba" type="button">Fechar a aba</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Arquivos — o NONO <dialog>, no mesmo padrão dos oito (D32): `.dialogo-corpo` +
+     `.dialogo-acoes`, aberto por `showModal()` e fechado por `close()` SEM pushState (#36, #39).
+     É a outra porta de arquivo, ao lado do clipe: qualquer tipo até o teto que o servidor
+     manda, direto em ~/taildrop-inbox/<pasta>/, mais a fila do Taildrop e o envio do servidor
+     para outro aparelho. O <input type="file"> mora AQUI DENTRO (R12: fora de <dialog> não
+     existe campo nenhum — a caixa de escrita e o seletor de arquivo do painel nascem por
+     `criarPainel`, sem id, D42). Nenhum botão de apagar: no inbox nada se apaga sem
+     confirmação explícita (§1.4). O rótulo do arquivo é preenchido pelo JS com o teto do servidor —
+     nunca "até 2 GB" escrito à mão aqui (R15/#40). -->
+<dialog id="dialogo-arquivos">
+  <div class="dialogo-corpo">
+    <h2>Arquivos</h2>
+    <p>Mandar e receber pelo tailnet, sem passar pelo clipe. Nada aqui apaga arquivo.</p>
+
+    <section class="arquivos-bloco arquivos-upload">
+      <h3>Mandar para o servidor</h3>
+      <label class="campo"><span>Pasta em taildrop-inbox</span>
+        <select id="sel-pasta-inbox" aria-label="Pasta de destino"></select></label>
+      <label class="arquivo-escolha"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 17V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg><strong>Escolher arquivo</strong><small id="rotulo-arquivo-servidor">Qualquer formato</small><small id="arquivo-servidor-selecionado">Nenhum arquivo escolhido</small>
+        <input type="file" id="inp-arquivo-servidor" aria-label="Escolher arquivo"></label>
+      <progress id="prog-arquivo-servidor" max="100" value="0" hidden></progress>
+      <small class="config-nota" id="nota-arquivo-servidor"></small>
+      <button class="btn btn-principal" id="btn-mandar-servidor" type="button">Mandar para o servidor</button>
+    </section>
+
+    <details class="arquivos-bloco">
+      <summary><h3>Chegando</h3><span class="arquivos-recolher" id="resumo-taildrop">Carregando…</span></summary>
+      <div id="lista-taildrop" class="arquivos-lista"></div>
+      <small class="config-nota" id="nota-taildrop"></small>
+      <button class="btn" id="btn-puxar-taildrop" type="button" disabled>Puxar tudo</button>
+    </details>
+
+    <details class="arquivos-bloco">
+      <summary><h3>Mandar pra fora</h3><span class="arquivos-recolher">Outro aparelho</span></summary>
+      <label class="campo"><span>Para</span>
+        <select id="sel-destino-taildrop" aria-label="Aparelho de destino"></select></label>
+      <div class="arquivos-navega">
+        <select id="sel-raiz-envio" aria-label="Onde procurar"></select>
+        <span id="caminho-envio" class="arquivos-caminho"></span>
+      </div>
+      <div id="lista-envio" class="arquivos-lista"></div>
+      <small class="config-nota" id="nota-envio"></small>
+    </details>
+
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-arquivos" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- "Para onde vão meus tokens" — o DÉCIMO OITAVO <dialog> (spec 2026-09-04, fase 2b). Até
+     hoje era página solta (`uso.html`), aberta em aba nova para não pesar o carregamento da
+     lista; decidiu-se trazê-la para dentro do app. O miolo é o MESMO `#app-uso` de
+     sempre — sem <base>, sem o bloco de tema inline, sem <link rel=stylesheet> nem rel=icon:
+     os quatro já existem aqui em cima, e dentro do index.html eles seriam redundantes (a
+     armadilha #16 só vale para página solta). Os dados só são buscados ao ABRIR — nenhum
+     `fetch` de /api/uso roda no carregamento do app; ver `telaUso.abrir()` em app.js.
+     Sem `pushState` (#39/D32): o voltar do Android chega aqui como pedido de FECHAR e morre
+     no diálogo, sem sair da conversa. -->
+<dialog id="dialogo-uso" aria-labelledby="uso-titulo">
+  <div class="uso-app" id="app-uso">
+
+    <header class="uso-topo">
+      <h2 id="uso-titulo">Para onde vão meus tokens</h2>
+      <small>Só do Claude — o consumo do Codex mora no "Consumo do plano".</small>
+      <div class="uso-periodo" role="group" aria-label="Período">
+        <button class="btn" id="btn-periodo-1" type="button" data-dias="1" aria-pressed="true">Hoje</button>
+        <button class="btn" id="btn-periodo-7" type="button" data-dias="7" aria-pressed="false">7 dias</button>
+        <button class="btn" id="btn-periodo-30" type="button" data-dias="30" aria-pressed="false">30 dias</button>
+      </div>
+      <p class="uso-resumo" id="uso-resumo" aria-live="polite"></p>
+    </header>
+
+    <!-- Vazias aqui, preenchidas por uso.js. Contêineres PRÓPRIOS, fora da lista, porque
+         `carregar()` limpa `#uso-lista` inteiro a cada troca de período — o ranking continua
+         dono dela, e estas três seções são limpas pelo mesmo `carregar()`. -->
+    <section class="uso-custo" id="uso-custo"></section>
+    <section class="uso-secao" id="uso-por-modelo"></section>
+    <section class="uso-secao" id="uso-por-dia"></section>
+
+    <!-- Uma div comum aqui, não a tag de marco de página (R4): o documento já tem UMA
+         dessas — a área da conversa, lá em cima — e duas no mesmo HTML é documento inválido. -->
+    <div id="uso-lista"></div>
+
+    <footer class="uso-rodape" id="uso-rodape"></footer>
+
+  </div>
+  <div class="dialogo-acoes">
+    <!-- `autofocus`, não o <dialog>: `showModal()` foca o primeiro descendente focável, que
+         aqui seria o botão "Hoje" — o leitor de tela anunciaria um período em vez do título
+         da tela. O foco inicial determinístico fica no Fechar, ao alcance da primeira tecla;
+         a devolução do foco ao #btn-uso no close() é comportamento nativo, não leva código. -->
+    <button class="btn" id="btn-fechar-uso" type="button" autofocus>Fechar</button>
+  </div>
+</dialog>
+
+<script src="traducoes.js"></script>
+<script src="i18n.js"></script>
+<script>cockpitI18n.estatico();</script>
+<script src="app.js"></script>
+<script src="uso.js"></script>
+</body>
+</html>

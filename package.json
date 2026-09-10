@@ -1,0 +1,15 @@
+{
+  "name": "cockpit-agentes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interface local para conversar com Claude Code e Codex CLI em panes tmux",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node bin/testes.js",
+    "check": "node bin/check.js"
+  },
+  "license": "MIT"
+}

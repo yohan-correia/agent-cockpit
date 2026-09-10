@@ -1,0 +1,18 @@
+
+[2m╭────────────────────────────────────────────────────────╮
+│ >_ [0;1mOpenAI Codex[0;2m (v0.153.4)                             │
+│                                                        │
+│ model:       [0mmock[2m   [0m/model to change                   │
+[2m│ directory:   [0m/tmp/cockpit-clear-integrado-9h7_3_jl/cwd[2m │
+│ permissions: [0mYOLO mode                                 │
+[2m╰────────────────────────────────────────────────────────╯
+
+[0m  [1mTip:[0m [3mNew[0m Build faster with Codex.
+
+Token usage: total=2 input=1 output=1
+To continue this session, run codex resume, then select Responda OK (01a082aa-15b4-79a2-90b1-54f339ff417b)
+
+
+[1m›[0m [2mAsk Codex to do anything
+[0m
+  mock default · /tmp/cockpit-clear-integrado-9h7_3_jl/cwd

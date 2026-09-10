@@ -1,0 +1,40 @@
+│ >_ OpenAI Codex (v0.153.4)                               │
+│                                                          │
+│ model:       mock   /model to change                     │
+│ directory:   /tmp/cockpit-status-identidade-r3a7_t1p/cwd │
+│ permissions: YOLO mode                                   │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+
+
+› Responda OK
+
+
+⚠ Model metadata for `mock` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+
+• OK
+
+/status
+
+╭────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.153.4)                                        │
+│                                                                    │
+│  Model:                mock (reasoning none, summaries auto)       │
+│  Model provider:       Fixture local - http://127.0.0.1:35215/v1   │
+│  Directory:            /tmp/cockpit-status-identidade-r3a7_t1p/cwd │
+│  Permissions:          Full Access                                 │
+│  Agents.md:            <none>                                      │
+│  Thread name:          Responda OK                                 │
+│  Collaboration mode:   Default                                     │
+│  Session:              01a08228-aa4c-7be1-bc86-f6c698933c7d        │
+│                                                                    │
+│  Token usage:          0 total  (0 input + 0 output)               │
+│  Context window:       100% left (0 used / 258K)                   │
+│  Limits:               not available for this account              │
+╰────────────────────────────────────────────────────────────────────╯
+
+
+› Ask Codex to do anything
+
+  mock default · /tmp/cockpit-status-identidade-r3a7_t1p/cwd

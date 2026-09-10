@@ -1,0 +1,2072 @@
+/* Cockpit de Agentes — CSS nativo, sem build, sem CDN.
+   Tema escuro por padrão (o uso principal é de madrugada), claro via prefers-color-scheme.
+   Uma família de raio (10px), um accent (âmbar), Inter servida pelo próprio cockpit.
+   Oito temas prontos entram por `[data-tema]` no <html> — ver a seção Temas abaixo. */
+
+/* A Inter mora no repo, não numa CDN. Assim ela chega igual no desktop e no celular,
+   e o app continua funcionando com a internet de casa fora do ar — que é o ponto de
+   ter tudo rodando no servidor. Um arquivo variável por subset, pesos 400 a 700. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fontes/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fontes/inter-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  color-scheme: dark;
+  --fundo: #0f1115;
+  --fundo-2: #151820;
+  --fundo-3: #1c202a;
+  --borda: #262b36;
+  --texto: #e8eaed;
+  --texto-2: #9aa3b2;
+  --texto-3: #6b7484;
+  --accent: #e0a233;
+  --accent-suave: rgba(224, 162, 51, 0.14);
+  /* Coral, e não um laranja qualquer: aqui o accent JÁ é âmbar, e laranja em cima de
+     âmbar continua confuso de relance. 7.7:1 sobre --fundo-2. */
+  --espera: #ff8a65;
+  --bolha-eu: #2b4a63;
+  --perigo: #d9605a;
+  --perigo-suave: rgba(217, 96, 90, 0.12);
+  --ok: #5fb87a;
+  /* Texto que vai EM CIMA do accent (o botão principal). Era um hex chumbado no
+     `.btn-principal`, o que só funciona enquanto todo accent for claro — com um accent
+     escuro, como o roxo do Latte, o rótulo sumia dentro do botão. */
+  --sobre-accent: #14161a;
+
+  /* A cor de cada agente no chip da lista. Hex PRÓPRIO, e não `var(--accent)`/`var(--espera)`
+     como na primeira versão — aquilo foi reprovado em 03/09 por dois motivos, os dois
+     certos:
+
+       1. os dois saíam laranja. `--accent` é âmbar e `--espera` é coral; lado a lado numa
+          lista de vinte linhas eles não se separam;
+       2. `--espera` é a cor de um ESTADO, a mesma do "te esperando" na outra ponta da linha.
+          Identidade de agente emprestando a cor de estado é confusão pronta: a tag mudava
+          de significado sem mudar de valor.
+
+     Agora é identidade, não paleta: laranja é o Claude, teal é o Codex, e a tag tem a MESMA
+     cor com a aba parada, trabalhando ou esperando. Fixa mesmo — sem depender de tema
+     escolhido, e sem herdar do `--accent` de ninguém.
+
+     O único ajuste é para FUNDO CLARO, e é obrigatório: `#e0913c` sobre o branco do
+     rose-pine-dawn dá 2,4:1, ilegível. Por isso os mesmos dois nomes reaparecem escurecidos
+     nos três lugares onde o fundo é claro — o `@media (prefers-color-scheme: light)` e os
+     dois temas claros (`catppuccin-latte`, `rose-pine-dawn`). Três, não dez: os outros sete
+     têm fundo escuro e usam o valor daqui.
+
+     Medido nos sete fundos escuros: o pior caso dos dois é o nord, que tem a base mais clara
+     (#3b4252) — 4,58:1 no laranja e 4,68:1 no teal. Passa em todos. */
+  --agente-claude: #e8a04a;
+  --agente-codex: #45c4b0;
+
+  --raio: 10px;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, monospace;
+  --sans: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --lateral-larg: 320px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --fundo: #ffffff; --fundo-2: #f4f5f7; --fundo-3: #e9ebef;
+    --borda: #d8dbe1; --texto: #1a1d23; --texto-2: #5b6371; --texto-3: #868e9d;
+    --accent: #a9701a; --accent-suave: rgba(169, 112, 26, 0.12);
+    /* Mesmo coral do escuro, escurecido para 4.9:1 sobre o --fundo-2 claro. */
+    --espera: #b8442b;
+    --bolha-eu: #cfe3f5; --sombra: 0 8px 28px rgba(0, 0, 0, 0.10);
+    --perigo-suave: rgba(217, 96, 90, 0.10);
+    /* Fundo claro: o laranja e o teal do :root reprovam aqui (2,4:1 e 2,1:1). Escurecidos
+       até 5,0 e 4,5 — mesma regra dos vizinhos, contraste ganha do hex quando os dois brigam. */
+    --agente-claude: #95500a; --agente-codex: #0f766e;
+  }
+}
+
+/* ── Temas ───────────────────────────────────────────────────────────────
+   Cada tema redefine as MESMAS variáveis do :root; nenhuma regra abaixo sabe que
+   temas existem. `data-tema` no <html> é escrito pelo script inline do index.html,
+   ANTES da primeira pintura — sem isso o app pisca no tema errado a cada abertura.
+   Sem o atributo, valem o :root e o prefers-color-scheme de sempre.
+
+   `color-scheme` não é enfeite: é ele que diz ao navegador de que lado estão a
+   scrollbar, o <select> e o autofill. Sem ele, tema claro ganha scrollbar preta.
+
+   Os hex são os oficiais de cada paleta. A única regra que ganha do hex oficial é o
+   contraste: --texto e --texto-2 sobre --fundo passam 4.5:1 em todos os oito
+   (conferido no cálculo WCAG antes de escrever isto).
+
+   --espera é obrigatória nos DEZ blocos (o :root, o :root do prefers-color-scheme e os
+   oito temas). Tema que a esquecer não fica sem cor: herda a do :root e pinta um coral
+   de tema escuro num tema claro. O gate-ui confere os dez, e confere também que ela é
+   PERCEPTIVELMENTE diferente do --accent daquele mesmo bloco — foi por serem a MESMA
+   variável que "te esperando" e "trabalhando" ficaram indistinguíveis até 22/08. */
+
+/* Catppuccin Mocha — mantle/base/surface0 nos três fundos, mauve no accent. */
+[data-tema="catppuccin-mocha"] {
+  color-scheme: dark;
+  --fundo: #181825; --fundo-2: #1e1e2e; --fundo-3: #313244;
+  --borda: #45475a; --texto: #cdd6f4; --texto-2: #a6adc8; --texto-3: #7f849c;
+  --accent: #cba6f7; --accent-suave: rgba(203, 166, 247, 0.14);
+  --espera: #fab387;   /* peach oficial */
+  --sobre-accent: #11111b; --bolha-eu: #45475a;
+  --perigo: #f38ba8; --perigo-suave: rgba(243, 139, 168, 0.12); --ok: #a6e3a1;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Catppuccin Latte — base/mantle/crust; o mauve é escuro o bastante para levar texto claro em cima. */
+[data-tema="catppuccin-latte"] {
+  color-scheme: light;
+  --fundo: #eff1f5; --fundo-2: #e6e9ef; --fundo-3: #dce0e8;
+  --borda: #bcc0cc; --texto: #4c4f69; --texto-2: #5c5f77; --texto-3: #6c6f85;
+  --accent: #8839ef; --accent-suave: rgba(136, 57, 239, 0.12);
+  /* peach oficial (#fe640b) dá 2.4:1 sobre a base clara e reprova; escurecido até 5.1.
+     Contraste ganha do hex quando os dois brigam — mesma regra do Dawn. */
+  --espera: #a34400;
+  --sobre-accent: #eff1f5; --bolha-eu: #ccd0da;
+  --perigo: #d20f39; --perigo-suave: rgba(210, 15, 57, 0.1); --ok: #40a02b;
+  /* Fundo claro: o laranja e o teal do :root reprovam aqui. Escurecidos até 5,0 e 4,5 —
+     mesma regra dos vizinhos deste bloco. */
+  --agente-claude: #95500a; --agente-codex: #0f766e;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.1);
+}
+
+/* Tokyo Night — a variante Night (não a Storm), que é a de fundo mais escuro. */
+[data-tema="tokyo-night"] {
+  color-scheme: dark;
+  --fundo: #16161e; --fundo-2: #1a1b26; --fundo-3: #24283b;
+  --borda: #292e42; --texto: #c0caf5; --texto-2: #a9b1d6; --texto-3: #787c99;
+  --accent: #7aa2f7; --accent-suave: rgba(122, 162, 247, 0.14);
+  --espera: #ff9e64;   /* orange oficial */
+  --sobre-accent: #16161e; --bolha-eu: #283457;
+  --perigo: #f7768e; --perigo-suave: rgba(247, 118, 142, 0.12); --ok: #9ece6a;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Nord — Polar Night nos fundos, Snow Storm no texto, frost #88c0d0 no accent. */
+[data-tema="nord"] {
+  color-scheme: dark;
+  --fundo: #2e3440; --fundo-2: #3b4252; --fundo-3: #434c5e;
+  --borda: #4c566a; --texto: #eceff4; --texto-2: #d8dee9; --texto-3: #a0aabf;
+  --accent: #88c0d0; --accent-suave: rgba(136, 192, 208, 0.14);
+  /* aurora #d08770 dá 3.5:1 sobre o Polar Night e reprova; clareado até 5.5. */
+  --espera: #eab3a1;
+  --sobre-accent: #2e3440; --bolha-eu: #4c566a;
+  --perigo: #bf616a; --perigo-suave: rgba(191, 97, 106, 0.12); --ok: #a3be8c;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Gruvbox Dark — contraste "hard" no fundo (bg0_h) e o amarelo da paleta no accent. */
+[data-tema="gruvbox-dark"] {
+  color-scheme: dark;
+  --fundo: #1d2021; --fundo-2: #282828; --fundo-3: #3c3836;
+  --borda: #504945; --texto: #ebdbb2; --texto-2: #bdae93; --texto-3: #928374;
+  --accent: #fabd2f; --accent-suave: rgba(250, 189, 47, 0.14);
+  /* O accent aqui já é o amarelo da paleta, então o orange oficial (#fe8019) ficaria a
+     15° dele — perto demais. Puxado para o vermelho, entre o orange e o red do gruvbox. */
+  --espera: #ff8a6a;
+  --sobre-accent: #1d2021; --bolha-eu: #504945;
+  --perigo: #fb4934; --perigo-suave: rgba(251, 73, 52, 0.12); --ok: #b8bb26;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Everforest Dark — variante medium; o verde da paleta no accent e o aqua no --ok. */
+[data-tema="everforest-dark"] {
+  color-scheme: dark;
+  --fundo: #232a2e; --fundo-2: #2d353b; --fundo-3: #343f44;
+  --borda: #475258; --texto: #d3c6aa; --texto-2: #9da9a0; --texto-3: #859289;
+  --accent: #a7c080; --accent-suave: rgba(167, 192, 128, 0.14);
+  --espera: #e69875;   /* orange oficial */
+  --sobre-accent: #232a2e; --bolha-eu: #3d484d;
+  --perigo: #e67e80; --perigo-suave: rgba(230, 126, 128, 0.12); --ok: #83c092;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Rosé Pine — iris no accent; a bolha usa highlight-high, que passa contraste com o texto. */
+[data-tema="rose-pine"] {
+  color-scheme: dark;
+  --fundo: #191724; --fundo-2: #1f1d2e; --fundo-3: #26233a;
+  --borda: #403d52; --texto: #e0def4; --texto-2: #908caa; --texto-3: #6e6a86;
+  --accent: #c4a7e7; --accent-suave: rgba(196, 167, 231, 0.14);
+  --espera: #f6c177;   /* gold oficial */
+  --sobre-accent: #191724; --bolha-eu: #524f67;
+  --perigo: #eb6f92; --perigo-suave: rgba(235, 111, 146, 0.12); --ok: #9ccfd8;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Rosé Pine Dawn — o accent é o pine: o iris não passa contraste como fundo de botão. */
+[data-tema="rose-pine-dawn"] {
+  color-scheme: light;
+  --fundo: #faf4ed; --fundo-2: #fffaf3; --fundo-3: #f2e9e1;
+  /* --texto-2: o `subtle` oficial (#797593) dá 4.0 sobre a base e reprova; escurecido
+     um passo até 4.7. Contraste ganha do hex quando os dois brigam. */
+  --borda: #cecacd; --texto: #575279; --texto-2: #6e6a86; --texto-3: #797593;
+  --accent: #286983; --accent-suave: rgba(40, 105, 131, 0.12);
+  /* gold oficial (#ea9d34) dá 2.2:1 sobre a base do Dawn — o mesmo motivo que já tinha
+     escurecido o --texto-2 aqui. Terracota derivado dele, 5.7:1. */
+  --espera: #a34a2e;
+  --sobre-accent: #faf4ed; --bolha-eu: #dfdad9;
+  --perigo: #b4637a; --perigo-suave: rgba(180, 99, 122, 0.1); --ok: #56949f;
+  /* Fundo claro: o laranja e o teal do :root reprovam aqui. Escurecidos até 5,0 e 4,5 —
+     mesma regra dos vizinhos deste bloco. */
+  --agente-claude: #95500a; --agente-codex: #0f766e;
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.1);
+}
+
+/* Ryu (Omarchy) — sumi-ê: preto quase absoluto, papel envelhecido, musgo e UM dourado.
+   Paleta de `~/.config/omarchy/themes/ryu/colors.toml`, trazida em 09/09.
+
+   ESTE É O ÚNICO TEMA COM A ESCALA INVERTIDA, e é de propósito. Nos outros nove
+   `--fundo-2` é um passo mais CLARO que `--fundo`; aqui a lateral e a caixa de envio são
+   `#050505` e a conversa é `#0d0d0d`, porque no Ryu a moldura afunda e o papel fica no meio.
+   Inverter foi deliberado, decidido depois de o custo ser apontado. Quem for mexer aqui: não
+   "conserte" a ordem achando que é engano.
+
+   A regra do tema é que o dourado `--accent` é a ÚNICA cor que grita, e só no que se clica
+   (Enviar, aba ativa, anel de foco). Nada de pintar chip, ícone ou borda de dourado — o
+   efeito morre. Profundidade vem dos três fundos, não de borda. */
+[data-tema="ryu"] {
+  color-scheme: dark;
+  --fundo: #0d0d0d; --fundo-2: #050505; --fundo-3: #141414;
+  /* --texto-2 é o musgo e --texto-3 o cinza da paleta, nesta ordem porque é a que respeita a
+     hierarquia: 6.13:1 contra 4.51:1 sobre a conversa. Os dois valores são do Ryu; o que a
+     paleta não tem é um TERCEIRO nível de texto, e o cockpit usa três (55 usos de --texto-3,
+     em 11-13px). O #717C7C fica em 4.28:1 quando cai sobre o --fundo-3 (hover e trilho) —
+     medido, avisado, e aceito por ser estado transitório e não texto de leitura. */
+  --borda: #404040; --texto: #D6D0C5; --texto-2: #8B9388; --texto-3: #717C7C;
+  --accent: #C2A46D; --accent-suave: rgba(194, 164, 109, 0.14);
+  --espera: #df6124;
+  --sobre-accent: #0d0d0d; --bolha-eu: #525e5a;
+  --perigo: #da614e; --perigo-suave: rgba(218, 97, 78, 0.12);
+  /* Mesmo musgo do --texto-2, e isso NÃO é descuido: o Ryu dá um valor só para "rodando" e
+     para texto secundário, e quase-monocromático é o ponto do tema. O que separa o status do
+     texto continua sendo o pino e o peso, não a cor. */
+  --ok: #8B9388;
+  /* O laranja é o mesmo do "te esperando" por escolha deliberada (09/09), revogando a separação
+     de 03/09 — a paleta do Ryu tem UMA cor quente, e obedecer a paleta ganhou da separação.
+     O codex vem do `#51605b` do tema, que reprova feio como texto (2.94:1 em 11px): trocado
+     pelo `#75897F` que o próprio Ryu usa em código inline, 5.22:1, mesmo verde e sem
+     inventar cor. */
+  --agente-claude: #df6124; --agente-codex: #75897F;
+  /* Mais funda que os 0.45 dos vizinhos: sombra preta sobre #050505 some se não for. */
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.6);
+}
+
+/* Abyss (09/09): preto-azulado com dourado só nas ações. Escala de fundos NORMAL — a
+   conversa é a mais escura (`#06090b`) e a moldura sobe a partir dela, ao contrário do Ryu
+   logo acima, onde a moldura afunda. Aqui o papel é o abismo e a interface flutua sobre ele.
+
+   O dourado é o MESMO `#C2A46D` do Ryu, e isso é reuso, não descuido: ele lê a 8.39:1 sobre
+   este fundo e já está provado como cor de ação. O que muda é a companhia — no Ryu ele
+   convive com musgo, aqui com azul-aço.
+
+   A seleção da conversa é o único ponto em que este tema mexe em REGRA, não só em variável:
+   `--accent-suave` vira azul (não dourado translúcido, como nos outros nove) para dar o fundo
+   discreto, e a faixa dourada da esquerda vem de uma regra escopada no fim deste bloco. */
+[data-tema="abyss"] {
+  color-scheme: dark;
+  --fundo: #06090b; --fundo-2: #0B1219; --fundo-3: #101C26;
+  --borda: #253643; --texto: #D8DFE5; --texto-2: #8296A5;
+  /* Terceiro nível de texto: a paleta trazida tinha dois, e o cockpit usa três (11-13px).
+     Escolhido para ficar ACIMA de 4.5:1 sobre os três fundos — 5.38/5.07/4.65 medidos. */
+  --texto-3: #72879B;
+  --accent: #C2A46D;
+  /* Azul, não dourado: é o "fundo azul discreto" da conversa selecionada. Único tema assim. */
+  --accent-suave: rgba(37, 68, 91, 0.55);
+  --sobre-accent: #06090b;
+  --bolha-eu: #25445B;
+  --espera: #E8825F;
+  --perigo: #DE6A78; --perigo-suave: rgba(222, 106, 120, 0.14);
+  --ok: #7FB394;
+  /* Âmbar no Claude e não o coral do "te esperando": a 18° de matiz os dois seriam a mesma
+     mancha de relance. Mesma separação que o tema padrão faz, pelo mesmo motivo. */
+  --agente-claude: #E0A150; --agente-codex: #6FAAD1;
+  /* Funda como a do Ryu: sombra preta sobre #06090b some com opacidade menor. */
+  --sombra: 0 8px 28px rgba(0, 0, 0, 0.6);
+}
+
+/* A faixa dourada da esquerda. Escopada ao Abyss de propósito: nos outros temas a seleção é
+   contorno inteiro na cor de destaque, e mudar isso lá seria mexer em nove temas de uma vez. */
+[data-tema="abyss"] .conversa[aria-current="true"] { border-left: 3px solid var(--accent); }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: var(--sans);
+  background: var(--fundo);
+  color: var(--texto);
+  font-size: 16.5px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--raio); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* O atributo `hidden` PRECISA desta linha. O `display:none` que o navegador dá a
+   [hidden] mora na folha dele, e qualquer `display:` que a gente declare numa classe
+   ganha dela. Sem isto, `.vazio { display: flex }` deixava o painel "Nenhuma conversa
+   aberta" na tela mesmo com uma conversa aberta, comendo metade da altura. */
+[hidden] { display: none !important; }
+
+/* ── Estrutura ───────────────────────────────────────────────────────── */
+/* A lateral recolhe para a conversa ficar com a tela toda. `data-lateral` é atributo
+   próprio de propósito: `data-vista` já governa o layout do celular e misturar os dois
+   faria um estado depender do outro. */
+.app {
+  display: grid; grid-template-columns: var(--lateral-larg) 1fr; height: 100dvh;
+  transition: grid-template-columns 0.18s ease;
+}
+.app[data-lateral="fechada"] { grid-template-columns: 0 1fr; }
+.app[data-lateral="fechada"] .lateral { border-right: 0; }
+
+/* O ☰ está SEMPRE na tela do desktop — não depende de haver conversa aberta nem do estado
+   da lista. As duas versões anteriores eram condicionais e as duas deixaram o usuário preso:
+   dentro do `.chat-topo` sumia sem conversa; preso a `data-lateral="fechada"` sumia em
+   janela estreita. Botão de escape não pode ter condição.
+
+   `absolute` dentro do `.chat` (não `fixed`): assim ele nasce no canto da CONVERSA e nunca
+   cobre a lista quando ela está aberta — o `.chat` é a segunda coluna do grid. */
+.abrir-lateral {
+  position: absolute; top: 10px; left: 8px; z-index: 5;
+  min-width: 40px; min-height: 40px; font-size: 17px;
+  background: var(--fundo-2); border: 1px solid var(--borda); border-radius: 8px;
+}
+/* O recuo do título mora na regra base do `.chat-topo` (mais abaixo), não aqui: esta viria
+   ANTES dela no arquivo e o `padding` de atalho de lá venceria por ordem — foi o que pôs o
+   ☰ por cima do "A" de Projeto-a na primeira tentativa. */
+
+/* `min-height: 0` não é enfeite. Item de grid e de flex nasce com `min-height: auto`:
+   ele CRESCE até caber o conteúdo em vez de deixar o filho rolar. Foi o que sumiu com a
+   caixa de digitar na conversa mais longa: a fita empurrou o rodapé para fora da tela.
+   Vale para todo ancestral entre a altura fixa (100dvh) e quem tem overflow. */
+.lateral {
+  background: var(--fundo-2);
+  border-right: 1px solid var(--borda);
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
+}
+.lateral-topo {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px 10px;
+  padding: 20px; border-bottom: 1px solid var(--borda); flex: none;
+}
+.lateral-acoes { display: contents; }
+.lateral-acoes-grupo { display: flex; align-items: center; gap: 2px; }
+.lateral-acoes-grupo + .lateral-acoes-grupo { grid-column: 1 / -1; gap: 8px; }
+.lateral-acoes-grupo[data-grupo="acoes"] button { display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1; padding: 10px 8px; font-size: 13px; }
+/* `min-width: 0` e `overflow: hidden` não são enfeite: item de flex nasce com
+   `min-width: auto`, então `white-space: nowrap` aqui IMPEDIA a marca de encolher. O topo
+   pedia 301px numa lateral de 260 e o `+` de abrir aba nascia em x=261 — fora da lista e
+   cortado pelo `overflow: hidden` dela. Ele existia no DOM, media 40x40 e nunca recebeu um
+   clique no desktop; no celular passava despercebido porque lá a lista é a tela inteira.
+   Quem cede espaço é o subtítulo, que é decorativo — o "Cockpit" continua inteiro. */
+.marca { font-weight: 650; letter-spacing: -0.01em; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
+.marca small { display: block; font-weight: 400; font-size: 11px; color: var(--texto-3); letter-spacing: 0.02em; overflow: hidden; text-overflow: ellipsis; }
+
+.btn {
+  background: var(--fundo-3); border: 1px solid var(--borda);
+  padding: 7px 13px; font-size: 14px; font-weight: 500; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.btn:hover { background: var(--borda); }
+.btn:active { transform: translateY(1px); }
+.btn-principal { background: var(--accent); border-color: var(--accent); color: var(--sobre-accent); font-weight: 600; }
+.btn-principal:hover { filter: brightness(1.08); background: var(--accent); }
+.btn-principal:disabled { opacity: 0.45; cursor: not-allowed; transform: none; filter: none; }
+.icone-so {
+  background: transparent; border: 1px solid transparent; padding: 5px 9px;
+  color: var(--texto-2); font-size: 15px; line-height: 1; flex: none;
+}
+.icone-so:hover { background: var(--fundo-3); color: var(--texto); }
+/* M2 (04/09): os glifos de entidade HTML viraram SVG inline. Uma regra só — o resto do
+   botão (tamanho de toque, hover, o giro do recarregar) não muda, o SVG só ocupa o lugar do
+   caractere que saiu. `.voltar` entra aqui porque também tinha um glifo (←), embora não seja
+   `.icone-so`. */
+.icone-so svg, .btn svg, .voltar svg { width: 20px; height: 20px; }
+
+/* Recarregar na mão. O retorno visual mora no PRÓPRIO botão — sem véu de página inteira,
+   sem "modo recarregando" global: o resto da tela continua legível enquanto isto roda.
+   No celular ele é alvo de dedo, então tem que ter os 40px de toque que a Apple e o
+   Google pedem; `.icone-so` sozinho dá 25px de altura. */
+.recarregar { font-size: 18px; min-width: 40px; min-height: 40px; }
+/* O ↻ gira e ganha a cor de destaque enquanto a recarga anda. Uma volta por segundo:
+   rápido o bastante para o dedo perceber que aconteceu, lento o bastante para não parecer
+   erro. `:active` do `.btn` já não vale aqui — este é `.icone-so`. */
+.recarregar[data-recarregando="1"] {
+  color: var(--accent);
+  animation: girando 1s linear infinite;
+}
+@keyframes girando { to { transform: rotate(360deg); } }
+/* Quem prefere menos movimento continua tendo retorno: a cor do accent basta. */
+@media (prefers-reduced-motion: reduce) {
+  .recarregar[data-recarregando="1"] { animation: none; }
+}
+/* A engrenagem divide o topo da lateral com o recarregar e é alvo de dedo pelo mesmo
+   motivo dele: `.icone-so` sozinho dá 25px de altura, e o mínimo de toque é 40. */
+.engrenagem { font-size: 17px; min-width: 40px; min-height: 40px; }
+/* O + de abrir aba nova e o × de fechar a aba. Mesmos 40px de toque do recarregar e da
+   engrenagem, e pelo mesmo motivo: `.icone-so` sozinho dá 25px de altura, e é o dedo que
+   usa os dois. O × ganha a cor de perigo só no hover — botão destrutivo pintado de
+   vermelho o tempo todo vira ruído na barra, e ele já mora atrás de uma confirmação. */
+.novo { font-size: 20px; min-width: 40px; min-height: 40px; }
+/* O ⇅ de arquivos, ao lado do +: mesmo alvo de dedo, mesmo motivo. */
+.arquivos { font-size: 17px; min-width: 40px; min-height: 40px; }
+.fechar-aba { font-size: 15px; min-width: 40px; min-height: 40px; }
+.fechar-aba:hover { background: var(--fundo-3); color: var(--perigo); }
+/* O 📎 de anexar. Media 29x27 até 31/08 — o único botão de dedo que ficou só com
+   `.icone-so` (25px) enquanto recarregar, engrenagem, + e × já tinham os 40. No mouse
+   acertava; no celular o dedo errava e parecia que "não abria". */
+.anexar { font-size: 17px; min-width: 40px; min-height: 40px; }
+
+/* ── Lista de conversas ──────────────────────────────────────────────── */
+/* `overscroll-behavior-y: contain` corta o encadeamento para o documento. Sem ele, chegar
+   ao topo da lista e continuar puxando entrega o gesto ao pull-to-refresh NATIVO do Chrome
+   (que existe na aba do navegador; no app instalado, `display: standalone`, não existe) — e
+   o nativo faz `location.reload()`, que apaga o que estava digitado na caixa. Mesmo motivo
+   do `contain` no eixo X da tabela, mais abaixo. */
+/* A âncora do selo na lista. Ela é que fica PARADA enquanto a `.conversas` desce colada no
+   dedo — a mesma divisão de papéis que o `#mensagens` e a `#fita` têm do outro lado. */
+.lista-area { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.conversas { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; padding: 8px; }
+
+/* ── Puxar para atualizar ─────────────────────────────────────────────────
+   Alternativa de dedo ao botão ↻: chegou ao topo e continuou puxando, solta e a lista (ou
+   a conversa) se refaz. Até 02/09 era só na LISTA, por decisão de 24/08 — na
+   conversa a fita abre grudada no fim, então o gesto quase nunca estaria armado. O card da
+   primeira leva do design pediu o gesto na fita também, porque no celular o ↻ saiu do topo
+   da conversa (bloco de 760px). O gesto continua raramente armado ali, e está tudo bem:
+   quando arma, funciona; quando não arma, a conversa já abriu atualizada.
+
+   Não há selo nem ícone: quem mostra que o gesto está acontecendo é A PRÓPRIA LISTA. O JS
+   escreve o `transform` que a desce colada no dedo (sem transição, senão a lista atrasa em
+   relação ao dedo) e, ao soltar, acende o `[data-voltando]` — e é ESTA regra que desenha a
+   volta. O `1.56` no cubic-bezier é o repique: a curva passa do zero, então a lista sobe um
+   pouco ACIMA do lugar dela antes de assentar. O objetivo é "ver acontecendo".
+
+   `transform` e não altura: zero reflow. E `.lateral` tem `overflow: hidden`, então a lista
+   descida é recortada e nunca pinta por cima do topo. */
+.conversas[data-voltando="1"] { transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+/* A volta da FITA é RETA, sem o repique da lista. A fita abre grudada no fim (`rolarFim`),
+   então este gesto só arma quando alguém JÁ rolou até o topo para ler histórico — e nesse
+   momento o repique empurraria de volta o texto que ele está lendo. É a mesma razão pela
+   qual o gesto não existia aqui até 02/09, agora atendida com o gesto E sem o efeito
+   colateral. Quem desce é a `#fita`, nunca o `#mensagens`: a tela da pane é filha dele e
+   `position: fixed` no celular — um ancestral com `transform` viraria o bloco de contenção
+   dela e ela deixaria de cobrir a viewport. */
+.fita[data-voltando="1"] { transition: transform 320ms ease-out; }
+
+/* ── O selo do puxar-para-atualizar ────────────────────────────────────────
+   No celular o ↻ saiu do topo da conversa e o gesto ficou sendo o único caminho de recarga.
+   Gesto sem retorno visual é a armadilha #31 de novo — o projeto já pagou por gesto invisível
+   uma vez. Aqui ele vê três coisas, na ordem em que acontecem:
+
+     1. PUXANDO   — o anel nasce do nada e cresce junto com o dedo. `--puxar` vai de 0 a 1 e
+                    é escrito pelo app.js a cada `touchmove`; opacidade, escala e o giro do
+                    risco saem todos dele. Nada de `@keyframes` nesta fase: quem manda no
+                    tempo é o dedo, não um relógio;
+     2. ARMADO    — passou do limiar, o risco acende no accent. É a promessa de que soltar
+                    AGORA recarrega, e o único jeito de o gesto não parecer loteria;
+     3. GIRANDO   — soltou valendo: o anel gira sozinho até a conversa voltar. É o mesmo
+                    intervalo do `data-recarregando` do botão, então o selo não pode mentir.
+
+   Nenhuma variável de paleta nova (#29): `--borda`, `--texto-3` e `--accent` já existem nos
+   dez blocos de tema. */
+.puxar-selo {
+  position: absolute; top: 6px; left: 50%;
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  /* `pointer-events: none` não é detalhe: o selo fica sobre a fita durante o gesto, e sem
+     isto ele roubaria o toque do que estiver embaixo. */
+  pointer-events: none; z-index: 2;
+  opacity: var(--puxar, 0);
+  transform: translateX(-50%) scale(calc(0.6 + 0.4 * var(--puxar, 0)));
+}
+.puxar-anel {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--borda);
+  border-top-color: var(--texto-3);
+  /* O risco gira 3/4 de volta no curso inteiro do dedo. Meia volta é pouco para se notar;
+     uma volta inteira fecha o círculo e o olho perde a referência de quanto falta. */
+  transform: rotate(calc(var(--puxar, 0) * 270deg));
+}
+.puxar-selo[data-armado="1"] .puxar-anel { border-top-color: var(--accent); }
+/* Girando: o selo se descola do dedo — opacidade e escala cheias, e o giro passa a ser do
+   relógio. O `transform: none` no anel é obrigatório: sem ele, o `rotate` da fase 1 continua
+   valendo e a animação giraria a partir de um ângulo travado. */
+.puxar-selo[data-girando="1"] { opacity: 1; transform: translateX(-50%) scale(1); }
+.puxar-selo[data-girando="1"] .puxar-anel {
+  border-top-color: var(--accent);
+  transform: none;
+  animation: puxar-girar 720ms linear infinite;
+}
+@keyframes puxar-girar { to { transform: rotate(360deg); } }
+/* Quem pediu menos movimento não perde o retorno, só o giro: o anel fica aceso e parado,
+   que ainda diz "estou recarregando". Mesma regra dos vizinhos deste arquivo. */
+@media (prefers-reduced-motion: reduce) {
+  .puxar-selo[data-girando="1"] .puxar-anel { animation: none; }
+}
+/* Quem prefere menos movimento não perde o gesto: ele só deixa de ser animado. */
+@media (prefers-reduced-motion: reduce) {
+  .conversas[data-voltando="1"] { transition: none; }
+  .fita[data-voltando="1"] { transition: none; }
+}
+
+/* O X é um botão de verdade, então não pode viver DENTRO do botão da conversa —
+   botão aninhado é HTML inválido e o clique fica ambíguo. Daí a linha envolvente. */
+.conversa-linha { position: relative; display: flex; align-items: stretch; margin-bottom: 2px; }
+.conversa {
+  flex: 1; min-width: 0; text-align: left;
+  background: transparent; border: 1px solid transparent;
+  padding: 10px 34px 10px 12px;
+}
+.conversa:hover { background: var(--fundo-3); }
+.conversa[aria-current="true"] { background: var(--accent-suave); border-color: var(--accent); }
+/* A aba QUIETA recua (02/09): peso 400 e `--texto-2`, era 550 em `--texto`. Com três
+   estados marcados em 700, a distância 550→700 era pouca para o olho separar quieta de
+   marcada de relance; 400→700 faz o negrito ser o sinal, sozinho. Nenhuma cor nova:
+   `--texto-2` sobre `--fundo` já é o par do `.conversa-caminho`. */
+.conversa-titulo {
+  font-weight: 400; color: var(--texto-2); font-size: 15px;
+  display: flex; align-items: baseline; gap: 7px;
+}
+.conversa-nome { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.conversa-rodape {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 6px; min-width: 0;
+}
+.conversa-caminho {
+  flex: 1; min-width: 0;
+  display: block; margin-top: 5px; font-family: var(--mono); font-size: 11px; color: var(--texto-2);
+  white-space: normal; overflow-wrap: anywhere; direction: ltr; text-align: left;
+}
+.conversa-estado { font-size: 12px; color: var(--texto-2); }
+/* A última mexida da conversa. `flex: none` como o estado, mas DEPOIS dele: quem encolhe
+   quando a linha aperta é o caminho (`flex: 1; min-width: 0`), e se ainda assim não couber
+   é a hora que sai — o estado é o que ele olha primeiro. `tabular-nums` para os dígitos
+   não dançarem de largura de um minuto para o outro. */
+.conversa-hora {
+  flex: none; font-size: 12px; color: var(--texto-2);
+  font-variant-numeric: tabular-nums;
+}
+.conversa-pino { font-size: 11px; color: var(--texto-3); }
+
+.conversa-grupo-titulo {
+  flex: 1; min-width: 0; margin: 0; line-height: 1.4;
+  overflow-wrap: anywhere;
+  color: var(--texto-2); font-size: 11px; font-weight: 650;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.projeto-topo { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
+.conversa-grupo:first-child .projeto-topo { margin-top: 0; }
+.projeto-alternar { display: flex; align-items: baseline; gap: 6px; width: 100%; min-height: 40px; padding: 8px 10px; background: none; border: 0; text-align: left; font: inherit; color: inherit; text-transform: inherit; overflow-wrap: anywhere; }
+.projeto-alternar::before { content: '▾'; flex: none; }
+.projeto-alternar[aria-expanded="false"]::before { content: '▸'; }
+.projeto-rotulos { min-width: 0; }
+.projeto-aviso, .projeto-trabalhando { display: block; margin-top: 3px; color: var(--espera); font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: normal; }
+.projeto-trabalhando { color: var(--accent); }
+.projeto-mover { flex: none; min-width: 40px; min-height: 40px; padding: 4px; border: 0; background: none; color: var(--texto-2); font-size: 18px; }
+.projeto-mover:disabled { opacity: 0.3; cursor: default; }
+.projeto-mover:not(:disabled):hover, .projeto-alternar:hover { background: var(--fundo-3); }
+.projeto-alternar:focus-visible, .projeto-mover:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.marca small, #dialogo-contexto p, #dialogo-arquivos p, #dialogo-arquivos .config-nota { color: var(--texto-2); }
+
+/* A lista é só as abas do terminal desde 21/08. Não têm X: o cockpit não fecha conversa
+   nenhuma — quem abre e fecha é o usuário, no terminal. Sem o X, o respiro que a linha
+   reservava para ele vira espaço morto. */
+.conversa { padding-right: 12px; }
+.lista-vazia { padding: 14px; color: var(--texto-3); font-size: 13px; }
+/* Aba sem claude ainda é aba: continua clicável e legível, só não recebe texto. O aviso
+   é o estado em itálico. A regra de peso `450` + `--texto-2` do título SAIU em 02/09: com a
+   base em `400` + `--texto-2`, ela deixaria a aba SEM agente mais pesada que a aba viva e
+   quieta — a base já entrega o que ela entregava. */
+.conversa-linha[data-sem-claude="1"] .conversa-estado { font-style: italic; }
+
+/* Um estado, uma cor. Quem precisa de você é quem chama atenção. */
+.conversa-linha[data-estado="trabalhando"] .conversa-pino {
+  color: var(--accent); animation: pulsar 1.4s infinite;
+}
+.conversa-linha[data-estado="trabalhando"] .conversa-estado { color: var(--accent); }
+.conversa-linha[data-estado="respondeu"] .conversa-pino,
+.conversa-linha[data-estado="respondeu"] .conversa-estado { color: var(--ok); }
+.conversa-linha[data-estado="pronta"] .conversa-pino { color: var(--ok); }
+.conversa-linha[data-estado="interrompida"] .conversa-pino,
+.conversa-linha[data-estado="interrompida"] .conversa-estado { color: var(--perigo); }
+/* Bloqueado/órfão (grupo de jobs, spec 2026-09-08 §4.4): é o único estado em que o usuário
+   precisa AGIR, e o negrito é o mesmo peso do "te esperando" ([data-esperando="1"] abaixo) —
+   valor PRÓPRIO em vez de pegar carona nele: as duas regras têm a mesma especificidade, e
+   decidir quem vence pela ORDEM no arquivo seria dívida silenciosa. */
+.conversa-linha[data-estado="bloqueado"] .conversa-titulo { font-weight: 700; color: var(--texto); }
+.conversa-linha[data-estado="bloqueado"] .conversa-pino,
+.conversa-linha[data-estado="bloqueado"] .conversa-estado { color: var(--espera); }
+@media (prefers-reduced-motion: reduce) {
+  .conversa-linha[data-estado="trabalhando"] .conversa-pino { animation: none; }
+}
+
+/* Não lida: negrito e um ponto na borda. Some quando você abre.
+   CÓDIGO MORTO, sinalizado em 02/09: `dataset.nova` não é escrito em lugar nenhum do
+   app.js (`desenharLista` escreve `estado`, `semClaude`, `perguntando` e `esperando`, e nada
+   mais) — estas duas regras não disparam hoje. Ficam por decisão: o gate de 22/08 guarda o
+   `--accent` delas contra "uniformizar a lista", e apagá-las não entregaria pixel nenhum. */
+.conversa-linha[data-nova] .conversa-titulo { font-weight: 700; color: var(--texto); }
+.conversa-linha[data-nova] .conversa { border-left: 2px solid var(--accent); }
+
+/* "Te esperando": a conversa mexeu depois da última vez que você abriu ela AQUI. Mesmo
+   peso visual que a antiga "não lida" tinha — o olho do usuário já sabia ler isso.
+
+   A COR é própria (--espera), e não o --accent. Até 22/08 este bloco e o "trabalhando"
+   usavam a mesma variável — não cores parecidas, a MESMA — e no celular os dois estados
+   viravam um só. Só este bloco mudou: `trabalhando`, `data-nova` e o `aria-current`
+   continuam no accent de propósito.
+
+   SEM borda lateral desde 02/09: a borda fica reservada ao estado que TRAVA (o
+   "perguntando", logo abaixo). Três bordas na mesma lista competiam entre si; o que marca
+   o "te esperando" é o negrito 700 + `--texto` no título, e o pino e o estado em --espera. */
+.conversa-linha[data-esperando="1"] .conversa-titulo { font-weight: 700; color: var(--texto); }
+.conversa-linha[data-esperando="1"] .conversa-pino,
+.conversa-linha[data-esperando="1"] .conversa-estado { color: var(--espera); }
+
+/* "Esperando você escolher": o terminal abriu um menu e não anda sem alguém responder.
+   Fica DIFERENTE de "trabalhando" e de "te esperando" de propósito — é o único estado em
+   que a conversa está parada por sua causa. */
+.conversa-linha[data-perguntando="1"] .conversa-titulo { font-weight: 700; color: var(--texto); }
+.conversa-linha[data-perguntando="1"] .conversa { border-left: 2px solid var(--perigo); }
+.conversa-linha[data-perguntando="1"] .conversa-pino,
+.conversa-linha[data-perguntando="1"] .conversa-estado { color: var(--perigo); }
+
+/* Job do capitão rodando no projeto desta aba. Discreto de propósito: é informação de
+   canto de olho, e a faixa do topo é quem conta a história inteira. */
+.conversa-job { font-size: 10px; color: var(--accent); }
+
+/* Qual agente roda nesta aba. Ele existe porque a chave da aba virou por PANE: a janela do
+   Projeto-a passou a render DUAS linhas com o mesmo título, o mesmo pino e o mesmo estado
+   possível, e sem o chip elas são indistinguíveis.
+
+   NENHUMA variável de paleta nova, de propósito: a #29 manda que variável nova entre nos DEZ
+   blocos de tema, e um chip não paga esse custo — um tema que esquecesse a variável pintaria
+   coral. Reusa `var(--texto-2)`, que já existe em todos eles. */
+/* A linha de aviso do cabeçalho da conversa. Discreta e legível — ela não é erro, é o
+   contrato do agente sendo dito uma vez. Sem variável de paleta nova (#29). */
+.aviso-agente {
+  font-size: 11px; line-height: 1.35; color: var(--texto-2);
+  margin-top: 3px; max-width: 60ch;
+}
+.aviso-agente div + div { margin-top: 2px; }
+/* O tom de erro é da LINHA, nunca do container: o container COMPÕE avisos (o de estado da
+   aba e o do Codex podem sair juntos), e um `data-tom` nele pintaria de vermelho o aviso
+   neutro que está logo abaixo. `desenharAvisoDoAgente` reconstrói o container do zero a cada
+   chamada (`alvo.textContent = ''`), então não existe atributo sobrevivente de um estado
+   anterior — não há o que "remover". Sem variável nova: `--perigo` já existe nos dez blocos. */
+.aviso-agente [data-tom="erro"] { color: var(--perigo); }
+
+.conversa-agente {
+  flex: none; white-space: nowrap; font-size: 11px; color: var(--texto-2);
+  padding: 0 4px; border-radius: 4px;
+  border: 1px solid var(--borda);
+  vertical-align: middle;
+}
+
+/* Uma cor por agente, para achar a aba de relance em vez de LER o chip de cada linha
+   (03/09). Só o texto — a borda continua `--borda`: dois chips coloridos
+   por dentro E por fora numa lista de vinte linhas viram confete, e quem precisa saltar é
+   a palavra. Agente sem cor própria cai no `--texto-2` da regra acima e continua legível:
+   a lista não quebra no dia em que o Cursor entrar. */
+.conversa-agente[data-agente="claude"] { color: var(--agente-claude); }
+.conversa-agente[data-agente="codex"] { color: var(--agente-codex); }
+
+.excluir {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 24px; height: 24px; padding: 0; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; color: var(--texto-3); font-size: 15px;
+  opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.conversa-linha:hover .excluir, .excluir:focus-visible { opacity: 1; }
+.excluir:hover { background: var(--perigo-suave); color: var(--perigo); }
+/* Celular não tem hover: ali o X mora visível, senão não existe. */
+@media (hover: none) { .excluir { opacity: 0.6; } }
+
+/* ⧉ — "abrir ao lado" (split view, fase 3): a versão DESCOBRÍVEL do Ctrl+clique. Escondido
+   por padrão — só o mouse com hover DE VERDADE e uma tela larga o revelam, porque split é
+   recurso de desktop (Fase 0 do card) e o gesto de teclado já resolve para quem sabe dele. */
+.abrir-ao-lado {
+  position: absolute; right: 32px; top: 50%; transform: translateY(-50%);
+  width: 24px; height: 24px; padding: 0; line-height: 1;
+  display: none; align-items: center; justify-content: center;
+  background: transparent; border: 0; color: var(--texto-3); font-size: 14px;
+}
+.abrir-ao-lado:hover { background: var(--fundo-3); color: var(--texto); }
+@media (hover: hover) and (min-width: 761px) {
+  .conversa-linha:hover .abrir-ao-lado, .conversa-linha:focus-within .abrir-ao-lado { display: flex; }
+}
+
+/* Os quatro controles do painel de configuração. Até 24/08 moravam no rodapé desta lateral
+   (`.lateral-rodape`, que saiu junto com eles): no celular a lateral É a tela da lista, e
+   quatro linhas fixas embaixo eram altura roubada da lista de abas. As classes continuam com
+   o nome de origem porque o que mudou foi o lugar, não o controle. */
+.lateral-acao {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; padding: 8px 10px;
+  font-size: 12.5px; color: var(--texto-3);
+}
+.lateral-acao:hover { background: var(--fundo-3); color: var(--texto); }
+.lateral-acao[data-feito] { color: var(--ok); }
+.lateral-acao[data-estado-aviso="ligado"] { color: var(--ok); }
+.lateral-acao[data-estado-aviso="negado"] { color: var(--perigo); cursor: default; }
+
+/* Seletor de tema: mora no rodapé com as outras ações da lateral, e é um <select>
+   nativo — no celular isso vira a roda do sistema, que é melhor que qualquer lista
+   nossa. Quem pinta o controle por dentro é o `color-scheme` do tema. */
+.lateral-tema {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; font-size: 12.5px; color: var(--texto-3);
+}
+.lateral-tema select {
+  flex: 1; min-width: 0; font: inherit; font-size: 12.5px; padding: 4px 6px;
+  background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--borda); border-radius: var(--raio);
+}
+/* Dentro do painel eles não são mais itens de canto: são o conteúdo, e todos alcançados com
+   o polegar.
+
+   Os 40px de toque desta regra viraram os 46px da `.ajuste`, logo abaixo — e a regra ANTIGA
+   teve de sair, não bastou escrever a nova. `.config-lista .lateral-acao` tem especificidade
+   0-2-0 e `.ajuste` tem 0-1-0: com as duas no arquivo, a de 40px ganhava e a de 46px nunca
+   disparava. É a armadilha #30 na veia — as duas regras estão certas isoladamente, o gate de
+   string aprova as duas, e só a altura COMPUTADA no navegador revela (foi o roteiro de prova
+   de tela que pegou: `linhas46 = 0` com a regra dos 46px escrita e presente).
+
+   O `min-height` da lista agora vive num lugar só: `.ajuste`. */
+.config-lista { margin: 12px 0 16px; }
+
+/* A lista de ajustes: dois grupos por ALCANCE (Este aparelho / O servidor), sete linhas de
+   46px cada, todas com o mesmo <select> nativo sobreposto por baixo (P6/R10 da spec de
+   04/09) — nenhuma lista própria substitui a roda do sistema. */
+.config-grupo { margin-bottom: 14px; }
+.config-grupo-titulo {
+  margin: 0 0 4px; font-size: 12px; font-weight: 600;
+  color: var(--texto-3); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.ajuste {
+  position: relative;              /* âncora do <select> sobreposto (P6/R10) */
+  display: flex; align-items: center; gap: 10px;
+  min-height: 46px; width: 100%; padding: 0 4px;
+  background: none; border: 0; border-bottom: 1px solid var(--borda);
+  color: var(--texto); font: inherit; text-align: left;
+}
+.config-grupo .ajuste:last-child { border-bottom: 0; }
+.ajuste-icone, .ajuste-chevron { flex: none; width: 20px; height: 20px; color: var(--texto-2); }
+.ajuste-rotulo { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* O rótulo do esforço é o ÚNICO que não cabe numa linha em 390px, e o pedaço que o ellipsis
+   comia era justamente o alcance ("— vale para as abas novas"). Informação que só existe até
+   a largura acabar é a #40 outra vez: a frase está no HTML, o gate a encontra, e na TELA ela
+   não estava. Aqui ela quebra em duas linhas e a linha cresce; alcance escrito vale mais que
+   altura uniforme. Pego pelo print, não pelo gate — nenhum assert de string mede ellipsis. */
+.lateral-effort .ajuste-rotulo { white-space: normal; overflow: visible; line-height: 1.25; }
+.ajuste-valor { flex: none; font-family: var(--mono); font-size: 12.5px; color: var(--texto-2); }
+.ajuste-valor:empty { display: none; }
+/* O <select> NATIVO cobre a linha inteira e é o que o dedo toca (P6). */
+.ajuste select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
+/* O anel de foco volta para a LINHA, senão a navegação por Tab fica cega (R10). */
+.ajuste:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Select travado (sem aba aberta, app.js:3483) ⇒ a linha diz que está travada (R10). */
+.ajuste:has(select:disabled) { opacity: 0.5; }
+/* Mesmo desenho do seletor de tema: <select> nativo, que no celular vira a roda do sistema.
+   Componente próprio aqui seria peso sem motivo. */
+.lateral-effort {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; font-size: 12.5px; color: var(--texto-3);
+}
+.lateral-effort select {
+  flex: none; min-width: 88px; font: inherit; font-size: 12.5px; padding: 4px 6px;
+  background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--borda); border-radius: var(--raio);
+}
+/* O recado da troca. Quebra em duas linhas sem empurrar o painel: é ele que diz "enviando",
+   "enviado" e o motivo da recusa, e é o único lugar da tela para onde o dedo está olhando
+   naquele instante. */
+.config-nota {
+  display: block; padding: 0 10px 4px; font-size: 11.5px; line-height: 1.4;
+  color: var(--texto-3);
+}
+
+.diag-erro {
+  font-family: var(--mono); font-size: 12.5px; color: var(--perigo);
+  background: var(--perigo-suave); border: 1px solid var(--perigo); border-radius: var(--raio);
+  padding: 9px 12px; margin: 0 0 14px !important; overflow-wrap: anywhere;
+}
+#lista-diagnostico .uso-grade dd { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; white-space: normal; }
+
+.acesso-campo {
+  width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical;
+  padding: 10px 12px; margin-bottom: 10px; word-break: break-all;
+  background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--borda); border-radius: var(--raio);
+}
+.acesso-aviso { font-size: 12.5px; color: var(--accent); margin: 0 0 16px !important; }
+
+/* ── Chat ────────────────────────────────────────────────────────────── */
+/* O `.chat` é um GRID de UMA faixa útil — os painéis — e não uma coluna flex. A faixa do
+   topo (`.chat-topo`) migrou para DENTRO de cada `.painel` (split view, fase 2:
+   docs/superpowers/plans/2026-09-08-split-view-plano.md) — com N painéis cada um precisa do
+   PRÓPRIO cabeçalho, então a faixa deixou de ser deste grid externo e virou a primeira faixa
+   do grid interno do `.painel` (ver `.painel` abaixo).
+   A SEGUNDA faixa (o `.envio`) desceu para dentro do `.painel` também (caixa de envio por
+   painel, 2026-09-09, D42): com N caixas, cada painel precisa da PRÓPRIA, então ela deixou
+   de ser deste grid externo e virou a terceira faixa do grid interno do `.painel`.
+   Em 25/08 este grid nasceu para a TELA DA PERGUNTA dividir a faixa do meio com a conversa,
+   flutuando sobre ela. Em 28/08 a pergunta desceu para dentro do rolador (ver `.pergunta`) e
+   deixou de ser item deste grid — o grid ficou porque a faixa que sobra continua certa. */
+.chat {
+  /* berço do `.abrir-lateral`, que é `absolute` e tem que se ancorar NESTA coluna. */
+  position: relative;
+  display: grid; grid-template-rows: minmax(0, 1fr);
+  /* A COLUNA precisa ser declarada, e `minmax(0, 1fr)` e não `1fr`: a coluna implícita é
+     `auto`, que se dimensiona pelo item MAIS LARGO em vez da largura da tela. Com um job
+     rodando, o caminho comprido na faixa de etapa esticava a coluna para 424px num celular
+     de 390px e a página inteira passava a andar para o lado (medido em 28/08; escondendo só
+     a faixa de jobs, o documento voltava a 390px na hora).
+     `1fr` sozinho não resolveria: o tamanho mínimo automático de uma track flexível continua
+     sendo o min-content dos itens. O `minmax(0, ...)` é o que autoriza a coluna a ficar
+     MENOR que o conteúdo — e é o que contém qualquer coisa larga que apareça aqui depois:
+     tabela, framebuffer da pane, caminho de projeto comprido. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0; min-height: 0; background: var(--fundo);
+}
+.chat > * { grid-column: 1; }
+/* Sem conversa aberta, `#vazio` é o único filho VISÍVEL do grid — mas `.paineis` (abaixo)
+   agora reivindica a faixa 1 explicitamente, e por padrão a colocação automática pula
+   qualquer célula já ocupada por um item de posição explícita. Sem o `grid-row: 1` aqui,
+   `#vazio` caía sozinho na faixa 2 — medido: o texto ia parar ENCOSTADO EMBAIXO da tela, em
+   vez de no topo. E por padrão um item de grid ESTICA (`align-items: normal` ~ `stretch`)
+   para preencher a faixa inteira: antes da fase 2 a faixa 1 era `auto` (media pelo próprio
+   conteúdo do `#vazio`, ~295px numa tela de 1000px) e esticar não mudava nada — a faixa JÁ
+   tinha o tamanho do conteúdo. Agora que a mesma faixa também é o `1fr` que sobra dos
+   painéis, esticar faria `#vazio` tomar a tela inteira e SUBIR o texto para o centro vertical
+   — mudança de pixel que a promessa desta fase proíbe. Os dois juntos (`grid-row: 1` +
+   `align-self: start`) devolvem o pixel de ontem: medido com o navegador, mesma posição
+   (top 0) e mesma altura (295px) de antes da fase 2.
+   Caixa de envio por painel (2026-09-09): a faixa 2 deste grid (a que seria do `.envio`)
+   DEIXOU DE EXISTIR — o `.envio` mudou de casa para dentro do `.painel` (D42). Nada aqui
+   muda: é território de pixel medido (R6 da spec), e `#vazio` continua na faixa 1. */
+.vazio { grid-row: 1; align-self: start; }
+/* A faixa dos painéis (que hoje é UM só) ocupa a `minmax(0, 1fr)` de cima — a mesma faixa
+   que `.chat-topo`+`.mensagens` juntos ocupavam antes, uma dentro da outra. */
+.paineis {
+  display: flex; flex-wrap: nowrap; min-width: 0; min-height: 0; overflow-x: auto;
+  grid-row: 1;
+}
+/* Um painel por conversa aberta. `min-width: 320px` + `overflow-x: auto` na `.paineis` é o
+   que dá "sem limite" (fase 3): a partir do quinto painel numa tela de 1600px eles param de
+   encolher e a FAIXA rola de lado — nunca o documento (mesmo remédio do `minmax(0, 1fr)`
+   documentado acima).
+   QUEM ROLA é a `.mensagens`, dentro do painel — NUNCA o `.painel` em si. Um `.painel` com
+   `overflow` próprio duplicaria o rolador e o `estaNoFim()` mediria a caixa errada (a
+   regressão de `b9799bf` por outra porta). O `.painel` só existe para dar ao `.chat-topo` e
+   à `.mensagens` de CADA conversa o mesmo grid de duas faixas que `.chat` dava a todas elas
+   juntas antes desta fase. */
+.painel {
+  flex: 1 1 0; min-width: 320px;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  /* A COLUNA precisa do mesmo `minmax(0, 1fr)` que `.chat` já usava (ver o comentário lá em
+     cima): sem ela a coluna implícita é `auto`, dimensionada pelo item MAIS LARGO — e a
+     `.faixa-etapa` (texto que não quebra) esticava o painel inteiro, `.mensagens` incluída,
+     para fora da tela no celular. Medido: 390px virando 577px sem esta linha. */
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+/* O painel FOCADO ganha uma borda de cima — sem variável de tema nova (#29), reusa
+   `--accent`, que já é a cor de "há trabalho aqui" no `.btn-parar` (ver acima). Só existe
+   com N painéis: no celular o bloco de 760px zera esta regra (R52 — os dois seletores na
+   MESMA regra, senão `.painel` sozinho perde a especificidade para este e a borda apareceria
+   lá também, que é mudança visual onde a fase 2 prometeu zero). */
+.painel[data-foco="1"] { border-top: 2px solid var(--accent); }
+/* Divisor entre painéis lado a lado — sem ele, dois cabeçalhos coladinhos parecem um só. */
+.painel + .painel { border-left: 1px solid var(--borda); }
+/* O recuo de 56px do `.chat-topo` é o lugar do `☰`, que só existe uma vez na tela (ele é
+   `position: absolute`, ancorado no `.chat`, não em cada painel). Os painéis à direita do
+   primeiro não têm nada ali — herdar o recuo deixaria o título deles puxado para a direita
+   à toa. */
+.painel + .painel .chat-topo { padding-left: 20px; }
+/* Com DOIS ou mais painéis o título volta a ser uma linha com ellipsis. A regra do
+   `.chat-topo .chat-nome h1` (lá em cima) o deixa quebrar por `overflow-wrap: anywhere`, e
+   isso existe para o CELULAR, onde o topo tem duas linhas e o título pode ocupar a largura
+   inteira. Num painel de 320px dividindo a linha com três botões, a mesma regra parte a
+   palavra no meio — "con / vers / a1", três linhas de cabeçalho comendo a altura da
+   conversa. Visto no PNG de 6 painéis, não no gate: o DOM de mentira não faz layout.
+   `:has()` porque a condição é "há mais de um painel", e o cockpit já usa `:has()` no
+   `.chat:has(.pergunta…)`. Com UM painel nada muda — que é a promessa da fase 2. */
+/* "Perdi o fluxo": o cano de SSE caiu três vezes seguidas sem voltar. Faixa e não bolha —
+   ela fala de TODOS os painéis, não de uma conversa. `--perigo-suave` e `--perigo` já existem
+   nos dez blocos de tema (#29). */
+.cano-caido {
+  flex: 0 0 100%; padding: 8px 20px; font-size: 13px;
+  background: var(--perigo-suave); color: var(--perigo);
+  border-bottom: 1px solid var(--perigo);
+}
+.paineis:has(.painel + .painel) .chat-nome h1 {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal;
+}
+/* O separador entre o ⊟ (tira o painel da TELA) e o ✕ (mata a aba no TMUX) — os dois moram
+   lado a lado no cabeçalho, e a diferença de gravidade entre eles pede uma marca visual. */
+.chat-topo-divisor { width: 1px; align-self: stretch; margin: 2px 0; background: var(--borda); }
+.chat-topo {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  /* 56px à esquerda: é o lugar do `.abrir-lateral`, que flutua neste canto e está SEMPRE
+     na tela do desktop. No celular a media query devolve os 12px. */
+  padding: 12px 20px 12px 56px; border-bottom: 1px solid var(--borda); background: var(--fundo-2);
+  grid-row: 1;
+}
+.chat-identidade { flex: 1; min-width: 0; }
+.chat-nome { display: flex; align-items: baseline; gap: 8px; }
+.chat-topo .chat-nome h1 { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.chat-topo h1 { font-size: 16px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-topo .caminho {
+  font-family: var(--mono); font-size: 12px; color: var(--texto-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.voltar { display: none; background: transparent; border: 0; padding: 4px 8px; }
+/* M4 (04/09): a MESMA cor do pino de "trabalhando" (--accent, não --espera — aquela é
+   coral, e é "te esperando", outro estado) — o botão marca visualmente que há um turno
+   rodando, sem precisar do hover para dizer isso. Medido nas dez paletas: R6/A14. */
+.btn-parar { border-color: var(--accent); }
+/* Parar é interrupção, não destruição: vermelho só na intenção (hover), nunca em repouso. */
+.btn-parar:hover { background: var(--perigo-suave); border-color: var(--perigo); color: var(--perigo); }
+
+/* Medidor de contexto: a informação que o usuário quer de relance é "quanto ainda cabe".
+   O número exato e o custo ficam a um clique, no diálogo. */
+.medidor {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  background: var(--fundo-3); border: 1px solid var(--borda);
+  /* Voltou a ser `button` (o clique abre o painel com os números por extenso), e a regra
+     global de `button` já daria o raio. Continua declarado aqui de propósito: foi o que
+     faltou quando ele virou `<div>` e ficou quadrado no meio de uma barra arredondada. */
+  border-radius: var(--raio);
+  /* Sem isto ele herda `text-align: center` de `button` e os três pedaços dançam quando a
+     porcentagem passa de uma para duas casas. */
+  text-align: left;
+  padding: 6px 11px; font-size: 13px; color: var(--texto-2);
+}
+.medidor-barra {
+  width: 42px; height: 5px; border-radius: 3px; background: var(--borda);
+  overflow: hidden; flex: none;
+}
+.medidor-barra i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 0.3s; }
+.medidor[data-nivel="atencao"] .medidor-barra i, .uso-trilho[data-nivel="atencao"] i { background: var(--accent); }
+.medidor[data-nivel="cheio"] .medidor-barra i, .uso-trilho[data-nivel="cheio"] i { background: var(--perigo); }
+/* Ele é clicável: no celular não existe tooltip, e o `title` sozinho deixava o número
+   exato inalcançável justo no aparelho que motivou o medidor. */
+.medidor:hover { border-color: var(--texto-3); }
+.medidor-modelo { font-family: var(--mono); font-size: 12px; color: var(--texto-3); }
+/* O nível de esforço DESTA conversa. Chip próprio, e não um pedaço do `.medidor-modelo`, por
+   um motivo só: o modelo some no celular (bloco de 760px lá embaixo) e o effort herdaria isso
+   — o job entregaria zero justo no aparelho que motivou o medidor. Por isso ele NÃO entra em
+   nenhuma regra de `display: none` daquele bloco, e o gate guarda essa ausência. */
+.medidor-effort {
+  font-family: var(--mono); font-size: 11px; line-height: 1;
+  padding: 2px 5px; border-radius: 4px;
+  background: var(--fundo); border: 1px solid var(--borda); color: var(--texto-3);
+}
+.medidor-pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* Faixa de jobs. `flex-basis: 100%` com o wrap do topo é o que a joga para uma linha
+   própria embaixo do título, sem tirar o lugar de ninguém; `order` alto a mantém por
+   último mesmo estando antes dos botões no HTML, onde ela é vizinha da identidade.
+   Escondida por [hidden], que já vence este `display: flex` na regra global lá em cima. */
+.faixa-jobs {
+  order: 9; flex-basis: 100%; display: flex; align-items: center; gap: 8px;
+  /* A etapa quebra para a linha de baixo em vez de disputar espaço com os títulos. */
+  flex-wrap: wrap; row-gap: 2px;
+  min-width: 0; padding: 5px 10px; text-align: left; font-size: 12.5px;
+  /* Sem cor chumbada: accent-suave é o accent do tema sobre o próprio fundo, então o
+     contraste de --texto sobre ela segue o mesmo dos oito temas. */
+  background: var(--accent-suave); border: 1px solid var(--accent); color: var(--texto);
+  /* Só a ENTRADA anima (T5, achado da Fase 0 deste job: a bancada mediu o allow-discrete
+     vencendo o `[hidden] !important`, mas com um salto de layout de 48px no colapso final —
+     nem o caminho A nem o B da spec descrevem isso; a saída seca é a mesma de sempre até haver
+     decisão. Ver o relatório do job f49b.) */
+  opacity: 1; transform: none;
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
+}
+@starting-style { .faixa-jobs:not([hidden]) { opacity: 0; transform: translateY(-6px); } }
+.faixa-jobs:hover { filter: brightness(1.08); }
+.faixa-pino { flex: none; font-size: 10px; color: var(--accent); }
+.faixa-jobs[data-estado="rodando"] .faixa-pino { animation: pulsar 1.4s infinite; }
+.faixa-conta { flex: none; font-weight: 600; }
+/* Sem isto o `gap` deixa um buraco quando a faixa mostra só o "terminou". */
+.faixa-conta:empty { display: none; }
+.faixa-titulos {
+  flex: 1; min-width: 0; color: var(--texto-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Alinhada sob os títulos, não sob o pino: a indentação amarra as duas linhas. */
+.faixa-etapa {
+  flex-basis: 100%; min-width: 0; padding-left: 18px;
+  color: var(--texto-3); font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.faixa-etapa:empty { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .faixa-jobs[data-estado="rodando"] .faixa-pino { animation: none; }
+  .faixa-jobs { transition: none; }
+}
+
+.icone-so .conta {
+  font-family: var(--sans); font-size: 10.5px; font-weight: 600;
+  color: var(--accent); margin-left: 2px; vertical-align: super;
+}
+
+/* ── Diálogo de arquivos ─────────────────────────────────────────────── */
+.arquivo-linha {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 0; border-bottom: 1px solid var(--borda); min-width: 0;
+}
+.arquivo-linha:last-child { border-bottom: 0; }
+.arquivo-info { flex: 1; min-width: 0; }
+.arquivo-nome {
+  font-family: var(--mono); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.arquivo-meta { font-size: 11.5px; color: var(--texto-3); margin-top: 2px; }
+.arquivo-baixar { flex: none; text-decoration: none; }
+.arquivo-vazio { font-size: 13px; color: var(--texto-3); padding: 10px 0 16px; }
+
+/* ── Diálogo de uso ──────────────────────────────────────────────────── */
+.uso-contexto { margin-bottom: 18px; }
+.uso-rotulo { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.uso-rotulo span { font-size: 13px; color: var(--texto-2); }
+.uso-rotulo b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.uso-trilho { height: 8px; border-radius: 4px; background: var(--fundo-3); overflow: hidden; }
+.uso-trilho i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 0.3s; }
+.uso-legenda { margin-top: 6px; font-size: 12.5px; color: var(--texto-3); font-variant-numeric: tabular-nums; }
+.uso-plano { margin-bottom: 18px; }
+.uso-atualiza {
+  background: transparent; border: 0; padding: 0;
+  font-size: 12px; color: var(--texto-3); text-decoration: underline;
+}
+.uso-atualiza:hover { color: var(--accent); }
+.uso-atualiza:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
+.plano-item { margin-top: 10px; }
+.plano-topo { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
+.plano-topo b { font-variant-numeric: tabular-nums; }
+.plano-falta { color: var(--texto-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.plano-trilho { height: 6px; border-radius: 3px; background: var(--fundo-3); overflow: hidden; margin-top: 5px; }
+.plano-trilho i { display: block; height: 100%; background: var(--ok); }
+.plano-trilho[data-nivel="atencao"] i { background: var(--accent); }
+.plano-trilho[data-nivel="cheio"] i { background: var(--perigo); }
+.plano-nota { font-size: 12.5px; color: var(--texto-3); margin-top: 8px; }
+
+.uso-grade {
+  display: grid; grid-template-columns: auto 1fr; gap: 7px 16px;
+  margin: 0 0 16px; font-size: 13.5px;
+}
+.uso-grade dt { color: var(--texto-2); }
+.uso-grade dd {
+  margin: 0; text-align: right; font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.uso-grade dd.mono { font-family: var(--mono); font-size: 12.5px; }
+.contexto-destaque { margin: 20px 0; }
+.contexto-destaque-topo { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--texto-2); font-size: 12.5px; }
+.contexto-destaque-topo { display: block; }
+.contexto-destaque-topo strong { display: block; margin-top: 12px; color: var(--texto); font-size: 64px; line-height: 1.2; letter-spacing: -2px; font-variant-numeric: tabular-nums; }
+.contexto-trilho { height: 8px; margin-top: 12px; overflow: hidden; border-radius: 4px; background: var(--borda); }
+.contexto-trilho i { display: block; width: 0; height: 100%; background: var(--ok); transition: width 0.3s; }
+.contexto-destaque[data-nivel="atencao"] .contexto-trilho i { background: var(--accent); }
+.contexto-destaque[data-nivel="cheio"] .contexto-trilho i { background: var(--perigo); }
+/* No painel do medidor os valores são frases ("janela deste modelo desconhecida") e ids de
+   modelo compridos. Com o `nowrap` da regra acima eles sairiam cortados com reticências —
+   que é o mesmo tipo de informação inalcançável que este painel veio consertar. */
+#contexto-grade dd { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.uso-aviso {
+  margin: 0 0 16px; padding: 9px 12px; border-radius: var(--raio);
+  background: var(--accent-suave); border: 1px solid var(--accent);
+  font-size: 13px; color: var(--texto);
+}
+
+/* A tela da pane, mostrada só com a aba em `waiting`. Mora DENTRO do rolador da conversa
+   (28/08), como último bloco depois da fita — e é isso que dá o comportamento pedido
+   para o notebook: ela OCUPA a área da conversa, e rolar para cima devolve o histórico.
+
+   Antes disso ela flutuava sobre a fita numa faixa própria do grid, com rolagem separada.
+   Dois roladores que não se falam: rolar dentro da pergunta nunca chegava no histórico, e
+   rolar o histórico nunca revelava o começo da pergunta. Um rolador só resolve os dois.
+
+   O `min-height: 100%` é o "ocupa a tela de conversa": com a pergunta aberta e a rolagem no
+   fim, ela toma toda a altura visível mesmo quando o menu do terminal é curto. Percentual e
+   não `vh` porque o que ela tem que encher é a ÁREA DA CONVERSA, não a janela — no desktop
+   o topo e a caixa de envio ficam de fora, e `vh` os ignoraria. */
+.pergunta {
+  min-height: 100%; box-sizing: border-box;
+  /* Coluna flex para as teclas poderem descer ao rodapé da caixa (`margin-top: auto`). Com
+     o menu curto e a caixa esticada pelo `min-height`, sem isto sobrava um vazio solto
+     embaixo das teclas — e elas ficavam no meio da tela, longe de onde a mão espera. */
+  display: flex; flex-direction: column;
+  margin: 8px 0 0; padding: 10px 12px;
+  border: 1px solid var(--perigo); border-left-width: 3px; border-radius: var(--raio);
+  /* O fundo OPACO fica: `--perigo-suave` é rgba nos dez temas, e sobre a fita ele deixaria
+     as bolhas do histórico aparecendo através do menu do terminal. Dois planos: o tom de
+     alerta por cima, o fundo do tema por baixo. Mesma solução do bloco de celular. */
+  background: linear-gradient(var(--perigo-suave), var(--perigo-suave)), var(--fundo);
+}
+.pergunta-tela {
+  /* Sem `max-height`: quem rola agora é a conversa inteira, e um teto aqui traria de volta
+     o rolador de dentro do rolador que esta mudança veio tirar. O `overflow: auto` FICA —
+     com a altura livre ele nunca ativa a barra vertical, e é ele que segura o framebuffer
+     de 168 colunas na horizontal em vez de deixar a página inteira andar para o lado. */
+  /* `flex: none` para a caixa NÃO encolher dentro da coluna: encolhida, o `overflow: auto`
+     acordaria de novo como rolador vertical interno — o que esta mudança veio tirar. */
+  margin: 0; overflow: auto; flex: none;
+  /* 13px, o mesmo do celular e o mesmo das bolhas: a 11.5px o menu do terminal ficava
+     pequeno demais para ler no note (28/08). */
+  font-family: var(--mono); font-size: 13px; line-height: 1.4;
+  color: var(--texto-2); white-space: pre; tab-size: 4;
+}
+/* As teclas do menu. Alvo grande de propósito: quem usa isto está no celular, com uma mão,
+   e errar a seta num menu de permissão escolhe a opção errada. */
+.pergunta-teclas { display: flex; gap: 8px; margin-top: auto; padding-top: 10px; flex-wrap: wrap; }
+.pergunta-teclas .tecla { min-width: 52px; min-height: 40px; font-size: 15px; }
+
+/* O `contain` aqui NÃO cria gesto nenhum — quem cria é o app.js, e desde 02/09 a conversa
+   TEM puxar para atualizar (ouvido aqui, desenhado na `#fita`). O `contain` existe por outro
+   motivo: chegar ao topo da fita e continuar puxando entregaria a vez ao pull-to-refresh
+   nativo do Chrome, que recarrega a página e apaga o que estava digitado na caixa. Ver o
+   mesmo comentário em `.conversas`. */
+.mensagens {
+  /* Sem `flex: 1` desde 25/08: quem dá a altura agora é a faixa `1fr` do grid do `.painel`.
+     O `min-height: 0` fica — é o que deixa um item de grid ENCOLHER abaixo do conteúdo, e
+     sem ele a fita comprida empurra o `.envio` para fora da tela. */
+  grid-row: 2; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  padding: 24px 24px 8px; scroll-behavior: smooth;
+  /* Berço do `.puxar-selo`, que é `absolute`. `relative` e NÃO `transform`: a `.pergunta` é
+     filha daqui e é `position: fixed` no celular — um ancestral com `transform` viraria o
+     bloco de contenção dela e ela deixaria de cobrir a viewport. `relative` não contém
+     `fixed`, então a tela da pane continua inteira. É a mesma armadilha que fez o gesto
+     descer a `.fita` em vez do `#mensagens`. */
+  position: relative;
+}
+.fita { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+@keyframes entrar { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* Enquanto o histórico inteiro entra de uma vez, nada anima: rolagem seca e bolhas sem
+   entrada. Ver despejarFita() em app.js. */
+.mensagens[data-pintando] { scroll-behavior: auto; }
+.mensagens[data-pintando] .bolha-eu,
+.mensagens[data-pintando] .fala,
+.mensagens[data-pintando] .ferramenta,
+.mensagens[data-pintando] .grupo-ferramentas { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bolha-eu, .fala, .ferramenta, .grupo-ferramentas { animation: none !important; }
+  .mensagens { scroll-behavior: auto; }
+  .app { transition: none; }
+}
+
+/* O que o usuário escreveu continua em bolha, à direita: é a âncora visual do turno. */
+.bolha-eu {
+  position: relative;
+  align-self: flex-end; max-width: 76%;
+  /* Canto reto do lado de onde a cauda sai: com raio, sobra uma fresta entre a bolha e o
+     triângulo, e a emenda aparece. Todo app de conversa faz assim. */
+  padding: 10px 14px; border-radius: var(--raio); border-bottom-right-radius: 0;
+  background: var(--bolha-eu); white-space: pre-wrap; overflow-wrap: anywhere;
+  animation: entrar 0.18s ease-out;
+  transition: opacity 300ms ease-out;
+}
+
+/* M5 (04/09): bolha longa recolhe (P8) — o mesmo molde visual do "ver a nota" do agente
+   (`.fala-resumo`), aplicado dentro da bolha do usuário. */
+.bolha-eu details.bolha-longa summary {
+  cursor: pointer; list-style: none;
+  font-family: var(--mono); font-size: 12.5px; opacity: 0.75;
+}
+.bolha-eu details.bolha-longa summary::-webkit-details-marker { display: none; }
+.bolha-eu details.bolha-longa summary::before { content: '▸ '; }
+.bolha-eu details.bolha-longa[open] summary::before { content: '▾ '; }
+
+/* A cauda. Um triângulo desenhado com borda: caixa de tamanho zero, só a borda de baixo
+   pintada, e as laterais transparentes cortando ela na diagonal. Sem SVG, sem imagem. */
+.bolha-eu::after {
+  content: ''; position: absolute; right: -8px; bottom: 0;
+  width: 0; height: 0; border-style: solid;
+  border-width: 0 8px 10px 0;
+  border-color: transparent transparent var(--bolha-eu) transparent;
+}
+
+/* A hora da mensagem. Vive FORA da bolha, como irmã dela na fita, por dois motivos: dentro
+   ela empurraria o texto (e no celular a largura é o recurso escasso), e quem absorve a
+   bolha pendente reescreve o `textContent` dela — um <span> lá dentro sumiria junto, que é
+   a mesma lição do selo "na fila" logo abaixo.
+
+   Só aparece quando o MINUTO muda, então ela é o cabeçalho do grupo: fica em cima, do lado
+   da bolha a que pertence. A margem negativa come parte do `gap: 14px` da fita para ela
+   encostar na bolha dela, e não boiar no meio das duas. */
+.hora-fita {
+  font-size: 10.5px; line-height: 1; letter-spacing: 0.04em;
+  color: var(--texto-3); font-variant-numeric: tabular-nums;
+  margin-bottom: -8px; padding: 0 2px;
+}
+.hora-fita[data-lado="eu"] { align-self: flex-end; }
+.hora-fita[data-lado="agente"] { align-self: flex-start; }
+
+/* Bolha que o cockpit desenhou na hora do envio e que ainda espera o mesmo texto voltar
+   pelo arquivo do CLI. Um segundo de meio-tom: quem manda vê que saiu, e vê quando
+   assentou. Ver `marcarPendente` no app.js. */
+.bolha-pendente { opacity: 0.72; }
+@media (prefers-reduced-motion: reduce) {
+  .bolha-eu { transition: none; }
+}
+
+/* Mensagem escrita com um turno rodando: ela SAIU, mas o agente só vai lê-la quando o
+   turno atual acabar — é a fila do CLI, a mesma que o terminal sempre teve. O selo é
+   `::before` e não um <span> dentro da bolha porque quem absorve a pendente reescreve o
+   `textContent` dela, e um selo de verdade sumiria junto com a marca.
+
+   Não há botão de cancelar aqui de propósito: depois do `send-keys` a mensagem é do CLI e
+   o cockpit não tem como tirá-la de lá. Prometer o contrário seria mentir na tela. */
+.bolha-pendente[data-fila="1"]::before {
+  content: var(--rotulo-fila, 'na fila');
+  display: block;
+  margin-bottom: 3px;
+  font-size: 10.5px; line-height: 1.2; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  /* `inherit`, e não --espera: aqui o fundo é a --bolha-eu, não a linha da lista, e o
+     coral fica entre 3.8:1 e 4.2:1 em cima dela — ainda por baixo do meio-tom da bolha
+     pendente. Contraste ganha do hex; quem separa o selo do texto é a caixa alta. */
+  color: inherit;
+}
+
+/* Turno que veio do terminal já se marca pela linha tracejada à direita. Cauda ali em cima
+   viraria duas marcas disputando o mesmo canto. */
+.bolha-eu.de-fora::after { display: none; }
+
+/* A resposta do agente é uma bolha à esquerda, espelho da bolha do usuário.
+   Ela já foi largura cheia, e por um motivo real: encaixotar apertava código e tabela.
+   O que mudou não foi a opinião sobre isso, foi o remédio — `pre` e `.tabela-rolagem`
+   rolam por conta própria DENTRO da bolha, então usam a largura interna inteira e a
+   folga das bordas não custa mais leitura nenhuma. */
+.fala {
+  position: relative;
+  align-self: flex-start; max-width: 92%;
+  padding: 10px 14px; border-radius: var(--raio); border-bottom-left-radius: 0;
+  background: var(--fundo-2); border: 1px solid var(--borda);
+  animation: entrar 0.18s ease-out; overflow-wrap: anywhere;
+}
+
+/* A cauda do agente precisa de DOIS triângulos, e não de um: esta bolha tem contorno de
+   1px. O de baixo (::before) pinta a linha da borda; o de cima (::after) pinta o miolo,
+   deslocado para dentro, e o que sobra aparecendo vira o contorno da cauda. */
+.fala::before,
+.fala::after { content: ''; position: absolute; width: 0; height: 0; border-style: solid; }
+.fala::before {
+  left: -9px; bottom: -1px;
+  border-width: 0 0 11px 9px;
+  border-color: transparent transparent var(--borda) transparent;
+}
+.fala::after {
+  left: -7px; bottom: 0;
+  border-width: 0 0 9px 7px;
+  border-color: transparent transparent var(--fundo-2) transparent;
+}
+.fala-corpo > :first-child { margin-top: 0; }
+.fala-corpo > :last-child { margin-bottom: 0; }
+.fala p { margin: 0 0 10px; }
+.fala h3, .fala h4 { margin: 18px 0 8px; font-size: 16.5px; font-weight: 650; letter-spacing: -0.01em; }
+.fala h4 { font-size: 15px; color: var(--texto-2); }
+.fala ul, .fala ol { margin: 0 0 10px; padding-left: 22px; }
+.fala li { margin: 3px 0; }
+.fala blockquote {
+  margin: 0 0 10px; padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--borda); color: var(--texto-2);
+}
+.fala hr { border: 0; border-top: 1px solid var(--borda); margin: 16px 0; }
+.fala a { color: var(--accent); }
+/* Tabela larga rola dentro do próprio quadro — a conversa nunca rola de lado.
+   `overscroll-behavior-x: contain` corta o encadeamento: no celular, arrastar a tabela até
+   o fim não passa a rolagem para quem está atrás dela. */
+.tabela-rolagem { overflow-x: auto; overscroll-behavior-x: contain; margin: 0 0 12px; }
+/* `width: max-content` é o que faz a rolagem acima EXISTIR. Este `overflow-x: auto` estava
+   aqui desde sempre e nunca disparou uma vez: as células herdavam o `overflow-wrap:
+   anywhere` do `.fala`, então a tabela sempre conseguia caber quebrando palavra no meio —
+   "escopo do dentista" virava quatro linhas de cinco letras e um id de job virava uma
+   coluna de três caracteres. Quem nunca fica largo nunca rola. Com `max-content` a tabela
+   pede a largura do conteúdo; o `min-width: 100%` continua para a tabela pequena não
+   encolher e ficar solta no meio da bolha. */
+.fala table {
+  border-collapse: collapse; font-size: 14.5px;
+  min-width: 100%; width: max-content;
+}
+/* O `anywhere` do `.fala` é cancelado AQUI, não lá: em parágrafo ele é o que impede um
+   caminho ou uma URL comprida de furar a bolha, e isso continua valendo. Dentro da célula
+   ele significa outra coisa — "pode partir qualquer palavra" — e é o que espremia a tabela.
+   `max-width` em ch é o teto: sem ele, uma célula de texto longo viraria uma coluna única
+   gigante e a rolagem trocaria um problema por outro. Dentro do teto a quebra é normal,
+   entre palavras. */
+.fala th, .fala td {
+  border: 1px solid var(--borda); padding: 6px 11px; text-align: left; vertical-align: top;
+  overflow-wrap: normal; word-break: normal; max-width: 46ch;
+}
+/* --fundo-3, não --fundo-2: desde que a fala virou bolha, o fundo dela JÁ é --fundo-2, e
+   cabeçalho da mesma cor do fundo é cabeçalho invisível. */
+.fala th { background: var(--fundo-3); font-weight: 600; white-space: nowrap; }
+.fala tbody tr:nth-child(even) { background: var(--fundo-3); }
+.fala code {
+  font-family: var(--mono); font-size: 0.88em;
+  background: var(--fundo-3); padding: 1px 5px; border-radius: 5px;
+}
+.bloco-codigo { position: relative; margin: 0 0 12px; }
+.bloco-codigo pre {
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  background: var(--fundo-2); border: 1px solid var(--borda); border-radius: var(--raio);
+}
+.bloco-codigo code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6; }
+.bloco-lingua {
+  /* Recuado para caber o botão de copiar, que mora no canto de cima. */
+  position: absolute; top: 8px; right: 66px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--texto-3);
+  text-transform: lowercase; pointer-events: none;
+}
+
+/* Copiar, em dois lugares: a fala inteira e cada bloco de código.
+   No desktop aparece no hover, para não sujar a leitura; no toque, onde hover não existe,
+   fica sempre visível — senão o botão simplesmente não existiria no celular.
+   O da fala fica MONTADO NA BORDA de cima da bolha, não dentro dela: a folga entre as
+   mensagens já está ali e assim ele nunca cobre a primeira linha do texto. */
+.copiar {
+  position: absolute; z-index: 1;
+  padding: 2px 7px; line-height: 1.5;
+  font-family: var(--mono); font-size: 10.5px; color: var(--texto-3);
+  background: var(--fundo-3); border: 1px solid var(--borda); border-radius: 6px;
+}
+.copiar:hover { color: var(--texto); border-color: var(--texto-3); }
+.copiar[data-feito] { color: var(--ok); border-color: var(--ok); }
+.fala > .copiar { top: -10px; right: 12px; }
+.bloco-codigo > .copiar { top: 6px; right: 8px; }
+@media (hover: hover) {
+  .copiar { opacity: 0; transition: opacity 0.12s; }
+  .fala:hover > .copiar, .bloco-codigo:hover > .copiar, .copiar:focus-visible { opacity: 1; }
+}
+
+/* O copiar de um LINK, dentro da frase. Classe própria, e não `.copiar`, por dois motivos
+   que só apareceriam em produção:
+
+   1. `.copiar` é `position: absolute` — herdar isso arrancaria o chip do fluxo e o jogaria
+      por cima do texto seguinte.
+   2. `.copiar` some com `opacity: 0` sob `@media (hover: hover)` e só volta por
+      `.fala:hover > .copiar`, que é FILHO DIRETO. O chip mora dentro do `<p>`, então é neto:
+      nada nunca o revelaria. Funcionaria no celular e sumiria no note, calado — armadilha #30.
+
+   Ele fica visível SEMPRE, nos dois aparelhos, porque é a única forma de copiar um link no
+   celular sem descobrir sozinho o toque longo do Android (armadilha #31).
+
+   O alvo de toque fica em ~24px, e não nos 40px que o resto da tela respeita: um botão de
+   40px dentro de uma frase quebraria a entrelinha do parágrafo inteiro. É a troca aceita
+   aqui — o link em si continua sendo o alvo grande, e o chip é o atalho ao lado dele. */
+.copiar-link {
+  display: inline-block; vertical-align: baseline;
+  margin-left: 4px; padding: 2px 6px; line-height: 1.4;
+  font-family: var(--mono); font-size: 11px; color: var(--texto-3);
+  background: var(--fundo-3); border: 1px solid var(--borda); border-radius: 5px;
+}
+.copiar-link:hover { color: var(--texto); border-color: var(--texto-3); }
+.copiar-link[data-feito] { color: var(--ok); border-color: var(--ok); }
+
+/* A fala é um <details>: aberta, o resumo nem existe na tela e ela é a bolha de sempre.
+   Ela só vira "nota de trabalho" quando uma ferramenta vem logo depois — aí o que estava
+   ali era o agente dizendo o que ia fazer, não a resposta. Recolhe, não apaga. */
+.fala > .fala-resumo { display: none; }
+.fala-nota {
+  align-self: flex-start; max-width: 92%;
+  padding: 3px 12px; border-radius: 20px;
+  background: none; border: 1px dashed var(--borda);
+}
+/* A cauda de bolha não faz sentido numa nota: ela não é fala, é bastidor. */
+.fala-nota::before, .fala-nota::after { display: none; }
+.fala-nota > .fala-resumo {
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer; list-style: none;
+  color: var(--texto-3); font-size: 12.5px;
+}
+.fala-nota > .fala-resumo::-webkit-details-marker { display: none; }
+.fala-nota > .fala-resumo:hover { color: var(--texto-2); }
+.fala-rotulo { font-family: var(--mono); }
+.fala-rotulo::before { content: '▸ '; }
+.fala-nota[open] > .fala-resumo > .fala-rotulo::before { content: '▾ '; }
+.fala-nota[open] { border-radius: var(--raio); padding: 3px 12px 10px; }
+.fala-nota[open] > .fala-corpo { margin-top: 8px; font-size: 14px; color: var(--texto-2); }
+/* O copiar da nota mora DENTRO do resumo, então não é absoluto nem some no hover: dentro
+   do details ele ficaria invisível justamente com a nota fechada. */
+.fala-nota > .fala-resumo > .copiar {
+  position: static; opacity: 1; margin-left: auto; flex: none;
+}
+
+/* Corte de memória (/clear, /compact): régua no meio da conversa. Não é fala de
+   ninguém, é um aviso de que dali para cima o agente não lembra mais. */
+.corte {
+  align-self: stretch; display: flex; align-items: center; gap: 10px;
+  margin: 6px 0; color: var(--texto-3); font-size: 12.5px;
+}
+.corte::before, .corte::after { content: ''; flex: 1; height: 1px; background: var(--borda); }
+.corte::before { flex: 0 0 24px; }
+.corte-rotulo {
+  font-family: var(--mono); font-weight: 600; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 20px; padding: 1px 9px; flex: none;
+}
+.corte-nota { flex: 0 1 auto; min-width: 0; max-width: 60ch; }
+.corte-fora .corte-rotulo { color: var(--texto-2); border-color: var(--texto-3); }
+/* Só a cauda do histórico foi carregada: aviso, não alarme. */
+.corte-inicio .corte-rotulo { color: var(--texto-3); border-color: var(--borda); }
+
+/* Veio de um terminal, na mesma sessão. Fica visível que não passou por aqui, mas sem
+   virar alarme: é conversa legítima, só não foi digitada nesta tela. */
+.de-fora {
+  border-left: 2px dashed var(--texto-3);
+  padding-left: 12px;
+  opacity: 0.86;
+}
+.bolha-eu.de-fora { border-left: 0; border-right: 2px dashed var(--texto-3); padding-right: 12px; }
+
+.bolha-erro {
+  align-self: center; max-width: 76%;
+  padding: 8px 14px; border-radius: var(--raio);
+  border: 1px solid var(--perigo); color: var(--perigo); font-size: 13px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ── Ferramenta: bastidor ────────────────────────────────────────────── */
+.ferramenta { align-self: stretch; max-width: 100%; font-size: 13.5px; animation: entrar 0.18s ease-out; }
+.ferramenta summary {
+  cursor: pointer; list-style: none; color: var(--texto-2);
+  padding: 6px 11px; border: 1px solid var(--borda); border-radius: var(--raio);
+  background: var(--fundo-2); display: flex; align-items: center; gap: 9px;
+}
+.ferramenta summary::-webkit-details-marker { display: none; }
+.ferramenta summary:hover { border-color: var(--texto-3); }
+.ferramenta[open] summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.fer-icone {
+  flex: none; width: 18px; text-align: center;
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+}
+.fer-nome { flex: none; font-weight: 600; color: var(--texto); }
+.fer-alvo {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 12.5px; color: var(--texto-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fer-estado { flex: none; font-size: 12px; color: var(--texto-3); transition: color 240ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .fer-estado { transition: none; }
+}
+.ferramenta[data-estado="feita"] .fer-estado { color: var(--ok); }
+.ferramenta[data-estado="erro"] .fer-estado { color: var(--perigo); }
+.ferramenta[data-estado="erro"] summary { border-color: var(--perigo); }
+.ferramenta pre {
+  margin: 0; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: 12.5px; color: var(--texto-2);
+  background: var(--fundo-2); border: 1px solid var(--borda); border-top: 0;
+  border-radius: 0 0 var(--raio) var(--raio); max-height: 340px;
+}
+
+/* ── Ferramentas agrupadas ───────────────────────────────────────────── */
+.grupo-ferramentas { align-self: stretch; max-width: 100%; font-size: 13.5px; animation: entrar 0.18s ease-out; }
+/* Mesma casca do `.ferramenta summary` (estilo.css:1169-1173), escrita por extenso e não
+   agrupada por vírgula com ele: a casca do passo MUDA nesta entrega (perde borda e fundo), e
+   um seletor compartilhado faria as duas mudarem juntas. Declarações espelhadas de propósito. */
+.grupo-resumo {
+  cursor: pointer; list-style: none; color: var(--texto-2);
+  padding: 6px 11px; border: 1px solid var(--borda); border-radius: var(--raio);
+  background: var(--fundo-2); display: flex; align-items: center; gap: 9px;
+}
+.grupo-resumo::-webkit-details-marker { display: none; }
+.grupo-resumo:hover { border-color: var(--texto-3); }
+.grupo-ferramentas[open] .grupo-resumo { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.grupo-conta  { flex: none; font-weight: 600; color: var(--texto); }
+.grupo-tipos  { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12.5px;
+                color: var(--texto-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grupo-tempo  { flex: none; font-size: 12px; color: var(--texto-3); font-variant-numeric: tabular-nums; }
+.grupo-estado { flex: none; font-size: 12px; color: var(--texto-3); }
+.grupo-ferramentas[data-grupo-estado="feita"] .grupo-estado { color: var(--ok); }
+.grupo-ferramentas[data-grupo-estado="erro"]  .grupo-estado { color: var(--perigo); }
+/* `parada` fica no cinza do repouso (que já é a cor base do .grupo-estado): não é sucesso nem
+   falha, é turno que morreu no meio. Declarada mesmo assim, para o valor não passar despercebido
+   por quem lê o CSS procurando os estados possíveis. */
+.grupo-ferramentas[data-grupo-estado="parada"] .grupo-estado { color: var(--texto-3); }
+
+/* O fio vertical que liga os passos, e o passo sem borda própria. */
+.grupo-passos {
+  border: 1px solid var(--borda); border-top: 0;
+  border-radius: 0 0 var(--raio) var(--raio);
+  background: var(--fundo-2);
+  padding: 6px 10px 6px 0; display: flex; flex-direction: column; gap: 2px;
+}
+/* O fio vertical que liga os passos. Recuo de 17px = os 11px de padding do resumo + metade
+   dos 18px do `.fer-icone` (estilo.css:1177-1180): o fio nasce sob a coluna dos ícones. */
+.grupo-passos { border-left-width: 1px; }
+.ferramenta.passo { margin-left: 17px; border-left: 1px solid var(--borda); padding-left: 8px; }
+.ferramenta.passo:last-child { border-left-color: transparent; }
+.ferramenta.passo summary { border: 0; background: none; padding: 4px 6px; border-radius: var(--raio); }
+.ferramenta.passo summary:hover { background: var(--fundo-2); border-color: transparent; }
+.ferramenta.passo[open] summary { border-radius: var(--raio); }
+.ferramenta.passo { animation: none; }
+
+.trabalhando { align-self: flex-start; display: flex; align-items: center; gap: 8px; color: var(--texto-2); font-size: 13px; padding: 4px 2px; }
+.ponto { width: 6px; height: 6px; border-radius: 50%; background: var(--texto-2); animation: pulsar 1.2s infinite; }
+.ponto:nth-child(2) { animation-delay: 0.15s; }
+.ponto:nth-child(3) { animation-delay: 0.3s; }
+@keyframes pulsar { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ponto { animation: none; opacity: 0.6; } }
+
+/* ── /status do Codex: bloco nativo, sem turno de modelo ─────────────────
+   Mesma casca do `.grupo-ferramentas`/`.ferramenta` acima (details empilhados, resumo com
+   summary flex), escrita à parte porque este bloco é ÚNICO por conversa — não some quando
+   fecha, os itens se acumulam por sessão (spec 2026-09-08-resposta-status-codex-design.md).
+   Escopado ao próprio bloco: nenhuma regra daqui sai para o resto da fita. */
+.status-codex { align-self: stretch; max-width: 100%; font-size: 13.5px; animation: entrar 0.18s ease-out; }
+.status-codex-titulo { font-weight: 600; color: var(--texto-2); margin-bottom: 6px; }
+.status-codex-item {
+  border: 1px solid var(--borda); border-radius: var(--raio);
+  background: var(--fundo-2); margin-bottom: 8px; overflow: hidden;
+}
+.status-codex-item summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 8px 11px; color: var(--texto-2); font-family: var(--mono); font-size: 12.5px;
+}
+.status-codex-item summary::-webkit-details-marker { display: none; }
+.status-codex-item summary > span { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: normal; line-height: 1.5; }
+/* O texto é literal (textContent, nunca innerHTML/markdown — o CLI não é o assistente
+   falando) e rola por conta própria: `pre` sem `white-space: pre-wrap` para o conteúdo do
+   terminal não espremer, `overflow-x: auto` para rolar DENTRO do bloco, nunca da página
+   (mesma disciplina de `.tabela-rolagem`/`.bloco-codigo pre`). */
+.status-codex-texto {
+  margin: 0; padding: 10px 12px; overflow-x: auto; overflow-y: auto; overscroll-behavior-x: contain;
+  font-family: var(--mono); font-size: 12.5px; color: var(--texto); white-space: pre;
+  border-top: 1px solid var(--borda); max-height: 340px;
+}
+.status-codex-espera, .status-codex-erro {
+  padding: 8px 11px; font-size: 13px; color: var(--texto-3);
+  border: 1px solid var(--borda); border-radius: var(--raio); background: var(--fundo-2);
+  margin-bottom: 8px;
+}
+.status-codex-erro { color: var(--perigo); border-color: var(--perigo); }
+/* Chip pequeno, como `.copiar-link` — NÃO `.copiar` (aquele é `position: absolute`, que
+   arrancaria o botão do fluxo do `summary` flex e o jogaria por cima do rótulo). */
+.status-codex-copiar {
+  flex: none; margin-left: auto; padding: 2px 7px; line-height: 1.5;
+  font-family: var(--mono); font-size: 10.5px; color: var(--texto-3);
+  background: var(--fundo-3); border: 1px solid var(--borda); border-radius: 6px;
+}
+.status-codex-copiar:hover { color: var(--texto); border-color: var(--texto-3); }
+.status-codex-copiar[data-feito] { color: var(--ok); border-color: var(--ok); }
+
+/* ── Envio ───────────────────────────────────────────────────────────── */
+/* Caixa de envio por painel (2026-09-09, D42): o `.envio` mudou de casa — de faixa 2 do
+   `.chat` para faixa 3 do `.painel` (`.chat-topo` = 1, `.mensagens` = 2, `.envio` = 3). */
+.envio { border-top: 1px solid var(--borda); padding: 12px 24px 16px; background: var(--fundo-2); grid-row: 3; }
+/* Com N painéis lado a lado, os 24px de cada lado saem caros: num painel de 320px (a largura
+   mínima, onde a faixa começa a rolar) eles comem 48px dos 320, e o que sobra para o textarea
+   depois do 📎, do Enviar e dos dois gaps são ~140px — estreito demais para o placeholder caber
+   numa linha. Ele quebrava em duas dentro de um textarea de `min-height: 44px`, e a segunda
+   linha saía CORTADA AO MEIO, com as letras vazando pela borda de baixo.
+   Achado no PNG de 6 painéis, não no gate: o DOM de mentira não faz layout, e "o placeholder
+   está lá" passa verde numa caixa que o mostra pela metade (a mesma lição do print de 08/09).
+   `:has()` porque a condição é "há mais de um painel", e o arquivo já usa exatamente este
+   seletor para o título (`.paineis:has(.painel + .painel) .chat-nome h1`). Com UM painel nada
+   muda — e o celular, onde `paineis` nunca passa de 1, não é tocado. */
+.paineis:has(.painel + .painel) .envio { padding-left: 12px; padding-right: 12px; }
+.envio-area { max-width: 1000px; margin: 0 auto; position: relative; }
+.envio-caixa { display: flex; gap: 10px; align-items: flex-end; }
+.envio textarea {
+  flex: 1; resize: none; font: inherit; padding: 11px 14px;
+  background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--borda); border-radius: var(--raio);
+  max-height: 200px; min-height: 44px;
+}
+.envio textarea::placeholder { color: var(--texto-3); }
+.envio textarea:focus { border-color: var(--accent); outline: none; }
+.dica { margin: 6px 2px 0; font-size: 12px; color: var(--texto-3); }
+
+/* Anexos aguardando envio: ficam acima da caixa até o turno sair. */
+.anexos { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.anexo {
+  display: flex; align-items: center; gap: 7px; max-width: 260px;
+  background: var(--fundo-3); border: 1px solid var(--borda); border-radius: var(--raio);
+  padding: 5px 8px; font-size: 12.5px;
+}
+.anexo img { width: 26px; height: 26px; object-fit: cover; border-radius: 4px; flex: none; }
+.anexo-nome { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anexo-tira { background: transparent; border: 0; padding: 0 2px; color: var(--texto-3); line-height: 1; }
+.anexo-tira:hover { color: var(--perigo); }
+.anexo[data-estado="subindo"] { opacity: 0.6; }
+.anexo[data-estado="erro"] { border-color: var(--perigo); color: var(--perigo); }
+/* Arrastar arquivo por cima da conversa. Split view, fase 3: a moldura é do PAINEL debaixo
+   do cursor, não do `.chat` inteiro — com N painéis, só o alvo do solto precisa acender. */
+.painel[data-arrasto] { outline: 2px dashed var(--accent); outline-offset: -8px; }
+.dica kbd {
+  font-family: var(--mono); font-size: 10.5px;
+  border: 1px solid var(--borda); border-radius: 4px; padding: 0 4px; background: var(--fundo-3);
+}
+
+/* ── Paleta de comandos e skills ─────────────────────────────────────── */
+.paleta {
+  position: absolute; bottom: calc(100% + 8px); left: 0; right: 0;
+  max-height: 46vh; overflow-y: auto;
+  background: var(--fundo); border: 1px solid var(--borda); border-radius: var(--raio);
+  box-shadow: var(--sombra); padding: 5px; z-index: 20;
+}
+.paleta-item {
+  display: block; width: 100%; text-align: left; background: transparent;
+  border: 1px solid transparent; padding: 7px 10px; min-width: 0;
+}
+.paleta-item[aria-selected="true"] { background: var(--accent-suave); border-color: var(--accent); }
+.paleta-nome { display: flex; align-items: baseline; gap: 8px; }
+.paleta-nome b { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+.paleta-tag {
+  font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--texto-3); border: 1px solid var(--borda); border-radius: 20px; padding: 0 6px;
+}
+.paleta-item[data-origem="projeto"] .paleta-tag { color: var(--accent); border-color: var(--accent); }
+.paleta-desc {
+  font-size: 13px; color: var(--texto-2); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.paleta-vazia { padding: 10px; font-size: 12.5px; color: var(--texto-3); }
+
+/* ── Vazio e diálogo ─────────────────────────────────────────────────── */
+.vazio {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; color: var(--texto-2); padding: 40px; text-align: center;
+}
+.vazio h2 { margin: 0; font-size: 18px; color: var(--texto); font-weight: 600; }
+.vazio p { margin: 0; max-width: 44ch; font-size: 15px; }
+/* M3 (04/09): o resumo de relance — o que já dá para saber sem abrir nada. `:empty` esconde
+   sem aba nenhuma, sem deixar buraco na composição. */
+.vazio-resumo { font-family: var(--mono); font-size: 12.5px; color: var(--texto-3); }
+.vazio-resumo:empty { display: none; }
+/* Os dois parágrafos de ajuda encolhem: o resumo é a informação de RELANCE, e o texto de
+   ajuda vira nota — a mesma hierarquia que o resto do app já usa (rótulo × nota). Precisa da
+   especificidade de `.vazio p.vazio-nota` para vencer o `.vazio p` de cima. */
+.vazio p.vazio-nota { font-size: 13px; }
+
+dialog {
+  border: 1px solid var(--borda); border-radius: var(--raio);
+  background: var(--fundo-2); color: var(--texto);
+  padding: 0; width: min(460px, 92vw); box-shadow: var(--sombra);
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+/* T2: os nove <dialog> deixam de aparecer secos. `transform: none` no estado aberto (não
+   `scale(1)`) para não deixar bloco de contenção permanente — nenhum <dialog> tem filho
+   `position: fixed`, então não é risco aqui, mas a disciplina do R2 é a mesma em toda a folha. */
+dialog {
+  opacity: 0; transform: scale(0.96);
+  transition: opacity 160ms ease-out, transform 160ms ease-out,
+              overlay 160ms allow-discrete, display 160ms allow-discrete;
+}
+dialog[open] { opacity: 1; transform: none; }
+@starting-style { dialog[open] { opacity: 0; transform: scale(0.96); } }
+dialog::backdrop { opacity: 0; transition: opacity 160ms ease-out, display 160ms allow-discrete,
+                   overlay 160ms allow-discrete; }
+dialog[open]::backdrop { opacity: 1; }
+@starting-style { dialog[open]::backdrop { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  dialog, dialog::backdrop { transition: none; }
+}
+.dialogo-corpo { padding: 20px; }
+.dialogo-corpo h2 { margin: 0 0 4px; font-size: 16px; }
+.dialogo-corpo p { margin: 0 0 16px; font-size: 13px; color: var(--texto-2); }
+.campo { display: block; margin-bottom: 14px; }
+.campo span { display: block; font-size: 12.5px; color: var(--texto-2); margin-bottom: 6px; }
+.campo select, .campo input {
+  width: 100%; font: inherit; padding: 9px 11px;
+  background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--borda); border-radius: var(--raio);
+}
+.dialogo-acoes { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* A seção de atalhos (§3.5.1) cresce o #dialogo-config em seis linhas; sem rolagem ele
+   transborda num celular baixo. Escopado ao painel que cresceu, não em .dialogo-corpo — que
+   é compartilhada pelos NOVE <dialog> da tela, e mexer nela mudaria a rolagem de sete
+   painéis que esta mudança não tem por que tocar. */
+#dialogo-config .dialogo-corpo { max-height: 80vh; overflow-y: auto; }
+/* E o Fechar tem que continuar ALCANÇÁVEL. `.dialogo-acoes` mora DENTRO do `.dialogo-corpo`,
+   então a rolagem acima o empurrou para baixo da dobra: no smoke de 1280x800 o botão saía
+   cortado na borda do painel, e só o print mostrou (gate nenhum vê isso). `sticky` o prende
+   no rodapé da área rolável, sem tirá-lo do fluxo nem mexer nos outros sete painéis. */
+#dialogo-config .dialogo-acoes {
+  position: sticky; bottom: 0; padding-top: 10px;
+  background: var(--fundo-2);
+}
+/* E o rodapé grudado cobre a última linha do que rola atrás dele — foi o "Voltar ao padrão"
+   que sumiu do print no primeiro conserto. A folga é a altura dele: reservada aqui, para o
+   botão não ficar escondido em NENHUMA posição de rolagem, não só no fim. */
+#dialogo-config #atalhos-corpo { padding-bottom: 44px; }
+
+/* ── Arquivos: o NONO <dialog> (spec 2026-09-03) ───────────────────────────
+   Três blocos altos num celular baixo: a MESMA receita do #dialogo-config, escopada ao
+   painel novo — corpo rolável e o Fechar grudado no rodapé da área rolável. Nenhuma
+   variável de paleta nova (#29). */
+#dialogo-arquivos .dialogo-corpo { max-height: 80vh; overflow-y: auto; }
+#dialogo-arquivos .dialogo-acoes {
+  position: sticky; bottom: 0; padding-top: 10px;
+  background: var(--fundo-2);
+}
+.arquivos-bloco { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--borda); }
+.arquivos-bloco > summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; }
+.arquivos-bloco > summary::-webkit-details-marker { display: none; }
+.arquivos-bloco > summary::before { content: '▸'; margin-right: 7px; color: var(--accent); }
+.arquivos-bloco[open] > summary::before { content: '▾'; }
+.arquivos-bloco h3 { margin: 0 0 10px; font-size: 13.5px; font-weight: 600; }
+.arquivos-bloco > summary { min-height: 44px; gap: 8px; }
+.arquivos-bloco > summary h3 { flex: 1; margin: 0; }
+.arquivos-recolher { color: var(--texto-2); font-size: 11px; font-weight: 400; }
+.arquivos-upload { border-top: 0; margin-top: 0; padding-top: 0; }
+.arquivos-upload .btn-principal { width: 100%; }
+.arquivo-escolha { position: relative; display: flex; flex-direction: column; gap: 8px; text-align: center; border: 1px dashed var(--texto-2); border-radius: 12px; padding: 22px 12px; margin: 16px 0; cursor: pointer; }
+.arquivo-escolha input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.arquivo-escolha:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.arquivo-escolha small { color: var(--texto-2); overflow-wrap: anywhere; }
+.arquivo-escolha svg { width: 26px; height: 26px; align-self: center; color: var(--accent); }
+.arquivos-bloco .config-nota { display: block; margin: 4px 0 8px; }
+.arquivos-lista { display: flex; flex-direction: column; margin-bottom: 6px; }
+/* Linhas de 40px de toque. A linha QUEBRA em duas quando precisa: nome + tamanho + Mandar
+   na primeira, o estado ("enviando…", "enviado para X", erro) na segunda, inteira. Sem o
+   `flex-wrap`, em 390px o estado e o botão espremiam o nome a uma letra por linha — foi o
+   print 03 do smoke que mostrou. O nome ainda quebra onde precisar (nome de arquivo não tem
+   espaço), mas com 40% de base ele só quebra se for longo de verdade. */
+.arquivos-item {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 40px;
+  padding: 3px 0; border-bottom: 1px solid var(--borda); font-size: 13px;
+}
+.arquivos-item:last-child { border-bottom: 0; }
+.arquivos-item .nome { flex: 1 1 40%; min-width: 0; overflow-wrap: anywhere; }
+.arquivos-item button.nome {
+  background: none; border: 0; padding: 0; min-height: 40px; text-align: left;
+  font: inherit; color: var(--texto); cursor: pointer;
+}
+.arquivos-item .tamanho { flex: none; color: var(--texto-2); font-size: 12px; white-space: nowrap; }
+.arquivos-item .btn { flex: none; margin-left: auto; }
+.arquivos-item .estado { flex: 1 1 100%; order: 10; color: var(--texto-2); font-size: 12px; overflow-wrap: anywhere; }
+.arquivos-item .estado:empty { display: none; }
+.arquivos-vazio { color: var(--texto-2); font-size: 13px; padding: 8px 0; }
+.arquivos-navega { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.arquivos-navega select {
+  flex: 0 0 auto; font: inherit; padding: 6px 8px;
+  background: var(--fundo); color: var(--texto);
+  border: 1px solid var(--borda); border-radius: var(--raio);
+}
+.arquivos-caminho { flex: 1; min-width: 0; font-size: 12px; color: var(--texto-2); overflow-wrap: anywhere; }
+#dialogo-arquivos progress { width: 100%; height: 8px; margin: 2px 0 6px; accent-color: var(--accent); }
+.atalhos { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--borda); }
+.atalho-linha {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 0; font-size: 13px;
+}
+.atalho-tecla {
+  font: inherit; font-family: var(--mono, ui-monospace, monospace);
+  padding: 3px 8px; min-width: 92px;
+  border: 1px solid var(--borda); border-radius: var(--raio);
+  background: var(--fundo); color: var(--texto); cursor: pointer;
+}
+.atalho-tecla[aria-pressed="true"] { border-color: var(--texto-2); }
+/* O botão herda a aparência de #btn-avisos/#btn-plano (.lateral-acao), que já moram no
+   mesmo painel — copiar as declarações criaria um segundo lugar para manter (#40). */
+.atalhos-abrir { margin-top: 10px; }
+
+/* ── Celular ─────────────────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  /* No celular a lista é uma TELA, não uma coluna: o botão de recolher não faz sentido. */
+  .app, .app[data-lateral="fechada"] { grid-template-columns: 1fr; }
+  .lateral { display: none; }
+  .app[data-vista="lista"] .lateral { display: flex; }
+  /* T1: a troca lista→conversa deixa de ser seca. `data-vista` nasce "lista" no HTML e só
+     vira "chat" dentro de abrirAba() — nunca no boot —, então dá para animar em CSS puro
+     sem pisca ao carregar a página. */
+  .chat {
+    transform: none;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), display 200ms allow-discrete;
+  }
+  .app[data-vista="lista"] .chat { display: none; transform: translateX(100%); }
+  @starting-style { .app[data-vista="chat"] .chat { transform: translateX(100%); } }
+  /* Com a pergunta aberta a conversa PAROU e não há transição a fazer: a tela da pane cobre
+     a viewport e o `transform` do ancestral a tiraria de lá pelos 200ms da animação (R2). */
+  .chat:has(.pergunta:not([hidden])) { transition: none; transform: none; }
+  .voltar { display: block; }
+  /* No celular a lista é uma tela inteira e quem volta para ela é o ←. O recuo de 56px do
+     desktop é desfeito logo abaixo, junto do resto do `.chat-topo` do telefone. */
+  .abrir-lateral { display: none; }
+  /* O CELULAR é o caso principal do medidor: é lá que não havia como ver quanto da
+     janela ainda cabe. Ele encolhe, mas NÃO some — o que sai é só o nome do modelo, que é o
+     pedaço de que menos se precisa de relance. Assim o topo continua numa linha só e não
+     rouba altura da conversa. */
+  .medidor-modelo { display: none; }
+  /* Desde 02/09 o topo do celular tem DUAS linhas: linha 1 = identidade e saída (←, título
+     com o caminho inteiro, ✕); linha 2 = estado (medidor, faixa de jobs, Parar). Numa linha
+     só, a identidade sobrava com ~80px e o caminho virava `~/projeto…`. A quebra é o
+     `::after` de `flex-basis: 100%` logo abaixo — o truque de quebra em flexbox que não
+     pede elemento novo no HTML —, e a ordem vem de `order`. O `↻` sai da tela: o card
+     enumera a linha 1 sem ele, e o caminho de recarga no celular é o gesto na fita.
+
+     `row-gap: 0` + `margin-top` nos três da linha 2, e não o `gap` de antes: com `row-gap`
+     o `::after` sozinho já cobraria a calha e o topo ganharia 8px de altura MESMO sem
+     medidor, faixa e Parar (o estado de uma aba sem agente). Com margem, quem não está na
+     tela não cobra nada — `[hidden]` é `display: none !important` e não ocupa margem.
+
+     A regra do `.medidor` abaixo recebe SÓ declarações, sem comentário dentro das chaves:
+     o gate lê este bloco COM comentários para provar que o medidor não some no celular, e
+     as palavras erradas dentro das chaves dariam falso vermelho. */
+  .medidor { order: 4; margin-top: 6px; padding: 4px 8px; gap: 6px; font-size: 12px; }
+  .medidor-barra { width: 26px; height: 4px; }
+  .chat-topo { padding: 10px 12px; column-gap: 8px; row-gap: 0; }
+  .voltar { order: 0; }
+  .chat-identidade { order: 1; }
+  .fechar-aba { order: 2; }
+  .chat-topo::after { content: ''; order: 3; flex-basis: 100%; height: 0; }
+  /* Sem o `flex-basis: 100%` do desktop: lá ela toma uma linha própria; aqui ela divide a
+     linha 2 com o medidor e o Parar, e é quem encolhe quando aperta. A base é `0`, e não
+     `auto`, de propósito (medido no smoke de 03/09): o topo é `flex-wrap: wrap`, e quem
+     decide se um item cabe na linha é o tamanho HIPOTÉTICO dele — com `auto` esse tamanho
+     é o texto inteiro da etapa, maior que a tela, e a faixa quebrava sozinha para uma
+     terceira linha (e o Parar para uma quarta). Com base `0` ela entra na linha do medidor
+     e só então cresce até o que sobra. */
+  .faixa-jobs { order: 5; flex: 1 1 0; min-width: 0; margin-top: 6px; flex-wrap: nowrap; }
+  /* A etapa deixa de tomar uma linha só para ela: na linha 2 do celular isso seria uma
+     TERCEIRA linha de cabeçalho. Vira o segundo pedaço da mesma linha, com ellipsis nos
+     dois — o `nowrap` da faixa acima é o que a impede de quebrar (mesmo motivo da base
+     `0`: o tamanho hipotético dela é o texto inteiro), e o `min-width: 0` de cada um é o que
+     autoriza os dois a encolher. */
+  .faixa-etapa { flex: 1 1 auto; min-width: 0; padding-left: 0; }
+  .faixa-titulos { flex: 0 1 auto; }
+  .btn-parar { order: 6; margin-top: 6px; }
+  /* O ↻ dá lugar ao gesto no celular. Regra PRÓPRIA, nunca agrupada por vírgula com o
+     `.medidor` (ver o comentário acima dele). O botão continua no DOM: `display: none` não
+     tira nó, então `recarregar()` continua tendo alvo para o `data-recarregando` e o gate
+     de 20/08 continua achando o botão. No desktop ele é o único caminho e fica. */
+  .btn-recarregar-conversa { display: none; }
+  /* Um painel só no celular, sempre: `.painel` não encolhe abaixo da largura da tela nem
+     mostra borda de foco (essas só existem com N painéis, split é desktop-only). Os dois
+     seletores na MESMA regra de propósito: `.painel` sozinho tem especificidade (0,1,0) e
+     PERDE para `.painel[data-foco="1"]` (0,2,0) — a borda de foco (fase 3) apareceria no
+     celular, que é mudança visual onde a promessa aqui é zero. */
+  .paineis { overflow-x: hidden; }
+  .painel, .painel[data-foco="1"] { min-width: 0; border: 0; }
+  /* Split é desktop-only (Fase 0 do card): o ⊟ (tira o painel) e o ⧉ (abre ao lado) não têm
+     o que fazer no celular, onde só existe um painel por vez. */
+  .fechar-painel, .abrir-ao-lado { display: none; }
+  /* A lista vai até embaixo: era o rodapé que reservava a faixa segura do celular, e ele
+     saiu com a mudança de 24/08. Sem esta reserva a última aba fica atrás da barra do
+     navegador / do indicador de home do iPhone — visível, mas fora do alcance do dedo. */
+  .conversas { padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+  .bolha-eu, .bolha-erro { max-width: 88%; }
+  .fala { max-width: 96%; }
+  .mensagens { padding: 16px 14px 8px; }
+  .envio { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
+  /* No celular a dica é ruído: rouba altura da conversa e o teclado já cobre metade da
+     tela. Quem está no telefone já sabe que Enter envia. */
+  .dica { display: none; }
+  .paleta { max-height: 40vh; }
+  /* A TELA DA PANE é o pedaço mais apertado do celular, e até 24/08 este bloco não tocava
+     em nada dela: o telefone recebia o CSS de desktop inteiro para ler um framebuffer de
+     168 a 211 colunas numa viewport de ~390px.
+
+     Desde 25/08 ela TOMA A TELA INTEIRA (decidido depois do primeiro smoke no
+     celular). O motivo é o mesmo de sempre, levado às últimas: enquanto a pergunta está
+     aberta o terminal PAROU e não há nada a fazer na conversa — a caixa de texto está
+     travada de propósito e a fita atrás é só histórico. Dividir a tela com quem não aceita
+     interação era dar metade do telefone para um leitor de 168 colunas.
+
+     `position: fixed` e não um `<dialog>`: o elemento já existe, já é mostrado e escondido
+     pelo `hidden` do app.js, e virar dialog trocaria o dono do foco e do Esc — que aqui é
+     uma TECLA ENVIADA À PANE, não um fechar de modal.
+
+     O fundo precisa ser OPACO agora que cobre tudo, e `--perigo-suave` é rgba nos dez
+     temas. Os dois planos empilhados resolvem sem inventar token: o tom de alerta por
+     cima, o fundo do tema por baixo. */
+  .pergunta {
+    position: fixed; inset: 0; z-index: 30;
+    margin: 0; border-radius: 0; border-width: 0;
+    display: flex; flex-direction: column;
+    padding: calc(10px + env(safe-area-inset-top)) 12px calc(10px + env(safe-area-inset-bottom));
+    background: linear-gradient(var(--perigo-suave), var(--perigo-suave)), var(--fundo);
+  }
+  .pergunta-tela {
+    font-size: 13px;
+    /* Na tela inteira quem manda na altura é o que sobra, não uma fração da viewport: o
+       `42vh` do desktop deixaria metade da tela vazia justo depois de tomá-la toda. */
+    flex: 1; min-height: 0; max-height: none;
+    /* Chegar à borda lateral e continuar arrastando não pode entregar a vez ao gesto de
+       voltar do navegador nem à rolagem de trás — mesmo motivo de `.tabela-rolagem`. */
+    overscroll-behavior-x: contain;
+    /* A dica de que a linha CONTINUA para o lado. No celular a barra de rolagem só existe
+       durante o gesto, então quem não sabe que dá para arrastar lê metade da tela e acha
+       que é tudo.
+
+       Por que `mask-image` e não o truque clássico (degradê no `background` com
+       `background-attachment: local`, que tem a graça de aparecer só quando há conteúdo do
+       lado): aquele exige chumbar a cor do fundo, e `--perigo-suave` é rgba
+       semitransparente nos DEZ temas — a faixa sairia opaca e errada em todos. Máscara não
+       pinta cor nenhuma, então vale em qualquer tema.
+
+       E só na borda DIREITA. A primeira versão desvanecia os dois lados e o smoke de
+       celular mostrou o preço: o `❯` que marca a opção selecionada no menu do CLI mora na
+       primeira coluna, e apagá-lo é apagar exatamente o que ele precisa ler. À esquerda
+       está o começo da linha; é para a DIREITA que o conteúdo continua. */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+  }
+}
+
+/* ── "Para onde vão meus tokens" — public/uso.html ──────────────────────
+   Tela PRÓPRIA (P1), aberta em aba nova a partir do painel de Configuração. Todo o bloco
+   abaixo é sobre as MESMAS variáveis de tema do resto do arquivo — nenhuma cor literal
+   nova, para os dez temas continuarem certos sem precisar tocar em nenhum deles (e para
+   passar na máquina de contraste do gate). */
+
+/* `body` do resto do arquivo tem `overflow: hidden` — necessário para o layout de grade da
+   conversa (`.app`), que rola por dentro em `.fita`. Esta página não tem uma área rolável
+   própria, então É o container que precisa rolar. */
+.uso-app {
+  height: 100%;
+  overflow-y: auto;
+  padding: calc(14px + env(safe-area-inset-top)) 16px calc(14px + env(safe-area-inset-bottom));
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* ── "Para onde vão meus tokens" dentro do app — o DÉCIMO <dialog> (spec 2026-09-04) ────
+   `.uso-app` era desenhada para ser O CORPO DA PÁGINA (`height: 100%`); dentro do diálogo o
+   pai não tem altura resolvida — sem isto, ou a tela colapsa, ou estoura a viewport e o
+   Fechar fica inalcançável. Mesmo molde de `#dialogo-config`/`#dialogo-arquivos` (R9): corpo
+   rolável, ações fora da rolagem. Aqui `.dialogo-acoes` não precisa de `sticky` — ela já é
+   IRMÃ de `.uso-app`, não filha, então nunca rola junto. */
+#dialogo-uso { width: min(720px, 92vw); max-height: 90dvh; }
+#dialogo-uso .uso-app { height: auto; max-height: 85vh; overflow-y: auto; }
+#dialogo-uso .dialogo-acoes { padding: 10px 16px; border-top: 1px solid var(--borda); }
+/* `dvh`, não `vh`: no celular a barra do navegador entra e sai, e `vh` deixaria o rodapé
+   embaixo dela. Tela cheia até 760px — o mesmo breakpoint que o resto da folha já usa. */
+@media (max-width: 760px) {
+  #dialogo-uso[open] {
+    width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;
+    margin: 0; border: 0; border-radius: 0;
+    /* Em tela cheia o corpo tem que ESTICAR até o Fechar. Sem isto o `max-height: 85vh` da
+       regra acima continua valendo dentro de um diálogo de 100dvh, e sobra uma faixa morta
+       de ~10vh no fim — visível, e justamente no aparelho que motivou a tela cheia. */
+    display: flex; flex-direction: column;
+  }
+  #dialogo-uso .uso-app { flex: 1 1 auto; max-height: none; min-height: 0; }
+  #dialogo-uso .dialogo-acoes { flex: none; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+}
+
+.uso-topo { margin-bottom: 16px; }
+.uso-topo h2 { font-size: 19px; margin: 0 0 10px; }
+.uso-periodo { display: flex; gap: 8px; }
+.uso-periodo .btn {
+  background: var(--fundo-2); border: 1px solid var(--borda); border-radius: var(--raio);
+  padding: 6px 14px; font-size: 13px;
+}
+.uso-periodo .btn[aria-pressed="true"] {
+  background: var(--accent); color: var(--sobre-accent); border-color: var(--accent);
+}
+.uso-resumo { margin: 10px 0 0; font-size: 12.5px; color: var(--texto-2); }
+
+#uso-lista { display: flex; flex-direction: column; gap: 10px; }
+.uso-vazio { color: var(--texto-2); font-size: 13px; padding: 10px 0; }
+
+.uso-item {
+  background: var(--fundo-2); border: 1px solid var(--borda); border-radius: var(--raio);
+  padding: 10px 12px;
+}
+/* `flex-wrap` para 390px — mesmo conserto da lista de arquivos em 04/09 (commit 56d348a):
+   sem ele, o total e a % espremiam o nome do projeto numa fração da largura. */
+.uso-item-topo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.uso-item-nome { flex: 1 1 55%; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.uso-item-direita { flex: none; margin-left: auto; display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
+.uso-item-pct { color: var(--texto-2); font-size: 12.5px; }
+
+/* P3 do card: o `cache` fica visualmente SEPARADO de entrada/saída, nunca somado junto —
+   95% do volume medido é cache_read, e misturar esconde quem gastou de verdade. */
+.uso-item-numeros {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px;
+  font-size: 12px; color: var(--texto-2); font-variant-numeric: tabular-nums;
+}
+
+.uso-item-barra { height: 6px; border-radius: 3px; background: var(--fundo-3); overflow: hidden; margin-top: 8px; }
+.uso-item-barra i { display: block; height: 100%; background: var(--accent); }
+
+.uso-item-modelos { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--texto-3); }
+
+.uso-origens { margin-top: 8px; }
+.uso-origens summary { font-size: 12.5px; color: var(--texto-2); cursor: pointer; }
+.uso-origem {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px;
+  padding: 4px 0 4px 10px; font-size: 12.5px; border-left: 2px solid var(--borda);
+  margin-top: 4px; font-variant-numeric: tabular-nums;
+}
+.uso-origem-nome { overflow-wrap: anywhere; color: var(--texto-2); }
+.uso-origem-total { flex: none; }
+
+.uso-avisos { margin-top: 4px; }
+.uso-aviso-linha {
+  font-size: 12px; color: var(--espera); margin: 4px 0;
+}
+.uso-rodape:empty { display: none; }
+
+/* ── custo estimado + "Por modelo" / "Por dia" (card `tokens-mais-detalhe`) ──
+   Cor SÓ por variável (armadilha #29: cor "parecida" escrita à mão é bug que teste de string
+   não pega). As barras destas seções reusam `.uso-item-barra` acima — reuso seguro, porque
+   essa classe só é buscada DENTRO de um `.uso-item` pelo smoke, nunca globalmente. */
+.uso-custo:empty, .uso-secao:empty { display: none; }
+.uso-custo { margin-bottom: 16px; }
+.uso-custo-caixa {
+  border: 1px solid var(--borda); border-radius: 10px;
+  padding: 12px 14px; background: var(--fundo-2);
+}
+.uso-custo-rotulo { font-size: 12.5px; color: var(--texto-2); }
+.uso-custo-valor {
+  display: block; margin-top: 2px;
+  font-size: 26px; font-variant-numeric: tabular-nums;
+}
+/* A linha da estimativa é o que impede o número de mentir — ela NÃO encolhe até sumir nem
+   vira ellipsis: quebra em quantas linhas precisar, inclusive nos 390px do celular. */
+.uso-custo-nota { margin: 6px 0 0; font-size: 12px; color: var(--texto-2); line-height: 1.45; }
+.uso-custo-aviso { margin: 6px 0 0; font-size: 12px; color: var(--espera); line-height: 1.45; }
+
+.uso-secao { margin-bottom: 18px; }
+.uso-secao h2 { font-size: 14px; margin: 0 0 8px; color: var(--texto-2); font-weight: 600; }
+.uso-linha { padding: 8px 0; border-bottom: 1px solid var(--borda); }
+.uso-linha:last-child { border-bottom: 0; }
+.uso-linha-topo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+/* Base `auto` e não `50%`: com `50%` o item mais caro da lista (nome longo + número grande +
+   valor em dólar) não cabia nos 390px e o NOME saltava para uma linha só dele, desalinhado de
+   todas as linhas abaixo — justo na linha que mais importa. Com base `auto` + `min-width: 0`
+   o nome encolhe e a linha fecha; nome comprido demais quebra dentro da própria coluna. */
+.uso-linha-nome {
+  flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: 12.5px;
+}
+.uso-linha-valor {
+  flex: none; margin-left: auto; display: flex; align-items: baseline; gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+/* Gêmea de `.uso-item-numeros`, com classe PRÓPRIA de propósito (R1: aquela é contada por um
+   seletor global no smoke e não pode existir fora do ranking). Um pontinho menor, porque aqui
+   é detalhe de uma linha de lista, não de um cartão. */
+.uso-linha-numeros {
+  display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 3px;
+  font-size: 11.5px; color: var(--texto-3); font-variant-numeric: tabular-nums;
+}
+.uso-linha-custo { color: var(--texto-2); font-size: 12.5px; }
+.uso-linha-sem-preco { color: var(--texto-3); font-size: 11.5px; font-style: italic; }
+.uso-item-custo { color: var(--texto-2); font-size: 12.5px; }
+@media (max-width: 760px) and (prefers-reduced-motion: reduce) {
+  .chat { transition: none; }
+}
