@@ -111,6 +111,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
   process.env.COCKPIT_CERT_DIR = '/dev/null';  // senão sobe TLS e o teste fala HTTP
   process.env.COCKPIT_TOKEN = '';
   process.env.COCKPIT_JOBS_DIR = path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`); // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+  process.env.COCKPIT_VIGIA_MS = '0'; // sem HOME falso nem COCKPIT_TMUX_SOCKET aqui — observaria a sessão main de verdade
   require(path.join(__dirname, '..', 'server.js'));
   await espera(400);
 

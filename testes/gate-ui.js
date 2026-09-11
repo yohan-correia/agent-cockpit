@@ -5300,6 +5300,65 @@ async function parteA() {
   tudoOk &= ok(porIdDe(clienteA17, 'btn-avisos').hidden === true,
     'A17: indisponivel esconde a linha, como hoje');
 
+  // ── A17b: a assinatura ÓRFÃ — o navegador tem, o COCKPIT não ────────────────────────
+  //
+  // O defeito (medido em 11/09/2026 no desktop do dono): `estadoDosAvisos` dizia "ligado"
+  // só porque `pushManager.getSubscription()` devolvia algo. O quarto passo do fluxo — o
+  // POST que registra a assinatura aqui — pode ter falhado numa tentativa antiga, e aí o
+  // botão pintava "ligadas" num aparelho que o servidor não conhece. Pior: o clique virava
+  // TESTE, o teste saía para os aparelhos da LISTA DO SERVIDOR, e a notificação aparecia no
+  // computador ao lado ("enviado para 1 aparelho" — o outro). O aparelho órfão não tinha
+  // como se inscrever, porque o botão não oferecia mais esse caminho.
+  //
+  // Estes quatro casos são AO VIVO: `serviceWorker`/`PushManager`/`Notification` entram como
+  // stub no contexto, que é a única parte que o DOM de mentira não modela (ver A17).
+  const comAvisos = ({ conhecida = true, temAssinatura = true, consultaQuebra = false } = {}) => {
+    const rotas = [];
+    const cliente = carregarCliente({
+      guardado: memoria(),
+      aoBuscar: (rota) => {
+        rotas.push(String(rota));
+        if (String(rota) === 'api/push/inscricao/consulta') {
+          return consultaQuebra ? { __status: 500, erro: 'sem rede' } : { conhecida, inscritos: 1 };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    cliente.Notification = { permission: 'granted' };
+    cliente.window.Notification = cliente.Notification;
+    cliente.window.PushManager = function PushManager() {};
+    cliente.navigator.serviceWorker = {
+      getRegistration: async () => ({
+        active: true,
+        pushManager: { getSubscription: async () => (temAssinatura ? { endpoint: 'https://fcm.exemplo/abc' } : null) },
+      }),
+    };
+    return { cliente, rotas };
+  };
+
+  const orfa = comAvisos({ conhecida: false });
+  await orfa.cliente.pintarBotaoAvisos();
+  tudoOk &= ok(porIdDe(orfa.cliente, 'btn-avisos').dataset.estadoAviso === 'desligado',
+    'A17b: assinatura que o cockpit NÃO conhece é "desligado" — o clique volta a inscrever, não a testar');
+  tudoOk &= ok(orfa.rotas.includes('api/push/inscricao/consulta'),
+    'A17b: e a pergunta vai pelo POST com o endpoint no corpo (ele é credencial, não vai na query)');
+
+  const registrada = comAvisos({ conhecida: true });
+  await registrada.cliente.pintarBotaoAvisos();
+  tudoOk &= ok(porIdDe(registrada.cliente, 'btn-avisos').dataset.estadoAviso === 'ligado',
+    'A17b: assinatura que o cockpit conhece continua "ligado"');
+
+  const semAssinatura = comAvisos({ temAssinatura: false });
+  await semAssinatura.cliente.pintarBotaoAvisos();
+  tudoOk &= ok(porIdDe(semAssinatura.cliente, 'btn-avisos').dataset.estadoAviso === 'desligado'
+    && !semAssinatura.rotas.includes('api/push/inscricao/consulta'),
+    'A17b: sem assinatura nenhuma, nem pergunta — não há endpoint sobre o que perguntar');
+
+  const semRede = comAvisos({ consultaQuebra: true });
+  await semRede.cliente.pintarBotaoAvisos();
+  tudoOk &= ok(porIdDe(semRede.cliente, 'btn-avisos').dataset.estadoAviso === 'ligado',
+    'A17b: consulta que falha NÃO desliga o que está ligado — degrada para o comportamento de antes');
+
   tudoOk &= ok(dentroDoPainel.includes('id="btn-atalhos-abrir"'), 'A18: a linha de Atalhos usa #btn-atalhos-abrir');
   const recorteAtalhos = (dentroDoPainel.match(/<button class="lateral-acao atalhos-abrir ajuste" id="btn-atalhos-abrir"[\s\S]*?<\/button>/) || [''])[0];
   tudoOk &= ok(recorteAtalhos.length > 0 && !/ajuste-chevron/.test(recorteAtalhos),

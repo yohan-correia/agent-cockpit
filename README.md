@@ -6,6 +6,18 @@ Interface web para conversar com **Claude Code e Codex CLI que rodam em panes tm
 
 O Cockpit roda em **localhost por padrão**. Tailscale, outra VPN ou reverse proxy são opções de acesso remoto. Você adapta a configuração ao seu setup, sem editar o código. É uma ferramenta para um único usuário de confiança, não um serviço multiusuário.
 
+## Como é
+
+![O Cockpit no computador: a lista de abas do tmux à esquerda e a conversa aberta à direita](docs/img/desktop-conversa-pt.png)
+
+No computador, as abas do tmux ficam à esquerda e a conversa à direita. No celular, a mesma sessão — a lista primeiro, a conversa ao tocar nela:
+
+| Abas | Conversa |
+|---|---|
+| <img src="docs/img/celular-abas-pt.png" alt="A lista de abas do tmux no celular" width="300"> | <img src="docs/img/celular-conversa-pt.png" alt="Uma conversa aberta no celular" width="300"> |
+
+> As imagens são geradas por `testes/print-vitrine.js`, contra abas e conversas de exemplo.
+
 ## Por que este projeto existe
 
 Criei este Cockpit para continuar o mesmo trabalho em qualquer aparelho: computador, celular ou tablet. A ideia é acessar os mesmos arquivos e as mesmas sessões, sem precisar reconstruir a conversa, o contexto ou as decisões cada vez que troco de dispositivo.

@@ -14,7 +14,12 @@ if (git(['status', '--porcelain'])) throw new Error('Faça commit das mudanças 
 const roots = new Set(['README.md', 'README.en.md', 'ROADMAP.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'SECURITY.md',
   'CONTRIBUTING.md', 'CHANGELOG.md', 'package.json', '.env.example', '.gitignore', 'server.js']);
 const docs = new Set(['docs/acesso-remoto.md', 'docs/operacao.md', 'docs/arquitetura.md', 'docs/publicacao.md', 'docs/configuracao.md']);
+// `docs/img/` entra por PADRÃO, e não pela lista nominal acima: são as imagens do README, e
+// elas se REGERAM (`testes/print-vitrine.js`) toda vez que a tela muda. Lista nominal de PNG
+// envelheceria a cada leva de print, e a falha seria silenciosa — README publicado com imagem
+// quebrada. O padrão é estreito de propósito: só `.png` de nome simples, nada de subpasta.
 const files = git(['ls-files']).split('\n').filter(file => roots.has(file) || docs.has(file)
+  || /^docs\/img\/[a-z0-9-]+\.png$/.test(file)
   || /^(lib|public|testes|bin|\.github)\//.test(file));
 for (const file of roots) if (!files.includes(file)) throw new Error(`Arquivo obrigatório ausente: ${file}`);
 const denied = /(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,}|sk-(?:ant-)?[A-Za-z0-9_-]{32,}|AKIA[A-Z0-9]{16}|[a-z0-9-]+\.ts\.net|\b100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}\b)/i;

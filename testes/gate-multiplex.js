@@ -80,6 +80,7 @@ async function funcional() {
   process.env.COCKPIT_CERT_DIR = '/dev/null';
   process.env.COCKPIT_TOKEN = '';
   process.env.COCKPIT_JOBS_DIR = path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`); // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+  process.env.COCKPIT_VIGIA_MS = '0'; // sem HOME falso aqui — cinto e suspensório
   require(path.join(__dirname, '..', 'server.js'));
   await espera(400);
 

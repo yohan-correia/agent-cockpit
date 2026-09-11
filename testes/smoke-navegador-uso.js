@@ -160,6 +160,7 @@ async function subirServidor({ home, certDir, usoDir }) {
     HOST: '127.0.0.1', PORT: String(PORTA), HOME: home,
     COCKPIT_CERT_DIR: certDir, COCKPIT_USO_DIR: usoDir, COCKPIT_TOKEN: TOKEN,
     COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+    COCKPIT_VIGIA_MS: '0', // MODO=real usa o HOME de verdade — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
   });
   const processo = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: ambiente, stdio: ['ignore', 'ignore', 'pipe'],

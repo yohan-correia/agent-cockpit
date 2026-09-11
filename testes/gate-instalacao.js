@@ -72,7 +72,9 @@ async function withServer(extra, test) {
     assert.equal((await request(p, '/api/projetos', { Host: 'cockpit.example', Origin: 'https://cockpit.example', Authorization: 'Bearer fixture-token' })).status, 200, 'proxy preservando Host funciona');
     assert.equal((await request(p, '/api/projetos', { Origin: 'https://outro.example', Authorization: 'Bearer fixture-token' })).status, 403);
   });
-  await withServer({ COCKPIT_CONTATO: 'mailto:teste@example.com' }, async p => {
+  // COCKPIT_VIGIA_MS: '0' — a trava do COCKPIT_CONTATO (lib/vigia-abas.js) NÃO segura este
+  // caso: o contato acima é de formato VÁLIDO, então o vigia subiria de verdade sem isto.
+  await withServer({ COCKPIT_CONTATO: 'mailto:teste@example.com', COCKPIT_VIGIA_MS: '0' }, async p => {
     const resposta = await request(p, '/api/push/chave');
     assert.equal(resposta.status, 200);
     assert.ok(JSON.parse(resposta.text).chave);

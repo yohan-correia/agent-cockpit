@@ -334,6 +334,7 @@ function espera(ms) { return new Promise((r) => setTimeout(r, ms)); }
       COCKPIT_BIN_CLAUDE: '/bin/true',
       COCKPIT_CARENCIA_ABA_MS: '600000',
       COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+      COCKPIT_VIGIA_MS: '0', // sem HOME falso aqui — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
     });
     s3 = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
       env: ambiente, stdio: ['ignore', 'ignore', 'pipe'],

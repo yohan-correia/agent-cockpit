@@ -3654,7 +3654,26 @@ async function estadoDosAvisos() {
   if (Notification.permission === 'denied') return 'negado';
   const registro = await navigator.serviceWorker.getRegistration();
   const inscricao = await registro?.pushManager.getSubscription();
-  return inscricao ? 'ligado' : 'desligado';
+  if (!inscricao) return 'desligado';
+  // Ter assinatura no NAVEGADOR não é estar inscrito no COCKPIT. O fluxo tem quatro passos e
+  // o quarto (o POST que registra) pode falhar sozinho — a assinatura fica ÓRFÃ: o navegador
+  // tem, o servidor não. Nesse estado o botão se pintava "ligadas" e o clique virava TESTE,
+  // que sai para os aparelhos da lista do servidor: o dono via "enviado para 1 aparelho" e a
+  // notificação aparecia no computador AO LADO, enquanto este aqui nunca receberia nada — e
+  // não havia como se inscrever, porque o botão não oferecia mais esse caminho.
+  //
+  // A pergunta certa já existia em `/api/push/inscricao/consulta` (server.js:1283), criada
+  // para esta distinção exata; quem a usava era só a tela de diagnóstico (`diagnosticoDeAvisos`).
+  try {
+    const { conhecida } = await api('api/push/inscricao/consulta', {
+      method: 'POST', corpo: { endpoint: inscricao.endpoint },
+    });
+    return conhecida ? 'ligado' : 'desligado';
+  } catch {
+    // Rede fora do ar não pode DESLIGAR o que está ligado: sem resposta, vale o que o
+    // navegador diz, que é exatamente o comportamento de antes desta consulta existir.
+    return 'ligado';
+  }
 }
 
 async function pintarBotaoAvisos() {
@@ -3733,11 +3752,26 @@ async function ligarAvisos() {
       async () => (await api('api/push/chave')).chave);
     const registro = await passoDeAviso(tr('esperar o service worker ficar pronto'),
       () => comLimite(navigator.serviceWorker.ready, 5000, tr('não ficou pronto em 5s')));
-    const inscricao = await passoDeAviso(tr('assinar no PushManager do navegador'),
-      () => registro.pushManager.subscribe({
-        userVisibleOnly: true,             // obrigatório no Chrome; sem isso ele recusa
-        applicationServerKey: b64ParaBytes(chave),
-      }));
+    const assinar = () => registro.pushManager.subscribe({
+      userVisibleOnly: true,             // obrigatório no Chrome; sem isso ele recusa
+      applicationServerKey: b64ParaBytes(chave),
+    });
+    const inscricao = await passoDeAviso(tr('assinar no PushManager do navegador'), async () => {
+      try {
+        // Com a MESMA chave, `subscribe()` devolve a assinatura que já existe — é o que faz
+        // o aparelho de assinatura órfã se registrar aqui sem pedir permissão de novo.
+        return await assinar();
+      } catch (erro) {
+        // `InvalidStateError` é o navegador dizendo "já tenho uma assinatura, com OUTRA
+        // chave VAPID". Acontece em aparelho que assinou antes de um `vapid.json` novo, e
+        // sem isto ele fica preso para sempre: a assinatura velha não serve e não sai
+        // sozinha. Descartar a velha é a única saída, e é seguro — ela não vale mais.
+        if (erro?.name !== 'InvalidStateError') throw erro;
+        const velha = await registro.pushManager.getSubscription();
+        await velha?.unsubscribe();
+        return assinar();
+      }
+    });
     await passoDeAviso(tr('registrar a inscrição no cockpit'),
       () => api('api/push/inscricao', {
         method: 'POST',

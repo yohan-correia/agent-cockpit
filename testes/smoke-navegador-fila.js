@@ -81,6 +81,7 @@ function subirServidor() {
   process.env.COCKPIT_CERT_DIR = '/dev/null';   // senão sobe TLS e o proxy fala HTTP com um servidor HTTPS (#19)
   process.env.COCKPIT_TOKEN = '';
   process.env.COCKPIT_JOBS_DIR = path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`); // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+  process.env.COCKPIT_VIGIA_MS = '0'; // sem HOME falso nem COCKPIT_TMUX_SOCKET aqui — observaria a sessão main de verdade
   require(path.join(RAIZ, 'server.js'));
   // `server.js` não exporta o servidor (`http.createServer(atender).listen(...)` e mais
   // nada volta do `require`) — não há `.close()` a chamar. Quem derruba o listener é o

@@ -27,6 +27,7 @@ const sessoes = require('./lib/sessoes');
 const catalogo = require('./lib/catalogo');
 const limite = require('./lib/limite');
 const avisos = require('./lib/avisos');
+const vigiaAbas = require('./lib/vigia-abas');
 const abas = require('./lib/abas');
 const agentes = require('./lib/agentes');
 const externo = require('./lib/externo');
@@ -1462,6 +1463,13 @@ if (!certificado) {
   semTimeoutDeRequisicao(http.createServer(atender)).listen(PORT, HOST, () => {
     console.log(`cockpit-agentes em http://${HOST}:${PORT}${TOKEN ? ' (token exigido)' : ''}`);
     console.log('HTTP local; para acesso remoto e PWA, configure HTTPS no servidor ou no proxy.');
+    // O vigia das abas: quem manda a notificação de fim de turno e de pedido de intervenção.
+    // Vive AQUI e não no fluxo SSE de propósito — o ponto da notificação é o usuário NÃO
+    // estar com a tela aberta (o mesmo raciocínio de `vigiarParaAvisar`, :300).
+    //
+    // A posição NÃO protege teste nenhum: `server.js` sobe o `listen` no próprio `require`
+    // (testes/gate-ui.js registra isso). Quem protege é a trava de `COCKPIT_CONTATO` do módulo.
+    vigiaAbas.iniciar();
   });
 } else {
   // Uma porta, dois esquemas. O primeiro byte de um handshake TLS é sempre 0x16; qualquer
@@ -1484,5 +1492,8 @@ if (!certificado) {
   }).listen(PORT, HOST, () => {
     console.log(`cockpit-agentes em https://${certificado.nome}:${PORT}${TOKEN ? ' (token exigido)' : ''}`);
     console.log(`http na mesma porta redireciona para o endereço seguro`);
+    // Ver o comentário do ramo sem TLS acima. Produção roda ESTE ramo (30-caminhos.conf traz
+    // COCKPIT_TLS_CERT/KEY), então fiar só o `if` deixaria a feature morta em produção.
+    vigiaAbas.iniciar();
   });
 }

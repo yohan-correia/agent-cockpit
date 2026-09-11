@@ -244,6 +244,7 @@ function limpar() {
         ...process.env, PORT: String(PORT), COCKPIT_HOST: '127.0.0.1', COCKPIT_CERT_DIR: certVazio, COCKPIT_TOKEN: '',
         COCKPIT_TMUX_SOCKET: SOCKET, COCKPIT_TMUX_SESSAO: SESSAO, COCKPIT_PROC_RAIZ: procRaiz, COCKPIT_CODEX_RAIZ: codexRaiz,
         COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+        COCKPIT_VIGIA_MS: '0', // sem HOME falso aqui — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

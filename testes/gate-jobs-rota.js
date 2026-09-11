@@ -562,6 +562,7 @@ async function principal() {
   delete process.env.COCKPIT_HORAS_ARQUIVA;
   process.env.COCKPIT_TMUX_SOCKET = SOCKET_TMUX;
   process.env.COCKPIT_TMUX_SESSAO = SESSAO_TMUX;
+  process.env.COCKPIT_VIGIA_MS = '0'; // sem HOME falso aqui — cinto e suspensório
   require(path.join(__dirname, '..', 'server.js'));
   await espera(400); // o `listen()` do http assentar
 

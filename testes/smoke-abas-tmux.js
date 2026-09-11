@@ -207,6 +207,7 @@ async function subirServidor(nome, porta, extra = {}) {
     COCKPIT_TMUX_SOCKET: SOCKET,
     COCKPIT_TMUX_SESSAO: 'teste',
     COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+    COCKPIT_VIGIA_MS: '0', // sem HOME falso aqui — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
     ...extra,
   };
   if (extra.COCKPIT_TOKEN === undefined) delete ambiente.COCKPIT_TOKEN;
