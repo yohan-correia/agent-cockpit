@@ -1,0 +1,65 @@
+
+⚠ Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+
+╭───────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                        │
+│                                                   │
+│ model:     mock   /model to change                │
+│ directory: /tmp/medicao-menu-codex3b-gfe52_j6/cwd │
+╰───────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+
+
+› apague o arquivo
+
+
+⚠ Model metadata for `mock` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the
+issue.
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / 
+⚠ Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+
+╭───────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                        │
+│                                                   │
+│ model:     mock   /model to change                │
+│ directory: /tmp/medicao-menu-codex3b-gfe52_j6/cwd │
+╰───────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+
+                                                                                                                        
+› apague o arquivo                                                                                                      
+                                                                                                                        
+
+⚠ Model metadata for `mock` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the
+issue.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────── 100% ─
+ ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ q to quit   esc/← to edit prev   → to edit next   enter to edit message
+

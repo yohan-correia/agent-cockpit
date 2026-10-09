@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.258
+▝▜██████▀  Opus 5 (1M context) with high effort · Claude Max
+  ▝▝ ▝▝    /tmp/medicao-menu-claude-7ycW
+
+⚠ 1 MCP server needs authentication · run /mcp
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+                       ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+                                                                                  ● high · /effort
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

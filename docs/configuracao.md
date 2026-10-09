@@ -32,9 +32,15 @@ A pasta `_triagem` é criada dentro do inbox quando a lista de destinos é consu
 | `COCKPIT_STATUS_CODEX_DIR` | `~/.cockpit/status-codex` | Snapshots de status |
 | `COCKPIT_CLEAR_CODEX_DIR` | `~/.cockpit/clear-codex` | Registros persistentes de reset |
 | `COCKPIT_JOBS_DIR` | `~/.cockpit/jobs` | Fonte opcional de registros locais para o medidor |
-| `COCKPIT_WORKTREES_DIR` | `~/.cockpit/worktrees` | Onde o orquestrador cria worktrees; o medidor usa o prefixo para separar job de aba |
+| `COCKPIT_WORKTREES_DIR` | `~/.cockpit/worktrees` | Onde o orquestrador cria worktrees; o medidor usa o prefixo para separar job de aba, e o monitor marca como job o processo cujo diretório mora nela |
 | `COCKPIT_CODEX_RAIZ` | `~/.codex/sessions` | Raiz dos rollouts lidos pelo adaptador. Configure também esta variável se seu CLI usa um CODEX_HOME personalizado |
 | `COCKPIT_PROC_RAIZ` | `/proc` | Injeção de fixtures nos testes. Não substitua em operação normal |
+| `COCKPIT_TRILHAS` | `~/.cockpit/trilhas.json` | Catálogo de trilhas da vista Leituras (só leitura; contrato do catálogo) |
+| `COCKPIT_MONITOR_DIR` | `~/.cockpit/monitor` | Histórico de 24 h de CPU/RAM/disco do monitor (`historico.json`) e a última medida do disco (`disco.json`) |
+| `COCKPIT_MONITOR_MS` | `60000` | Intervalo do amostrador do monitor; `0` desliga o amostrador e também a medida do disco em background (as rotas continuam medindo ao vivo) |
+| `COCKPIT_MONITOR_DISCO` | `/` | Partição medida pelo monitor |
+| `COCKPIT_DU_BIN` | `du` | Executável usado pela medida de disco do monitor; os testes apontam para um falso |
+| `COCKPIT_DOCKER_BIN` | `docker` | Executável usado pela medida de disco do monitor (`docker system df`); os testes apontam para um falso |
 
 As variáveis de host, porta, token, projetos, CLIs, tmux, TLS e jobs HTTP estão no [README](../README.md). Não aponte diretórios de dados para dentro do checkout público. Preserve permissões e conteúdo ao mover registros; uma pasta vazia não é equivalente à anterior.
 

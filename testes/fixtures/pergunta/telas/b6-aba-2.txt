@@ -1,0 +1,45 @@
+usuario@servidor:/home/usuario/projetos/demo$ claude --model sonnet
+Permission deny rule (/home/usuario/.claude/settings.json): Bash(curl * | bash:*) mixes * with the trailing :* prefix syntax,
+ so it is matched as a literal prefix (the * is not expanded) and will likely never match. Use Bash(curl * | bash*) for wildcard
+matching.
+Permission deny rule (/home/usuario/.claude/settings.json): Bash(wget * | bash:*) mixes * with the trailing :* prefix syntax,
+ so it is matched as a literal prefix (the * is not expanded) and will likely never match. Use Bash(wget * | bash*) for wildcard
+matching.
+ ▐▛███▛█   Claude Code v2.1.294
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /home/usuario/projetos/demo
+
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 1 pergunta: header "Cor", pergunta "Qual cor?",
+  multiSelect false, opcoes Azul e Verde com descricao curta. Depois de receber a resposta, apenas repita a resposta
+  literalmente.
+
+● User answered Claude's questions:
+  ⎿  · Qual cor? → Verde
+
+● Verde
+
+✻ Sautéed for 3s · done 7:27 PM
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 3 perguntas: (1) header "Frutas", pergunta "Quais
+  frutas?", multiSelect true, opcoes Uva, Pera, Kiwi com descricao curta; (2) header "Bebida", pergunta "Qual bebida?",
+  multiSelect false, opcoes Agua e Suco com descricao curta; (3) header "Hora", pergunta "Que horas?", multiSelect false, opcoes
+  Manha e Tarde com descricao curta. Depois de receber a resposta, apenas repita as respostas literalmente.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Frutas  ☐ Bebida  ☐ Hora  ✔ Submit  →
+
+Qual bebida?
+
+❯ 1. Agua
+     Simples, sem açúcar.
+  2. Suco
+     Doce, feito de fruta.
+  3. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
+

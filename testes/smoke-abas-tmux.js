@@ -53,7 +53,8 @@ const SESSOES_MINHAS = new Set(['teste', 'outra']);
 /** tmux NO SOCKET DE TESTE. Nunca sem `-L`: é a diferença entre o smoke e um acidente. */
 function t(args, { tolerante = false } = {}) {
   try {
-    return execFileSync('tmux', ['-L', SOCKET, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    // `-f /dev/null`: sem ele o ~/.tmux.conf do dono roda o continuum-restore no socket de teste.
+    return execFileSync('tmux', ['-L', SOCKET, '-f', '/dev/null', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     if (tolerante) return '';
     throw e;
@@ -208,6 +209,7 @@ async function subirServidor(nome, porta, extra = {}) {
     COCKPIT_TMUX_SESSAO: 'teste',
     COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
     COCKPIT_VIGIA_MS: '0', // sem HOME falso aqui — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
+    COCKPIT_MONITOR_MS: '0', // o amostrador do monitor escreve desde o boot (#82)
     ...extra,
   };
   if (extra.COCKPIT_TOKEN === undefined) delete ambiente.COCKPIT_TOKEN;
@@ -457,6 +459,192 @@ caso('9e', 'A', '500 por HTTP — erro SEM codigo não vira estado do mundo', as
   return true;
 });
 
+// ── Ainda BLOCO A: renomear a aba (card `renomear-a-aba`). Tudo no socket de TESTE — a janela
+//    renomeada aqui é do smoke, e a asserção 10b (no fim do arquivo) confere que nenhuma janela
+//    do socket PADRÃO mudou de nome.
+
+const nomeDaJanela = (janelaId) => t(['display-message', '-p', '-t', janelaId, '#{window_name}'])
+  .replace(/\n$/, '');
+const autoDaJanela = (janelaId) => t(['display-message', '-p', '-t', janelaId, '#{automatic-rename}']).trim();
+const opcaoDaPane = (pane) => t(['display-message', '-p', '-t', pane, '#{@cockpit-nome}']).replace(/\n$/, '');
+// argv[0] = claude faz o `detectarAgente()` casar no /proc real: a pane vira ABA (chave aba-p<n>).
+const AGENTE_FALSO = "bash -c 'exec -a claude sleep 600'";
+
+// Os 33 nomes da prova da spec (§1.5): cada um tem de sair do tmux IGUAL ao digitado (aparado,
+// que é o que `renomear()` grava). Expansão de formato, `;` final, `-` inicial, estilo `#[`.
+const NOMES_HOSTIS = [
+  'a#;', 'x;', ';', ';;', 'a;b;', '#', '##', '###', '#{session_name}', '#(id)', '##{x}',
+  '#[fg=red]x', '##[x]', 'a #[b', 'Bug #12', 'a;b', '-k', '--', '100%', 'ação ✓ 日本 🚀', "it's",
+  '"q"', '$(id)', '`id`', '  meio  espaço  ', '%1', '-t %0', '#W', '#S #I', '{}', ',', '#,', '#}',
+];
+
+caso('r1', 'A', 'renomear — o nome vira o da janela, a lista mostra, e o automatic-rename desliga', async () => {
+  soAncora();
+  const janela = novaJanela('antes');
+  t(['set-option', '-w', '-t', janela, 'automatic-rename', 'on']);
+  const chave = chaveDe(janela);
+  const r = await abas.renomear(chave, 'nome novo');
+  ok(r.chave === chave && r.titulo === 'nome novo', `devolve { chave, titulo } (${JSON.stringify(r)})`);
+  ok(nomeDaJanela(janela) === 'nome novo', `o tmux gravou o nome (${JSON.stringify(nomeDaJanela(janela))})`);
+  ok(autoDaJanela(janela) === '0', `e o automatic-rename da janela desligou sozinho (${autoDaJanela(janela)})`);
+  const naLista = (await abas.listar()).find((a) => a.chave === chave);
+  ok(Boolean(naLista) && naLista.titulo === 'nome novo', `a lista mostra o nome novo (${naLista && naLista.titulo})`);
+});
+
+caso('r2', 'A', 'renomear — espaço, TAB e quebra de linha nas PONTAS são aparados', async () => {
+  soAncora();
+  const janela = novaJanela('antes');
+  const r = await abas.renomear(chaveDe(janela), '\t  aparado  \n');
+  ok(r.titulo === 'aparado' && nomeDaJanela(janela) === 'aparado',
+    `grava "aparado" (${JSON.stringify(r.titulo)} / ${JSON.stringify(nomeDaJanela(janela))})`);
+});
+
+caso('r3', 'A', 'renomear — os 33 nomes hostis da spec saem LITERAIS no tmux', async () => {
+  soAncora();
+  const janela = novaJanela('antes');
+  const chave = chaveDe(janela);
+  const errados = [];
+  for (const nome of NOMES_HOSTIS) {
+    const esperado = nome.trim();
+    try {
+      await abas.renomear(chave, nome);
+    } catch (e) {
+      errados.push(`${JSON.stringify(nome)} → recusou (${e.codigo ?? e.message})`);
+      continue;
+    }
+    const gravado = nomeDaJanela(janela);
+    if (gravado !== esperado) errados.push(`${JSON.stringify(nome)} → ${JSON.stringify(gravado)}`);
+  }
+  ok(errados.length === 0, `todos gravados como digitados${errados.length
+    ? ` — errados: ${errados.join(' · ')}` : ` (${NOMES_HOSTIS.length} nomes)`}`);
+});
+
+caso('r4', 'A', 'renomear — recusas com 400 e o nome NÃO muda; e as fronteiras que passam', async () => {
+  soAncora();
+  const janela = novaJanela('intocada');
+  const chave = chaveDe(janela);
+  const recusas = [
+    ['vazio', ''], ['só espaço', '   '], ['barra invertida', 'a\\b'], ['TAB no meio', 'a\tb'],
+    ['quebra de linha no meio', 'a\nb'], ['DEL no meio', 'a\u007Fb'], ['C1 no meio', 'a\u0085b'],
+    ['81 caracteres', 'x'.repeat(81)], ['não-string', 42], ['ausente', undefined],
+  ];
+  for (const [rotulo, nome] of recusas) {
+    const codigo = await codigoDe(abas.renomear(chave, nome));
+    ok(codigo === 400 && nomeDaJanela(janela) === 'intocada',
+      `${rotulo} → 400 e o nome continua (${codigo}, ${JSON.stringify(nomeDaJanela(janela))})`);
+  }
+  const oitenta = 'y'.repeat(80);
+  ok(await codigoDe(abas.renomear(chave, oitenta)) === null && nomeDaJanela(janela) === oitenta,
+    'exatamente 80 caracteres passa');
+  const emojis = '🚀'.repeat(80);
+  ok(await codigoDe(abas.renomear(chave, emojis)) === null && nomeDaJanela(janela) === emojis,
+    '80 emojis (160 unidades UTF-16) passa — o teto conta ponto de código');
+});
+
+caso('r5', 'A', 'renomear — OUTRA sessão do socket → 404 e ela não muda (#41); inexistente → 404; malformada → 400', async () => {
+  soAncora();
+  t(['new-session', '-d', '-s', 'outra', '-n', 'da-outra', '-c', '/tmp', 'sleep 600'], { tolerante: true });
+  try {
+    const daOutra = janelasDe('outra')[0];
+    const codigo = await codigoDe(abas.renomear(chaveDe(daOutra), 'invasor'));
+    ok(codigo === 404 && nomeDaJanela(daOutra) === 'da-outra',
+      `chave de outra sessão → 404 e o nome dela fica (${codigo}, ${nomeDaJanela(daOutra)})`);
+    ok(await codigoDe(abas.renomear('aba-p999999', 'x')) === 404, 'chave de pane inexistente → 404');
+    ok(await codigoDe(abas.renomear('aba-999999', 'x')) === 404, 'chave de janela inexistente → 404');
+    for (const torta of ['lixo', 'aba-', 'aba-p', 'aba-pX1', '../aba-1']) {
+      ok(await codigoDe(abas.renomear(torta, 'x')) === 400, `chave "${torta}" → 400`);
+    }
+  } finally {
+    t(['kill-session', '-t', 'outra'], { tolerante: true });
+  }
+});
+
+caso('r6', 'A', 'renomear — janela com DUAS panes: o ✎ de uma muda SÓ ela (D66)', async () => {
+  soAncora();
+  const janela = t(['new-window', '-d', '-t', 'teste:', '-n', 'dividida', '-c', '/tmp', '-P', '-F', '#{window_id}', AGENTE_FALSO]).trim();
+  t(['split-window', '-d', '-t', janela, '-c', '/tmp', AGENTE_FALSO]);
+  await espera(300);
+  const panes = t(['list-panes', '-t', janela, '-F', '#{pane_id}']).split('\n').map((l) => l.trim()).filter(Boolean);
+  ok(panes.length === 2, `a janela tem duas panes (${panes.length})`);
+  const chaves = panes.map((p) => abas.chaveDaAba({ paneId: p }));
+  const lista = await abas.listar();
+  ok(chaves.every((c) => lista.some((a) => a.chave === c)),
+    'as DUAS panes viraram abas aba-p<n> (senão: a janela dividida não virou duas abas — o resto não prova nada)');
+  await abas.renomear(chaves[1], 'só a de baixo');
+  ok(opcaoDaPane(panes[1]) === 'só a de baixo', `a opção da pane de baixo é o nome ("${opcaoDaPane(panes[1])}")`);
+  ok(opcaoDaPane(panes[0]) === '', `a pane de cima fica sem opção ("${opcaoDaPane(panes[0])}")`);
+  ok(nomeDaJanela(janela) === 'dividida', `a janela não muda de nome ("${nomeDaJanela(janela)}")`);
+  const depois = await abas.listar();
+  const titulo = (c) => (depois.find((a) => a.chave === c) || {}).titulo;
+  ok(titulo(chaves[1]) === 'só a de baixo', `título da de baixo = "só a de baixo" ("${titulo(chaves[1])}")`);
+  ok(titulo(chaves[0]) === 'dividida', `título da de cima = "dividida" ("${titulo(chaves[0])}")`);
+  await abas.renomear(abas.chaveDaAba({ janelaId: janela }), 'pela janela');
+  ok(nomeDaJanela(janela) === 'pela janela', 'a chave de JANELA (aba-<n>) continua renomeando a janela (S2)');
+});
+
+caso('r7', 'A', 'renomear por HTTP — 200, 400 e 404 DA ABA pela rota PATCH', async () => {
+  soAncora();
+  const janela = novaJanela('http');
+  const s = await garantirS1();
+  if (!s.pronto) return ok(false, `S1 (7898) não subiu — sem ele o PATCH não é exercitado · ${s.porque}`);
+  const chave = chaveDe(janela);
+  const r200 = await pedir(7898, 'PATCH', `/api/abas/${chave}`, { corpo: { nome: 'pela rota' } });
+  ok(r200.status === 200 && r200.corpo.titulo === 'pela rota' && r200.corpo.chave === chave,
+    `PATCH → 200 (${r200.status}) ${JSON.stringify(r200.corpo)}`);
+  ok(nomeDaJanela(janela) === 'pela rota', 'e o tmux mudou');
+  const r400 = await pedir(7898, 'PATCH', `/api/abas/${chave}`, { corpo: { nome: '  ' } });
+  ok(r400.status === 400 && nomeDaJanela(janela) === 'pela rota',
+    `nome vazio → 400 e nada muda (${r400.status}) ${JSON.stringify(r400.corpo)}`);
+  const r404 = await pedir(7898, 'PATCH', '/api/abas/aba-p999999', { corpo: { nome: 'x' } });
+  // O `!== 'rota desconhecida'` é o que impede este caso de passar verde ANTES de a rota existir.
+  ok(r404.status === 404 && r404.corpo.erro !== 'rota desconhecida',
+    `chave inexistente → 404 DA ABA, não da rota (${r404.status}) ${JSON.stringify(r404.corpo)}`);
+  return true;
+});
+
+caso('r8', 'A', 'renomear × matar na mesma chave — a fila por aba põe em ordem: matou, renomear é 404', async () => {
+  soAncora();
+  const janela = novaJanela('vai-morrer');
+  const chave = chaveDe(janela);
+  const pm = abas.matar(chave);
+  const pr = abas.renomear(chave, 'tarde demais');
+  const [rm, rr] = await Promise.allSettled([pm, pr]);
+  ok(rm.status === 'fulfilled', `o matar, chamado primeiro, mata (${rm.status})`);
+  ok(rr.status === 'rejected' && rr.reason.codigo === 404,
+    `o renomear, chamado depois, é 404 (${rr.status} ${rr.reason && rr.reason.codigo})`);
+});
+
+caso('r10', 'A', 'renomear — janela de 1 pane segue rename-window e a pane fica SEM @cockpit-nome', async () => {
+  soAncora();
+  const janela = t(['new-window', '-d', '-t', 'teste:', '-n', 'sozinha', '-c', '/tmp', '-P', '-F', '#{window_id}', AGENTE_FALSO]).trim();
+  await espera(300);
+  const [pane] = t(['list-panes', '-t', janela, '-F', '#{pane_id}']).split('\n').map((l) => l.trim()).filter(Boolean);
+  await abas.renomear(abas.chaveDaAba({ paneId: pane }), 'nome da janela');
+  ok(nomeDaJanela(janela) === 'nome da janela', `a janela mudou de nome ("${nomeDaJanela(janela)}")`);
+  ok(opcaoDaPane(pane) === '', `a pane fica sem a opção ("${opcaoDaPane(pane)}")`);
+});
+
+caso('r11', 'A', 'renomear — a irmã fecha: o nome da pane fica, e o próximo ✎ renomeia a janela e apaga a opção', async () => {
+  soAncora();
+  const janela = t(['new-window', '-d', '-t', 'teste:', '-n', 'antes-da-borda', '-c', '/tmp', '-P', '-F', '#{window_id}', AGENTE_FALSO]).trim();
+  t(['split-window', '-d', '-t', janela, '-c', '/tmp', AGENTE_FALSO]);
+  await espera(300);
+  const [cima, baixo] = t(['list-panes', '-t', janela, '-F', '#{pane_id}']).split('\n').map((l) => l.trim()).filter(Boolean);
+  const chave = abas.chaveDaAba({ paneId: baixo });
+  const tituloDe = async () => ((await abas.listar()).find((a) => a.chave === chave) || {}).titulo;
+  await abas.renomear(chave, 'nome da pane');
+  // Sem estes dois a borda passaria no mundo velho, que renomeia a janela.
+  ok(opcaoDaPane(baixo) === 'nome da pane', `a opção da pane de baixo é o nome ("${opcaoDaPane(baixo)}")`);
+  ok(nomeDaJanela(janela) === 'antes-da-borda', `a janela não mudou de nome ("${nomeDaJanela(janela)}")`);
+  t(['kill-pane', '-t', cima]);
+  await espera(200);
+  ok(await tituloDe() === 'nome da pane', `a irmã fechou e o nome escolhido não some ("${await tituloDe()}")`);
+  await abas.renomear(chave, 'nome depois');
+  ok(nomeDaJanela(janela) === 'nome depois', `o próximo ✎ renomeia a janela ("${nomeDaJanela(janela)}")`);
+  ok(opcaoDaPane(baixo) === '', `e apaga a opção ("${opcaoDaPane(baixo)}")`);
+  ok(await tituloDe() === 'nome depois', `título = "nome depois" ("${await tituloDe()}")`);
+});
+
 // ── BLOCO B — o nascimento e a API. Precisam do `claude` DE VERDADE (binário + login) e de
 //    um projeto em ~/projetos. É só aqui que o código 2 pode aparecer.
 
@@ -544,6 +732,17 @@ const conjuntoPadrao = () => new Set(
   padraoLeitura(['list-windows', '-a', '-F', '#{session_name}:#{window_id}'])
     .split('\n').map((l) => l.trim()).filter(Boolean),
 );
+// Asserção 10b (card `renomear-a-aba`): nenhuma janela do socket PADRÃO foi renomeada. Janela com
+// `automatic-rename` LIGADO troca de nome sozinha quando o programa da pane muda, então nome
+// diferente só conta com o auto desligado nos dois momentos — e, para ela, a assinatura é o auto
+// passar de ligado a desligado (ver o `finally`). O relatório imprime só os IDS: o nome de uma aba
+// de verdade não pode sair em log nenhum.
+const nomesPadrao = () => new Map(
+  padraoLeitura(['list-windows', '-a', '-F', '#{session_name}:#{window_id}\t#{automatic-rename}\t#{window_name}'])
+    .split('\n').map((l) => l.split('\t')).filter((p) => p.length === 3 && p[0])
+    .map(([id, auto, nome]) => [id, { auto, nome }]),
+);
+const NOMES_ANTES = nomesPadrao();
 const PADRAO_ANTES = conjuntoPadrao();
 
 const pendentes = [];
@@ -609,6 +808,19 @@ function limpar() {
     const sumiram = [...PADRAO_ANTES].filter((x) => !PADRAO_DEPOIS.has(x));
     ok(sumiram.length === 0,
       `asserção 10: nenhuma janela do socket PADRÃO sumiu${sumiram.length ? ` — SUMIU: ${sumiram.join(', ')}` : ''}`);
+    const NOMES_DEPOIS = nomesPadrao();
+    // Duas assinaturas de rename: nome trocado numa janela de auto DESLIGADO nos dois momentos, e o
+    // auto que passou de ligado para desligado — é exatamente o que `rename-window` faz sozinho
+    // (medido), então uma janela de auto ligado renomeada por acidente também é pega.
+    const renomeadas = [...NOMES_ANTES].filter(([id, antes]) => {
+      const depois = NOMES_DEPOIS.get(id);
+      if (!depois) return false;
+      if (antes.auto === '1' && depois.auto === '0') return true;
+      return antes.auto === '0' && depois.auto === '0' && antes.nome !== depois.nome;
+    }).map(([id]) => id);
+    ok(renomeadas.length === 0,
+      `asserção 10b: nenhuma janela do socket PADRÃO mudou de nome${renomeadas.length
+        ? ` — MUDOU: ${renomeadas.join(', ')} (se foi você renomeando à mão durante o smoke, rode de novo)` : ''}`);
     // 1 = defeito · 2 = ambiente indisponível · 0 = verde. O 2 NÃO fecha o card: o bloco B
     // é o núcleo dele (criação com `claude` de verdade, as rotas por HTTP, a corrida
     // `enviar` × `matar`), e o relatório tem que dizer isso com todas as letras.

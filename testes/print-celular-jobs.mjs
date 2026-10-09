@@ -193,6 +193,14 @@ const exigir = (cond, msg) => {
     // folga para ela chegar sem esticar a parada de produção.
     await new Promise((r) => setTimeout(r, 3000));
 
+    // 🔴 O ':not([hidden])' não é zelo: a barra nasce 'hidden' e só aparece quando a primeira
+    // leitura de 'api/jobs' chega — clicar antes disso é corrida com a rede (o 'setTimeout'
+    // de cima já existe por essa mesma espera). A vista de agentes é a ÚNICA onde
+    // 'grupo-jobs' existe (D51).
+    await pagina.waitForSelector('#barra-agentes:not([hidden])');
+    await pagina.click('#barra-agentes');
+    await pagina.waitForSelector('#grupo-jobs');
+
     const estado = await pagina.evaluate((alvo) => {
       const corpo = document.body.innerText || '';
       const grupo = document.getElementById('grupo-jobs');
@@ -216,9 +224,8 @@ const exigir = (cond, msg) => {
     // fora do ar, e o cliente registra isso no console de propósito. Fica anotado.
     if (erros.length) feitos.push('console (anotado, não reprova): ' + erros.slice(0, 3).join(' | '));
 
-    // O grupo dentro da vista quando ele existe: o print tem de conter o que mudou.
+    // A vista de agentes já ocupa a lateral inteira (D51): não há mais para onde rolar.
     if (estado.temGrupo) {
-      await pagina.evaluate(() => document.getElementById('grupo-jobs').scrollIntoView({ block: 'start' }));
       await new Promise((r) => setTimeout(r, 400));
     }
     await pagina.screenshot({ path: '/out/print.png' });

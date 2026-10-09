@@ -1,0 +1,22 @@
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Audio  ☐ Aviso LGPD  ✔ Submit  →
+
+Quais avisos mostrar na tela de consentimento?
+
+❯ 1. [ ] Finalidade do uso
+         Explica para que os dados e o audio serao usados, em linguagem simples. A LGPD exige que a finalidade seja clara e
+         especifica, entao e o aviso mais importante da tela.
+  2. [ ] Tempo de guarda
+         Informa por quanto tempo os dados ficam armazenados e quando serao apagados. Ajuda o usuario a confiar e atende ao
+         principio de necessidade da lei.
+  3. [ ] Direitos do titular
+         Mostra que a pessoa pode pedir acesso, correcao ou exclusao dos dados e como fazer isso, com um contato claro. Deixa o
+         consentimento revogavel de forma facil.
+  4. [ ] Type something
+     Submit
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+

@@ -1,0 +1,35 @@
+
+⚠ Codex's Linux sandbox uses bubblewrap
+  and needs access to create user
+  namespaces.
+
+╭────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)         │
+│                                    │
+│ model:     mock   /model to change │
+│ directory: /tmp/…/cwd              │
+╰────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+ 
+ 
+  Plugins
+  Browse plugins from available market
+  Installed 0 of 49 available plugins.
+ 
+  [All Plugins]  Installed (0)
+  OpenAI Curated  Workspace
+  Shared with me  Add Marketplace
+ 
+  Type to search plugins
+› [-] Atlassian Rovo      Available  …
+  [-] Boltz               Available ·…
+  [-] Build iOS Apps      Available ·…
+  [-] Build macOS Apps    Available ·…
+  [-] Build Web Apps      Available ·…
+  [-] Build Web Data Vis… Available ·…
+  [-] Canva               Available ·…
+  [-] ChatCut             Available ·…
+ 
+  space enable/disable · ←/→ select mark
+

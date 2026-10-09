@@ -441,7 +441,135 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
 /* A âncora do selo na lista. Ela é que fica PARADA enquanto a `.conversas` desce colada no
    dedo — a mesma divisão de papéis que o `#mensagens` e a `#fita` têm do outro lado. */
 .lista-area { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.conversas { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; padding: 8px; }
+.conversas {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; padding: 8px;
+}
+
+/* O cabeçalho de CADA caixa da lateral — `conversas` em cima (HTML estático) e `jobs`
+   embaixo (`grupoDeJobs()`). Caixa baixa é o ponto (print do Herd): os títulos de TRILHA (vista leituras)
+   continuam em caixa ALTA (`.conversa-grupo-titulo`, mais abaixo) — a diferença de caixa é o
+   que diz que a caixa de jobs é um nível acima de projeto, sem nenhuma linha nova. */
+.caixa-titulo {
+  margin: 0; padding: 10px 14px 6px;
+  /* `flex: none` explícito: `.lateral` é `flex-direction: column` e todo filho que não
+     cresce o declara — é o que `.lateral-topo` já faz; sem ele o h2 nasce encolhível. */
+  flex: none;
+  font-size: 11px; font-weight: 650; letter-spacing: 0.02em;
+  color: var(--texto-3);
+}
+
+/* A barra fina no rodapé da lateral (D51): fora de todo scroller, é o único canal que mostra
+   o contador de agentes nas DUAS vistas — quem troca de vista é ela mesma, no clique. */
+.barra-agentes {
+  flex: none; display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 13px 14px; text-align: center; font-size: 14px;
+  background: var(--fundo-3); border: 0; border-top: 1px solid var(--borda);
+  color: var(--texto-2); width: 100%;
+}
+.barra-agentes:hover { background: var(--borda); color: var(--texto); }
+.barra-agentes[aria-pressed="true"] { color: var(--texto); background: var(--borda); }
+.barra-agentes-nome { flex: none; font-weight: 700; }
+/* `0 1 auto` e não `1`: com `flex: 1` os filhos comem a sobra e empurram o nome para fora do
+   centro, que é justamente o que o `justify-content: center` acima existe para dar. */
+.barra-agentes-trabalho { flex: 0 1 auto; min-width: 0; color: var(--texto-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* DENUNCIAR é requisito (§2.2), não enfeite: quem trava tem de ser visto sem clicar. */
+.barra-agentes-aviso { flex: 0 1 auto; min-width: 0; color: var(--perigo); font-weight: 650;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barra-agentes-aviso:empty, .barra-agentes-trabalho:empty { display: none; }
+
+/* D59: a barra virou duas — agentes e leituras lado a lado, numa linha só, no mesmo lugar.
+   `flex: none` no invólucro porque na coluna da `.lateral` quem não declara encolhe. Os
+   filhos dividem a linha; a `.barra-agentes` mantém o próprio bloco (CX-1). */
+.barra-vistas { flex: none; display: flex; }
+.barra-vistas > .barra-agentes, .barra-leituras { flex: 1 1 0; width: auto; min-width: 0; }
+.barra-leituras {
+  display: flex; align-items: center; justify-content: center;
+  padding: 13px 14px; font-size: 14px;
+  background: var(--fundo-3); border: 0; border-top: 1px solid var(--borda);
+  border-left: 1px solid var(--borda); color: var(--texto-2);
+}
+.barra-leituras:hover { background: var(--borda); color: var(--texto); }
+.barra-leituras[aria-pressed="true"] { color: var(--texto); background: var(--borda); }
+
+/* ── Monitor do servidor (D64) ───────────────────────────────────────────────
+   A faixa é irmã da .barra-vistas, flex: none como ela: quem encolhe é a .lista-area, nunca a
+   página (R3 da spec). UMA linha sem aviso; o aviso entra numa 2ª linha só quando ligado. */
+.monitor-faixa { flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; width: 100%;
+  padding: 8px 12px; background: var(--fundo-3); border: 0; border-top: 1px solid var(--borda); color: var(--texto-2); text-align: left; }
+.monitor-faixa:hover { background: var(--borda); color: var(--texto); }
+.monitor-cela { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.monitor-rotulo { font-weight: 700; }
+.monitor-barra { height: 6px; background: var(--borda); border-radius: 3px; overflow: hidden; }
+.monitor-barra-cheia { display: block; height: 100%; width: 0; background: var(--accent); }
+.monitor-cela[data-alerta] .monitor-barra-cheia { background: var(--perigo); }
+.monitor-cela[data-alerta] .monitor-pct { color: var(--perigo); font-weight: 700; }
+.monitor-faixa[data-aviso="ligado"] { background: var(--perigo-suave); border-top-color: var(--perigo); }
+.monitor-faixa[data-estado="sem-dado"] .monitor-barra-cheia { opacity: 0.35; }
+.monitor-aviso-texto { grid-column: 1 / -1; color: var(--perigo); font-weight: 650; font-size: 12px; }
+.monitor-aviso-texto:empty { display: none; }
+/* O selo: fixo, fora do grid do .chat (pixel medido). Escondido por padrão; cada aparelho tem a
+   SUA regra dentro da SUA media query — `data-lateral` é escrito em todo aparelho (app.js:5781)
+   e no celular vale sempre "aberta", então uma regra "de desktop" solta esconderia o selo no
+   telefone para sempre (achado do painel). */
+.monitor-selo { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 30; max-width: 70vw;
+  padding: 6px 12px; font-size: 13px; font-weight: 650; background: var(--fundo-2); color: var(--perigo);
+  border: 1px solid var(--perigo); border-radius: 999px; box-shadow: var(--sombra); display: none; }
+@media (min-width: 761px) { .app[data-lateral="fechada"] ~ .monitor-selo:not([hidden]) { display: block; } }
+@media (max-width: 760px) { .app[data-vista="chat"] ~ .monitor-selo:not([hidden]) { display: block; } }
+/* painel */
+.monitor-agora { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+.monitor-medidor { display: grid; gap: 2px; padding: 10px; background: var(--fundo-3); border-radius: var(--raio); }
+.monitor-medidor-pct { font-size: 30px; font-weight: 700; }
+.monitor-medidor[data-alerta] .monitor-medidor-pct { color: var(--perigo); }
+.monitor-medidor-rotulo { font-size: 14px; font-weight: 700; color: var(--texto-2); }
+.monitor-medidor-sub { font-size: 13px; color: var(--texto-3); }
+.monitor-painel-aviso { color: var(--perigo); font-weight: 650; }
+.monitor-grafico svg { width: 100%; height: 160px; display: block; background: var(--fundo-3); border-radius: var(--raio); }
+.monitor-linha-grafico { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.monitor-linha-grafico[data-eixo="cpu"] { stroke: var(--accent); }
+.monitor-linha-grafico[data-eixo="ram"] { stroke: var(--agente-codex); }
+.monitor-linha-grafico[data-eixo="disco"] { stroke: var(--texto-2); }
+.monitor-eixo { stroke: var(--borda); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.monitor-eixo-texto { fill: var(--texto-3); font-size: 10px; }
+.monitor-legenda { display: flex; gap: 14px; font-size: 12px; color: var(--texto-2); margin-top: 6px; }
+.monitor-legenda-cor { display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; }
+.monitor-linha { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; font-size: 14px; padding: 3px 0; min-width: 0; }
+.monitor-nome { font-weight: 700; }
+.monitor-comando { color: var(--texto-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.monitor-valor { color: var(--texto-2); }
+/* D68 — o painel cresce: caixa de até 760 px no desktop, tela cheia no celular; os medidores viram
+   botões e o detalhe (top 10 / pastas) mora numa seção por eixo. Só tokens que já existem (#29). */
+#dialogo-monitor { width: min(760px, 92vw); }
+/* O `padding-bottom` sai do corpo e vai para o rodapé: o `sticky` gruda na borda de DENTRO do
+   padding, e com os 20 px no corpo a última linha aparecia por baixo do Fechar (visto no print). */
+#dialogo-monitor .dialogo-corpo { max-height: 90dvh; overflow-y: auto; box-sizing: border-box; padding-bottom: 0; }
+#dialogo-monitor .dialogo-corpo h2 { font-size: 20px; margin-bottom: 12px; }
+#dialogo-monitor .dialogo-acoes { position: sticky; bottom: 0; padding: 10px 0 20px; background: var(--fundo-2); }
+button.monitor-medidor { font: inherit; color: inherit; text-align: left; border: 1px solid transparent; cursor: pointer; }
+button.monitor-medidor:hover { border-color: var(--borda); }
+button.monitor-medidor[aria-expanded="true"] { border-color: var(--accent); }
+.monitor-grafico-area { display: grid; grid-template-columns: auto 1fr; gap: 6px; }
+.monitor-grafico-y { display: flex; flex-direction: column; justify-content: space-between; height: 160px; font-size: 11px; color: var(--texto-3); text-align: right; }
+#dialogo-monitor p.monitor-dica { margin: 14px 0 0; font-size: 14px; color: var(--texto-3); }
+.monitor-detalhe { margin-top: 14px; }
+.monitor-detalhe h3 { font-size: 13px; color: var(--texto-2); margin: 14px 0 6px; }
+.monitor-disco-cabeca { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.monitor-disco-quando { font-size: 13px; color: var(--texto-2); }
+#dialogo-monitor p.monitor-disco-nota { margin: 6px 0 0; font-size: 12px; color: var(--texto-3); }
+.monitor-pasta { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; padding: 5px 0; font-size: 14px; }
+.monitor-pasta .monitor-barra { grid-column: 1 / -1; }
+.monitor-pasta-rotulo { min-width: 0; overflow-wrap: anywhere; }
+.monitor-pasta-nota { grid-column: 1 / -1; font-size: 12px; color: var(--texto-3); }
+.monitor-job { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent-suave); color: var(--accent); font-size: 11px; font-weight: 700; }
+@media (max-width: 760px) {
+  #dialogo-monitor[open] { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;
+    margin: 0; border: 0; border-radius: 0; }
+  #dialogo-monitor .dialogo-corpo { height: 100%; max-height: none;
+    padding: calc(16px + env(safe-area-inset-top)) 16px 0; }
+  #dialogo-monitor .dialogo-acoes { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+}
 
 /* ── Puxar para atualizar ─────────────────────────────────────────────────
    Alternativa de dedo ao botão ↻: chegou ao topo e continuou puxando, solta e a lista (ou
@@ -544,6 +672,13 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   display: flex; align-items: baseline; gap: 7px;
 }
 .conversa-nome { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* Na lista de conversas (D63) o nome divide a 1ª linha com chip, hora e a vaga do lápis/⧉. Um
+   nome comprido quebrava palavra por palavra numa coluna de ~110px — 4 linhas no desktop, 6
+   com o mouse em cima (print `depois-desktop-foco.png` do job de 06/10). Aqui ele fica numa
+   linha e termina em reticências; o nome inteiro vai no `title` (app.js, ao lado do textContent).
+   Só AQUI: o grupo de jobs usa a mesma classe e lá o título longo é o que diferencia um job do
+   outro — cortá-lo repetiria o problema de 09/09 ("nove linhas com o mesmo nome"). */
+#lista-conversas .conversa-nome { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conversa-rodape {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 6px; min-width: 0;
 }
@@ -553,10 +688,9 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   white-space: normal; overflow-wrap: anywhere; direction: ltr; text-align: left;
 }
 .conversa-estado { font-size: 12px; color: var(--texto-2); }
-/* A última mexida da conversa. `flex: none` como o estado, mas DEPOIS dele: quem encolhe
-   quando a linha aperta é o caminho (`flex: 1; min-width: 0`), e se ainda assim não couber
-   é a hora que sai — o estado é o que ele olha primeiro. `tabular-nums` para os dígitos
-   não dançarem de largura de um minuto para o outro. */
+/* A última mexida da conversa — desde D63 o ÚLTIMO item da 1ª linha, à direita. `flex: none`:
+   quem encolhe quando a linha aperta é o nome (`flex: 1; min-width: 0`), nunca a hora.
+   `tabular-nums` para os dígitos não dançarem de largura de um minuto para o outro. */
 .conversa-hora {
   flex: none; font-size: 12px; color: var(--texto-2);
   font-variant-numeric: tabular-nums;
@@ -569,18 +703,6 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   color: var(--texto-2); font-size: 11px; font-weight: 650;
   letter-spacing: 0.04em; text-transform: uppercase;
 }
-.projeto-topo { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
-.conversa-grupo:first-child .projeto-topo { margin-top: 0; }
-.projeto-alternar { display: flex; align-items: baseline; gap: 6px; width: 100%; min-height: 40px; padding: 8px 10px; background: none; border: 0; text-align: left; font: inherit; color: inherit; text-transform: inherit; overflow-wrap: anywhere; }
-.projeto-alternar::before { content: '▾'; flex: none; }
-.projeto-alternar[aria-expanded="false"]::before { content: '▸'; }
-.projeto-rotulos { min-width: 0; }
-.projeto-aviso, .projeto-trabalhando { display: block; margin-top: 3px; color: var(--espera); font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: normal; }
-.projeto-trabalhando { color: var(--accent); }
-.projeto-mover { flex: none; min-width: 40px; min-height: 40px; padding: 4px; border: 0; background: none; color: var(--texto-2); font-size: 18px; }
-.projeto-mover:disabled { opacity: 0.3; cursor: default; }
-.projeto-mover:not(:disabled):hover, .projeto-alternar:hover { background: var(--fundo-3); }
-.projeto-alternar:focus-visible, .projeto-mover:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .marca small, #dialogo-contexto p, #dialogo-arquivos p, #dialogo-arquivos .config-nota { color: var(--texto-2); }
 
 /* A lista é só as abas do terminal desde 21/08. Não têm X: o cockpit não fecha conversa
@@ -588,6 +710,59 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
    reservava para ele vira espaço morto. */
 .conversa { padding-right: 12px; }
 .lista-vazia { padding: 14px; color: var(--texto-3); font-size: 13px; }
+
+/* A vista "leituras" (D59, card leituras-trilhas): um grupo por trilha, livro na ordem do
+   catálogo, próximo destacado. */
+.leituras-aviso { color: var(--perigo); padding: 10px 14px; font-size: 13px; }
+.leituras-caminho { overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; color: var(--texto-3); padding: 0 14px 14px; }
+.leituras-trilha { margin-bottom: 8px; }
+.leituras-lendo-agora { margin-bottom: 8px; }
+.leituras-cabecalho { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 14px 6px; margin-bottom: 2px; border-bottom: 1px solid var(--borda); color: var(--texto); font-size: 15px; font-weight: 700; letter-spacing: normal; text-transform: none; }
+.leituras-contador { color: var(--texto-2); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* Trilha recolhível (ajuste 05/10): o cabeçalho da trilha É um botão, e o padding sai do h2 para
+   ele — a área de toque é a faixa inteira, não só o texto. "Lendo agora" não tem botão e segue
+   com o padding do h2. */
+.leituras-trilha > .leituras-cabecalho { padding: 0; }
+.leituras-alternar { display: flex; flex: 1 1 auto; align-items: baseline; gap: 8px; width: 100%; min-height: 40px; padding: 12px 14px 6px; margin: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.leituras-alternar:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.leituras-seta { flex: none; width: 1em; color: var(--texto-2); }
+.leituras-trilha-titulo { flex: 1 1 auto; min-width: 0; }
+.livro { display: flex; gap: 8px; align-items: flex-start; padding: 8px 14px; min-height: 40px; }
+.livro-corpo { flex: 1 1 0; min-width: 0; display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.livro input { width: 18px; height: 18px; margin-top: 2px; flex: none; }
+.livro[data-proximo="1"] { background: var(--accent-suave); box-shadow: inset 3px 0 0 var(--accent); }
+.livro[data-terminado="1"] .livro-titulo { color: var(--texto-2); text-decoration: line-through; }
+.livro-texto { flex: 1 1 auto; min-width: 0; }
+.livro-autor { font-size: 12px; color: var(--texto-2); }
+.livro-etiquetas { display: block; margin-top: 4px; }
+.livro-etiquetas:empty { display: none; }
+.livro-n { font-variant-numeric: tabular-nums; color: var(--texto-2); }
+.etiqueta { display: inline-block; white-space: nowrap; font-size: 11px; padding: 1px 6px; border: 1px solid var(--borda); border-radius: 999px; margin-right: 4px; }
+.etiqueta-gratis { border-color: var(--ok); }
+.etiqueta-opcional { border-style: dashed; color: var(--texto-2); }
+.etiqueta-estante, .etiqueta-trilha { color: var(--texto-2); }
+.etiqueta-proximo { border-color: var(--accent); }
+.livro-data { flex: none; font-size: 12px; color: var(--texto-2); }
+.livro-lendo { flex: none; min-height: 32px; padding: 4px 10px; font: inherit; font-size: 12px; border: 1px solid var(--borda); border-radius: 999px; background: none; color: var(--texto-2); cursor: pointer; }
+.livro-lendo[aria-pressed="true"] { background: var(--accent-suave); border-color: var(--accent); color: var(--texto); }
+.livro-lendo[aria-pressed="true"]::before { content: '● '; }
+.livro-lendo:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.livro-lendo:disabled { opacity: 0.5; cursor: default; }
+/* O filtro das leituras (D61): fora do `#abas`, fixo acima da lista. A trilha é um `<select>`
+   (ajuste 05/10: 6 trilhas reais de nome longo não cabiam numa linha de chips); os chips de
+   status são `flex: none` para não encolher (#43). */
+.leituras-filtro { flex: none; display: grid; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--borda); }
+.leituras-filtro[hidden] { display: none; }
+#filtro-texto { width: 100%; min-height: 34px; padding: 6px 10px; border: 1px solid var(--borda); border-radius: 10px; background: var(--fundo); color: var(--texto); font: inherit; font-size: 13px; }
+#filtro-texto::placeholder { color: var(--texto-2); }
+#filtro-texto:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.filtro-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* O seletor de trilha (ajuste 05/10): `<select>` nativo, mesma pele da busca. */
+#filtro-trilha { width: 100%; min-height: 34px; padding: 6px 10px; border: 1px solid var(--borda); border-radius: 10px; background: var(--fundo); color: var(--texto); font: inherit; font-size: 13px; }
+#filtro-trilha:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chip { flex: none; min-height: 30px; padding: 4px 10px; font: inherit; font-size: 12px; white-space: nowrap; border: 1px solid var(--borda); border-radius: 999px; background: none; color: var(--texto-2); cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--accent-suave); border-color: var(--accent); color: var(--texto); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Aba sem claude ainda é aba: continua clicável e legível, só não recebe texto. O aviso
    é o estado em itálico. A regra de peso `450` + `--texto-2` do título SAIU em 02/09: com a
    base em `400` + `--texto-2`, ela deixaria a aba SEM agente mais pesada que a aba viva e
@@ -604,6 +779,12 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
 .conversa-linha[data-estado="pronta"] .conversa-pino { color: var(--ok); }
 .conversa-linha[data-estado="interrompida"] .conversa-pino,
 .conversa-linha[data-estado="interrompida"] .conversa-estado { color: var(--perigo); }
+/* O nome do job em negrito leve — como no Herd. `[id="grupo-jobs"]`, e NÃO `#grupo-jobs`:
+   o seletor de ID pesaria MAIS que o do bloqueado/órfão logo abaixo (três classes), e o
+   600 venceria o 700 nesses jobs — exatamente o oposto do que se quer ("não é o mesmo
+   peso para todos"). O seletor de ATRIBUTO conta como classe na especificidade, então o
+   bloqueado continua ganhando quando os dois competem no mesmo elemento. */
+[id="grupo-jobs"] .conversa-titulo { font-weight: 600; }
 /* Bloqueado/órfão (grupo de jobs, spec 2026-09-08 §4.4): é o único estado em que o usuário
    precisa AGIR, e o negrito é o mesmo peso do "te esperando" ([data-esperando="1"] abaixo) —
    valor PRÓPRIO em vez de pegar carona nele: as duas regras têm a mesma especificidade, e
@@ -712,6 +893,42 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   .conversa-linha:hover .abrir-ao-lado, .conversa-linha:focus-within .abrir-ao-lado { display: flex; }
 }
 
+/* ✎ — renomear a aba (card `renomear-a-aba`, decisão de 11/09): um lápis ao lado do nome.
+   VISÍVEL por padrão, e escondido só quando se SABE que há mouse: navegador que não responde à
+   consulta de hover fica com o lápis à vista — o erro seguro é o descobrível. A condição é
+   `hover`, não largura: "não há hover no toque" é o motivo da decisão, então celular deitado e
+   tablet ficam com ele à vista, e notebook com mouse fica com o comportamento de desktop.
+   Não colide com o ⧉ no desktop: o ⧉ ocupa 32–56 px da direita, o lápis 6–30 px. */
+.renomear-aba {
+  position: absolute; right: 6px; top: 8px;
+  width: 24px; height: 24px; padding: 0; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; color: var(--texto-3);
+}
+.renomear-aba svg { width: 16px; height: 16px; }
+.renomear-aba:hover { background: var(--fundo-3); color: var(--texto); }
+@media (hover: hover) {
+  .renomear-aba { display: none; }
+  .conversa-linha:hover .renomear-aba, .conversa-linha:focus-within .renomear-aba { display: flex; }
+}
+/* No toque, o alvo de 40 px dos outros botões de dedo (o +, a engrenagem, o ✕). Top 0 + 40 px
+   centra o ícone na linha do nome (padding 10 + meia linha de 15 px ≈ 20 px). */
+@media (hover: none) {
+  .renomear-aba { right: 0; top: 0; width: 40px; height: 40px; }
+}
+/* A vaga do lápis: o nome, o chip e a bolinha de job param antes dela, e o texto não pula quando o
+   lápis aparece no hover. Pelo PAPEL (a linha que TEM lápis), não pela marcação: as linhas do
+   grupo de jobs usam a mesma `.conversa-linha > .conversa > .conversa-titulo` e não têm lápis
+   (#52). A regra base do `.conversa-titulo` fica intacta. */
+.conversa-linha:has(> .renomear-aba) .conversa-titulo { padding-right: 28px; }
+/* D63: a hora virou o último item da 1ª linha. No desktop com mouse o ⧉ aparece no hover a 32–56px
+   da direita (`.abrir-ao-lado`), e numa linha de uma linha só ele cairia centrado EM CIMA da hora.
+   A vaga sobe para 56px ali; no toque (sem ⧉) os 28px do lápis bastam. Esta regra tem de vir
+   DEPOIS da de 28px: mesmo seletor, mesma especificidade, ganha a última. */
+@media (hover: hover) and (min-width: 761px) {
+  .conversa-linha:has(> .renomear-aba) .conversa-titulo { padding-right: 56px; }
+}
+
 /* Os quatro controles do painel de configuração. Até 24/08 moravam no rodapé desta lateral
    (`.lateral-rodape`, que saiu junto com eles): no celular a lateral É a tela da lista, e
    quatro linhas fixas embaixo eram altura roubada da lista de abas. As classes continuam com
@@ -751,7 +968,7 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
    O `min-height` da lista agora vive num lugar só: `.ajuste`. */
 .config-lista { margin: 12px 0 16px; }
 
-/* A lista de ajustes: dois grupos por ALCANCE (Este aparelho / O servidor), sete linhas de
+/* A lista de ajustes: dois grupos por ALCANCE (Este aparelho / O servidor), oito linhas de
    46px cada, todas com o mesmo <select> nativo sobreposto por baixo (P6/R10 da spec de
    04/09) — nenhuma lista própria substitui a roda do sistema. */
 .config-grupo { margin-bottom: 14px; }
@@ -801,6 +1018,46 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   display: block; padding: 0 10px 4px; font-size: 11.5px; line-height: 1.4;
   color: var(--texto-3);
 }
+
+/* A lista de aparelhos inscritos (spec 2026-09-12). Mora junto das .ajuste porque é a mesma
+   linha de 46px do painel, dentro de um <dialog>. */
+.aparelho-lista { margin: 4px 0 12px; }
+/* O item é o wrapper: a linha em si mais o recado do servidor, quando há um. A borda mora
+   aqui para o recado ficar do lado de dentro da mesma faixa. */
+.aparelho-item { border-bottom: 1px solid var(--borda); }
+.aparelho-lista .aparelho-item:last-child { border-bottom: 0; }
+.aparelho-linha {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 46px; padding: 4px 2px;
+}
+/* O `min-width: 0` é o que faz o ellipsis DISPARAR: sem ele o item flex não encolhe abaixo do
+   conteúdo e os 80 caracteres de user agent vazam para fora da caixa — regra certa que nunca
+   dispara porque outra impede a condição dela. Copiado do .ajuste-rotulo acima, que já
+   resolve isto; regra nova que "quase" copia é como o defeito volta. */
+.aparelho-nome { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aparelho-nome.aparelho-vazio { color: var(--texto-3); font-style: italic; }
+.aparelho-marca { flex: none; font-size: 11.5px; color: var(--texto-3); }
+.aparelho-data { flex: none; font-size: 11.5px; color: var(--texto-3); }
+/* Os MESMOS 8 hex que o journal imprime (`aparelho 9f8e7d6c`): é o que liga a linha da tela à
+   linha do log. Discreto e no fim, onde não disputa com o nome. */
+.aparelho-id { flex: none; font-family: var(--mono); font-size: 11px; color: var(--texto-3); }
+/* Sempre visível, nunca no :hover — o Chromium headless responde `hover: none` até no
+   desktop, e controle que só aparece no hover nunca chega ao print nem ao celular. */
+.aparelho-editar {
+  flex: none; width: 32px; height: 32px; padding: 0;
+  background: none; border: 0; border-radius: var(--raio);
+  color: var(--texto-2); font: inherit; font-size: 15px; cursor: pointer;
+}
+.aparelho-editar:hover { background: var(--fundo-2); color: var(--texto); }
+/* Em edição a linha vira coluna: o campo ocupa a largura toda e os botões ficam embaixo —
+   em 390px, campo e dois botões lado a lado não cabem sem espremer o campo. */
+.aparelho-linha.aparelho-editando { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 2px; }
+.aparelho-campo {
+  width: 100%; box-sizing: border-box; padding: 8px 10px;
+  background: var(--fundo); color: var(--texto); font: inherit; font-size: 13px;
+  border: 1px solid var(--borda); border-radius: var(--raio);
+}
+.aparelho-acoes { display: flex; gap: 8px; justify-content: flex-end; }
 
 .diag-erro {
   font-family: var(--mono); font-size: 12.5px; color: var(--perigo);
@@ -881,9 +1138,9 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   flex: 1 1 0; min-width: 320px;
   display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
   /* A COLUNA precisa do mesmo `minmax(0, 1fr)` que `.chat` já usava (ver o comentário lá em
-     cima): sem ela a coluna implícita é `auto`, dimensionada pelo item MAIS LARGO — e a
-     `.faixa-etapa` (texto que não quebra) esticava o painel inteiro, `.mensagens` incluída,
-     para fora da tela no celular. Medido: 390px virando 577px sem esta linha. */
+     cima): sem ela a coluna implícita é `auto`, dimensionada pelo item MAIS LARGO — medido
+     com a `.faixa-etapa`, que saiu na D51 — a regra fica porque a causa é a coluna implícita
+     `auto`, não aquele elemento (390px virando 577px). */
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;
 }
@@ -987,26 +1244,18 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
    Escondida por [hidden], que já vence este `display: flex` na regra global lá em cima. */
 .faixa-jobs {
   order: 9; flex-basis: 100%; display: flex; align-items: center; gap: 8px;
-  /* A etapa quebra para a linha de baixo em vez de disputar espaço com os títulos. */
   flex-wrap: wrap; row-gap: 2px;
   min-width: 0; padding: 5px 10px; text-align: left; font-size: 12.5px;
-  /* Sem cor chumbada: accent-suave é o accent do tema sobre o próprio fundo, então o
-     contraste de --texto sobre ela segue o mesmo dos oito temas. */
   background: var(--accent-suave); border: 1px solid var(--accent); color: var(--texto);
-  /* Só a ENTRADA anima (T5, achado da Fase 0 deste job: a bancada mediu o allow-discrete
-     vencendo o `[hidden] !important`, mas com um salto de layout de 48px no colapso final —
-     nem o caminho A nem o B da spec descrevem isso; a saída seca é a mesma de sempre até haver
-     decisão. Ver o relatório do job f49b.) */
   opacity: 1; transform: none;
   transition: opacity 180ms ease-out, transform 180ms ease-out;
 }
 @starting-style { .faixa-jobs:not([hidden]) { opacity: 0; transform: translateY(-6px); } }
 .faixa-jobs:hover { filter: brightness(1.08); }
-.faixa-pino { flex: none; font-size: 10px; color: var(--accent); }
-.faixa-jobs[data-estado="rodando"] .faixa-pino { animation: pulsar 1.4s infinite; }
+/* Um estado só (D56: o "terminou" não voltou), então o pulso é da CLASSE — um
+   `[data-estado="rodando"]` que nunca varia seria seletor de uso único. */
+.faixa-pino { flex: none; font-size: 10px; color: var(--accent); animation: pulsar 1.4s infinite; }
 .faixa-conta { flex: none; font-weight: 600; }
-/* Sem isto o `gap` deixa um buraco quando a faixa mostra só o "terminou". */
-.faixa-conta:empty { display: none; }
 .faixa-titulos {
   flex: 1; min-width: 0; color: var(--texto-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1019,7 +1268,7 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
 }
 .faixa-etapa:empty { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .faixa-jobs[data-estado="rodando"] .faixa-pino { animation: none; }
+  .faixa-pino { animation: none; }
   .faixa-jobs { transition: none; }
 }
 
@@ -1124,20 +1373,96 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
 .pergunta-tela {
   /* Sem `max-height`: quem rola agora é a conversa inteira, e um teto aqui traria de volta
      o rolador de dentro do rolador que esta mudança veio tirar. O `overflow: auto` FICA —
-     com a altura livre ele nunca ativa a barra vertical, e é ele que segura o framebuffer
-     de 168 colunas na horizontal em vez de deixar a página inteira andar para o lado. */
+     com a altura livre ele nunca ativa a barra vertical; sobrou como rede de segurança para
+     uma linha sem ponto de quebra, já que desde o card pergunta-do-agente-em-cartao a tela
+     QUEBRA linha (`pre-wrap`) em vez de rolar para o lado. */
   /* `flex: none` para a caixa NÃO encolher dentro da coluna: encolhida, o `overflow: auto`
      acordaria de novo como rolador vertical interno — o que esta mudança veio tirar. */
   margin: 0; overflow: auto; flex: none;
   /* 13px, o mesmo do celular e o mesmo das bolhas: a 11.5px o menu do terminal ficava
      pequeno demais para ler no note (28/08). */
   font-family: var(--mono); font-size: 13px; line-height: 1.4;
-  color: var(--texto-2); white-space: pre; tab-size: 4;
+  /* `--texto`, não `--texto-2` (card responder-a-pergunta-pelo-teclado): com a pergunta
+     aberta, a tela da pane É o conteúdo — no celular ela toma a tela inteira e o resto fica
+     travado de propósito. Pintar o conteúdo principal com a cor de texto secundário era o
+     erro de origem: reprovava 4,5:1 no rose-pine-dawn (4,23), medido em testes/gate-ui.js. */
+  color: var(--texto); tab-size: 4;
+  /* `pre-wrap` + `overflow-wrap: anywhere`, não `pre`: o `pre` cortava a pergunta na borda
+     direita e punha barra de rolagem lateral (o print do dono, 08/10: "quero que corte
+     nada"). Preserva os espaços do desenho do terminal e quebra onde a linha não cabe. */
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 /* As teclas do menu. Alvo grande de propósito: quem usa isto está no celular, com uma mão,
    e errar a seta num menu de permissão escolhe a opção errada. */
 .pergunta-teclas { display: flex; gap: 8px; margin-top: auto; padding-top: 10px; flex-wrap: wrap; }
 .pergunta-teclas .tecla { min-width: 52px; min-height: 40px; font-size: 15px; }
+/* A luz de "tecla física entendida" (card responder-a-pergunta-pelo-teclado). ANEL, e não
+   troca de fundo — a diferença foi MEDIDA em PNG, não escolhida no papel.
+
+   A primeira versão pintava `background: var(--borda)`, e o print mostrou os dois defeitos:
+   no `↓` (fundo `--fundo-3`, quase a mesma claridade da `--borda`) a mudança era sutil
+   demais para dizer "entendi"; e no Enter, que é `.btn-principal`, o dourado do `--accent`
+   virava CINZA — o botão aceso ficava com cara de desabilitado, o oposto do que a luz quer
+   dizer. Anel não depende do fundo de cada botão: funciona igual nos dois e nos doze temas
+   (`--texto` sempre contrasta com `--fundo`, e os botões moram sobre ele).
+
+   Atributo, não media query, então funciona no Chromium do smoke, que responde
+   `hover: none` até no desktop (armadilha #66). Sem transição: a luz tem que estar no PNG
+   no instante do obturador, e animação de entrada a deixaria pela metade. */
+.pergunta-teclas .tecla[data-apertada] { box-shadow: 0 0 0 3px var(--texto); }
+/* O aviso de hook da pergunta não instalado (card pergunta-sem-gancho-avisa). Discreto pelo TAMANHO, não pela
+   cor: `--texto-2` sobre o fundo composto da `.pergunta` reprova 4,5:1 no rose-pine-dawn (ver `.pergunta-tela`). */
+.aviso-gancho { margin-top: 6px; font-size: 12px; line-height: 1.4; }
+
+/* O CARTÃO da pergunta do agente (card pergunta-do-agente-em-cartao, D74). Fonte do app (não
+   a mono do terminal), opção com alvo >= 44px e TODA cor de texto = `--texto`: o fundo da
+   `.pergunta` é um tom de alerta por cima de `--fundo`, e `--texto-2` ali reprova 4,5:1 no
+   rose-pine-dawn (D57). O "marcado" é ANEL + borda `--texto`, que não depende do fundo de
+   nenhum dos temas. O marcador do <details> é o nativo — a Inter não cobre ▸ (#92). */
+.pergunta-cartao {
+  display: flex; flex-direction: column; gap: 20px; flex: none;
+  font-family: var(--sans); font-size: 15px; line-height: 1.45; color: var(--texto);
+}
+.cartao-questao { display: flex; flex-direction: column; gap: 10px; }
+.cartao-chip {
+  align-self: flex-start; padding: 2px 10px; border: 1px solid var(--texto);
+  border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--texto);
+}
+.cartao-texto { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; color: var(--texto); }
+.cartao-multipla { font-size: 13px; color: var(--texto); }
+.cartao-opcoes { display: flex; flex-direction: column; gap: 8px; }
+.cartao-opcao {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px;
+  text-align: left; font: inherit; color: var(--texto); overflow-wrap: anywhere;
+  background: var(--fundo-2); border: 1px solid var(--borda); border-radius: var(--raio);
+  cursor: pointer;
+}
+.cartao-opcao:disabled { cursor: default; }
+.cartao-opcao-rotulo { font-weight: 600; }
+.cartao-opcao-descricao { font-size: 13px; }
+.cartao-opcao[aria-pressed="true"] { border-color: var(--texto); box-shadow: 0 0 0 2px var(--texto); }
+.cartao-outra { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--texto); }
+.cartao-outra-campo {
+  box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 12px;
+  /* 16px: abaixo disso o Safari do iPhone dá zoom na página ao focar o campo. */
+  font: inherit; font-size: 16px; color: var(--texto);
+  background: var(--fundo); border: 1px solid var(--borda); border-radius: var(--raio);
+}
+.cartao-outra-campo:focus-visible { outline: 2px solid var(--texto); outline-offset: 1px; }
+.cartao-erro {
+  padding: 8px 12px; border: 1px solid var(--perigo); border-radius: var(--raio);
+  font-size: 14px; overflow-wrap: anywhere; color: var(--texto);
+}
+.cartao-rodape { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cartao-enviar { min-height: 44px; padding: 0 18px; }
+.cartao-aviso { font-size: 13px; color: var(--texto); }
+/* O terminal cru: `flex: none` pelo mesmo motivo do `.pergunta-tela` (não encolher e virar
+   rolador). Sem cartão ele É a tela de sempre — aberto, sem rótulo e sem folga em cima. */
+.pergunta-terminal { flex: none; margin-top: 12px; }
+.pergunta-terminal-rotulo { padding: 10px 0; font-size: 14px; color: var(--texto); cursor: pointer; }
+.pergunta-terminal[data-sem-cartao] { margin-top: 0; }
+.pergunta-terminal[data-sem-cartao] > summary { display: none; }
 
 /* O `contain` aqui NÃO cria gesto nenhum — quem cria é o app.js, e desde 02/09 a conversa
    TEM puxar para atualizar (ouvido aqui, desenhado na `#fita`). O `contain` existe por outro
@@ -1150,12 +1475,19 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
      sem ele a fita comprida empurra o `.envio` para fora da tela. */
   grid-row: 2; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
   padding: 24px 24px 8px; scroll-behavior: smooth;
-  /* Berço do `.puxar-selo`, que é `absolute`. `relative` e NÃO `transform`: a `.pergunta` é
-     filha daqui e é `position: fixed` no celular — um ancestral com `transform` viraria o
-     bloco de contenção dela e ela deixaria de cobrir a viewport. `relative` não contém
-     `fixed`, então a tela da pane continua inteira. É a mesma armadilha que fez o gesto
+  /* Berço do `.puxar-selo`, que é `absolute`. A `.pergunta` NÃO se ancora mais aqui: entre
+     22/09 e 23/09 ela foi `absolute` neste bloco e sumiu da tela do celular — filho
+     `absolute` de um rolador se mede pelo topo do CONTEÚDO e rola junto com ele (a história
+     inteira, com o número medido, está no bloco de 760px). Hoje ela é bloco em fluxo nos dois
+     tamanhos de tela, e este `relative` não a alcança. É a mesma armadilha que fez o gesto
      descer a `.fita` em vez do `#mensagens`. */
   position: relative;
+  /* O Chrome faz *scroll anchoring* por padrão: com conteúdo inserido ACIMA da viewport (o
+     lote antigo do card `carregar-mais-historico`) ele ajusta o `scrollTop` sozinho, e a
+     correção manual de `desenharLoteAntigo` (app.js) somaria em cima do ajuste do navegador —
+     a tela pulando um lote inteiro. `data-pintando` não cobre isso: só troca
+     `scroll-behavior: smooth` por `auto`. */
+  overflow-anchor: none;
 }
 .fita { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 
@@ -1412,6 +1744,19 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   position: static; opacity: 1; margin-left: auto; flex: none;
 }
 
+/* A marca de subagente (card `ver-a-conversa-do-job`, §4.6 do plano) — "└ executor-plano"
+   no topo da fala/cartão, para não confundir a autoria de quem falou/agiu num job. Tokens
+   já existentes: `--fraco` não existe neste arquivo (era chute do plano); `--texto-3` é o
+   tom mais fraco já usado em toda a folha. */
+.fala-sub { font-size: .78rem; color: var(--texto-3); opacity: .85; margin-bottom: 2px; }
+.fala[data-sub] { border-left: 2px solid var(--borda); padding-left: 8px; }
+/* O cartão de ferramenta também carrega a marca (§4.5 item 6 do plano) — é nele que a fita
+   de um job passa a maior parte do tempo, e a mesma borda reusada evita CSS novo. */
+.ferramenta[data-sub] summary { border-left: 2px solid var(--borda); padding-left: 9px; }
+/* O nome do subagente no cartão: pequeno e ao lado, para dizer DE QUEM é o passo sem
+   competir com o nome da ferramenta. Mesma cor da marca da fala. */
+.fer-sub { font-size: .72rem; color: var(--texto-3); opacity: .85; margin-left: auto; }
+
 /* Corte de memória (/clear, /compact): régua no meio da conversa. Não é fala de
    ninguém, é um aviso de que dali para cima o agente não lembra mais. */
 .corte {
@@ -1428,6 +1773,17 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
 .corte-fora .corte-rotulo { color: var(--texto-2); border-color: var(--texto-3); }
 /* Só a cauda do histórico foi carregada: aviso, não alarme. */
 .corte-inicio .corte-rotulo { color: var(--texto-3); border-color: var(--borda); }
+/* Rótulo + nota (até 60ch) + botão + as duas réguas numa linha só espremem em 390px — o que
+   aperta é LARGURA, não altura. O `wrap` deixa o botão cair para a linha de baixo quando não
+   couber. A `.corte` genérica não ganha isto: `/clear`/`/compact` não têm botão nenhum. */
+.corte-inicio { flex-wrap: wrap; }
+/* O botão "carregar mais" do chip `início` (card `carregar-mais-historico`) — texto, não
+   caixa: some no meio do aviso discreto que a régua já é. */
+.corte-mais {
+  background: none; border: 0; color: var(--accent); font: inherit; font-weight: 600;
+  padding: 0 4px; min-height: 32px; cursor: pointer;
+}
+.corte-mais:disabled { opacity: .5; cursor: default; }
 
 /* Veio de um terminal, na mesma sessão. Fica visível que não passou por aqui, mas sem
    virar alarme: é conversa legítima, só não foi digitada nesta tela. */
@@ -1612,6 +1968,32 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
 /* Arrastar arquivo por cima da conversa. Split view, fase 3: a moldura é do PAINEL debaixo
    do cursor, não do `.chat` inteiro — com N painéis, só o alvo do solto precisa acender. */
 .painel[data-arrasto] { outline: 2px dashed var(--accent); outline-offset: -8px; }
+/* Arrastar a aba para o split (D73). A coluna fantasma é item flex como o `.painel` — os outros
+   encolhem e a tela mostra COMO VAI FICAR antes de soltar. `pointer-events: none`: quem decide o
+   alvo é a coordenada (§3.3 da spec), nunca o elemento debaixo do cursor. */
+.fantasma-painel {
+  flex: 1 1 0; min-width: 320px; display: grid; place-items: center;
+  margin: 8px; padding: 16px; text-align: center; font-weight: 600;
+  border: 2px dashed var(--accent); border-radius: var(--raio);
+  background: var(--fundo-2); color: var(--texto); pointer-events: none;
+}
+/* A coluna fantasma quebra o `.painel + .painel` lá de cima: devolve o divisor e o recuo do título
+   ao painel que vem depois dela. */
+.fantasma-painel + .painel { border-left: 1px solid var(--borda); }
+.fantasma-painel + .painel .chat-topo { padding-left: 20px; }
+/* Centro: o painel inteiro destacado com o nome de quem entra. `position: relative` SÓ aqui — fora
+   do preview o `.painel` não muda de contexto de posicionamento. */
+.painel[data-alvo-troca] { position: relative; outline: 2px dashed var(--accent); outline-offset: -8px; }
+.rotulo-troca {
+  position: absolute; inset: 8px; z-index: 5; display: grid; place-items: center;
+  padding: 16px; text-align: center; font-weight: 600;
+  background: var(--fundo-2); color: var(--texto); opacity: 0.94; pointer-events: none;
+}
+/* A conversa que vai MUDAR de lugar (S3): na borda ela colapsa — sem sair do DOM, a rolagem dela
+   fica — e o nº de colunas do preview é o do resultado; no centro só esmaece. Depois das regras do
+   `.painel` de propósito: mesma especificidade, quem vem depois vence. */
+.painel[data-arrasto-origem="colapsa"] { flex: 0 0 0; min-width: 0; border: 0; overflow: hidden; visibility: hidden; }
+.painel[data-arrasto-origem="esmaece"] { opacity: 0.45; }
 .dica kbd {
   font-family: var(--mono); font-size: 10.5px;
   border: 1px solid var(--borda); border-radius: 4px; padding: 0 4px; background: var(--fundo-3);
@@ -1641,6 +2023,17 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .paleta-vazia { padding: 10px; font-size: 12.5px; color: var(--texto-3); }
+/* A lista do campo Projeto da aba nova. Usa os ITENS da paleta, não o contêiner: `.paleta` abre
+   para CIMA da caixa de escrita (absolute, bottom: 100%); esta fica no fluxo do diálogo, logo
+   abaixo do campo, e rola sozinha sem arrastar a página (`overscroll-behavior: contain`). */
+.lista-projeto {
+  max-height: 240px; overflow-y: auto; overscroll-behavior: contain;
+  margin: -8px 0 14px; padding: 5px;
+  background: var(--fundo); border: 1px solid var(--borda); border-radius: var(--raio);
+}
+/* O "+ Criar pasta" no fim da lista do campo Projeto (card `criar-pasta-na-aba-nova`): o mesmo item da
+   paleta, separado dos nomes por um traço — é uma AÇÃO, não uma pasta. Nenhuma cor nova. */
+.paleta-criar { border-top: 1px dashed var(--borda); margin-top: 4px; }
 
 /* ── Vazio e diálogo ─────────────────────────────────────────────────── */
 .vazio {
@@ -1842,8 +2235,7 @@ dialog[open]::backdrop { opacity: 1; }
   /* A etapa deixa de tomar uma linha só para ela: na linha 2 do celular isso seria uma
      TERCEIRA linha de cabeçalho. Vira o segundo pedaço da mesma linha, com ellipsis nos
      dois — o `nowrap` da faixa acima é o que a impede de quebrar (mesmo motivo da base
-     `0`: o tamanho hipotético dela é o texto inteiro), e o `min-width: 0` de cada um é o que
-     autoriza os dois a encolher. */
+     `0`), e o `min-width: 0` de cada um é o que autoriza os dois a encolher. */
   .faixa-etapa { flex: 1 1 auto; min-width: 0; padding-left: 0; }
   .faixa-titulos { flex: 0 1 auto; }
   .btn-parar { order: 6; margin-top: 6px; }
@@ -1862,10 +2254,13 @@ dialog[open]::backdrop { opacity: 1; }
   /* Split é desktop-only (Fase 0 do card): o ⊟ (tira o painel) e o ⧉ (abre ao lado) não têm
      o que fazer no celular, onde só existe um painel por vez. */
   .fechar-painel, .abrir-ao-lado { display: none; }
-  /* A lista vai até embaixo: era o rodapé que reservava a faixa segura do celular, e ele
-     saiu com a mudança de 24/08. Sem esta reserva a última aba fica atrás da barra do
-     navegador / do indicador de home do iPhone — visível, mas fora do alcance do dedo. */
-  .conversas { padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+  /* A faixa segura do iPhone trocou de dono (D51): quem encosta no fim da tela agora é a
+     `.barra-agentes`, não a última aba — a lista não precisa mais dessa reserva. */
+  .conversas { padding-bottom: 8px; }
+  /* Abaixo de 16px o Safari dá zoom no foco (R9 da auditoria). */
+  #filtro-texto, #filtro-trilha { font-size: 16px; }
+  .barra-agentes { padding-bottom: calc(9px + env(safe-area-inset-bottom)); }
+  .barra-leituras { padding-bottom: calc(9px + env(safe-area-inset-bottom)); }
   .bolha-eu, .bolha-erro { max-width: 88%; }
   .fala { max-width: 96%; }
   .mensagens { padding: 16px 14px 8px; }
@@ -1874,25 +2269,45 @@ dialog[open]::backdrop { opacity: 1; }
      tela. Quem está no telefone já sabe que Enter envia. */
   .dica { display: none; }
   .paleta { max-height: 40vh; }
+  .lista-projeto { max-height: 30vh; }
   /* A TELA DA PANE é o pedaço mais apertado do celular, e até 24/08 este bloco não tocava
      em nada dela: o telefone recebia o CSS de desktop inteiro para ler um framebuffer de
      168 a 211 colunas numa viewport de ~390px.
 
-     Desde 25/08 ela TOMA A TELA INTEIRA (decidido depois do primeiro smoke no
-     celular). O motivo é o mesmo de sempre, levado às últimas: enquanto a pergunta está
-     aberta o terminal PAROU e não há nada a fazer na conversa — a caixa de texto está
-     travada de propósito e a fita atrás é só histórico. Dividir a tela com quem não aceita
-     interação era dar metade do telefone para um leitor de 168 colunas.
+     Desde 25/08 ela tomava a TELA INTEIRA (`fixed; inset: 0`), decidido depois do primeiro
+     smoke no celular: enquanto a pergunta estava aberta o terminal PARAVA e não havia nada a
+     fazer na conversa — a caixa de texto estava travada de propósito.
 
-     `position: fixed` e não um `<dialog>`: o elemento já existe, já é mostrado e escondido
-     pelo `hidden` do app.js, e virar dialog trocaria o dono do foco e do Esc — que aqui é
-     uma TECLA ENVIADA À PANE, não um fechar de modal.
+     Essa premissa CAIU com o card `escrever-texto-na-pergunta-aberta`: a caixa não está mais
+     travada, escrever com pergunta aberta é um gesto válido (D58). E `fixed` cobria a caixa:
+     medido com `elementFromPoint` no ponto dela em 390x844, quem respondia era o aviso, não a
+     caixa — o Enviar destravado ficava INALCANÇÁVEL justo no celular que motivou o card.
+     Em 22/09 a saída foi `absolute; inset: 0` dentro da `.mensagens` (que é `relative`).
 
-     O fundo precisa ser OPACO agora que cobre tudo, e `--perigo-suave` é rgba nos dez
-     temas. Os dois planos empilhados resolvem sem inventar token: o tom de alerta por
-     cima, o fundo do tema por baixo. */
+     🔴 E ISSO ERA UM BUG, medido em 23/09 no cockpit do dono: no celular a pergunta não
+     aparecia. Filho `absolute` de um ROLADOR não se mede pela vista dele — se mede pelo topo
+     do CONTEÚDO, e portanto ROLA junto. Como abrir a pergunta chama `rolarFim`
+     (`pintarTelaDaPane`, app.js), o painel nascia no começo do rolo e a vista ia para o fim:
+     `getBoundingClientRect().top = -7671` numa conversa de 60 mensagens em 390x844. Ele
+     estava lá, `hidden = false`, e fora do campo de visão.
+
+     Por que o smoke de 22/09 passou mesmo assim: ele usa conversa CURTA. Sem rolagem o topo
+     do conteúdo É a vista, e o mesmo CSS quebrado acerta o lugar. O gate novo
+     (`testes/gate-pergunta-na-vista.js`) mede com a conversa comprida, que é onde dói.
+
+     O conserto é o celular fazer o que o DESKTOP já fazia e o dono chamou de normal: a
+     pergunta é BLOCO EM FLUXO, o último da conversa, com `min-height: 100%` (regra de cima).
+     Rolou até o fim, ela está na tela; rolou para cima, você lê a conversa atrás — que é o
+     que ele quer, e foi por isso que o `fixed` saiu em 22/09. Sem `position`, sem `inset`,
+     sem `z-index`: não há nada para empilhar quando nada flutua.
+
+     Não é um `<dialog>`: o elemento já existe, já é mostrado e escondido pelo `hidden` do
+     app.js, e virar dialog trocaria o dono do foco e do Esc — que aqui é uma TECLA ENVIADA À
+     PANE, não um fechar de modal.
+
+     O fundo OPACO fica: `--perigo-suave` é rgba nos dez temas, e sem o segundo plano as
+     bolhas do histórico apareceriam através do menu do terminal. */
   .pergunta {
-    position: fixed; inset: 0; z-index: 30;
     margin: 0; border-radius: 0; border-width: 0;
     display: flex; flex-direction: column;
     padding: calc(10px + env(safe-area-inset-top)) 12px calc(10px + env(safe-area-inset-bottom));
@@ -1903,25 +2318,11 @@ dialog[open]::backdrop { opacity: 1; }
     /* Na tela inteira quem manda na altura é o que sobra, não uma fração da viewport: o
        `42vh` do desktop deixaria metade da tela vazia justo depois de tomá-la toda. */
     flex: 1; min-height: 0; max-height: none;
-    /* Chegar à borda lateral e continuar arrastando não pode entregar a vez ao gesto de
-       voltar do navegador nem à rolagem de trás — mesmo motivo de `.tabela-rolagem`. */
-    overscroll-behavior-x: contain;
-    /* A dica de que a linha CONTINUA para o lado. No celular a barra de rolagem só existe
-       durante o gesto, então quem não sabe que dá para arrastar lê metade da tela e acha
-       que é tudo.
-
-       Por que `mask-image` e não o truque clássico (degradê no `background` com
-       `background-attachment: local`, que tem a graça de aparecer só quando há conteúdo do
-       lado): aquele exige chumbar a cor do fundo, e `--perigo-suave` é rgba
-       semitransparente nos DEZ temas — a faixa sairia opaca e errada em todos. Máscara não
-       pinta cor nenhuma, então vale em qualquer tema.
-
-       E só na borda DIREITA. A primeira versão desvanecia os dois lados e o smoke de
-       celular mostrou o preço: o `❯` que marca a opção selecionada no menu do CLI mora na
-       primeira coluna, e apagá-lo é apagar exatamente o que ele precisa ler. À esquerda
-       está o começo da linha; é para a DIREITA que o conteúdo continua. */
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
-    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+    /* SEM `overscroll-behavior-x` e SEM `mask-image` na borda direita (card
+       pergunta-do-agente-em-cartao): com `pre-wrap` a linha quebra e não há mais nada para
+       rolar para o lado — então a dica de "a linha continua" não tem o que dizer. E a
+       máscara, que era um degradê só na borda direita, APAGARIA os últimos 18 px de toda
+       linha: o oposto de "quero que corte nada". */
   }
 }
 
@@ -2042,6 +2443,10 @@ dialog[open]::backdrop { opacity: 1; }
 
 .uso-secao { margin-bottom: 18px; }
 .uso-secao h2 { font-size: 14px; margin: 0 0 8px; color: var(--texto-2); font-weight: 600; }
+/* O rótulo de EIXO dentro da seção do Codex ("Por modelo" / "Por projeto"). Menor que o `h2`
+   da seção, que ali é o nome do agente — sem isto o `h3` herdaria o tamanho padrão do
+   navegador e competiria com o título. */
+.uso-secao h3.uso-secao-sub { font-size: 12px; margin: 14px 0 6px; color: var(--texto-2); font-weight: 600; opacity: .85; }
 .uso-linha { padding: 8px 0; border-bottom: 1px solid var(--borda); }
 .uso-linha:last-child { border-bottom: 0; }
 .uso-linha-topo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
@@ -2070,3 +2475,118 @@ dialog[open]::backdrop { opacity: 1; }
 @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
   .chat { transition: none; }
 }
+
+/* ── Tela "Pra revisar" (plano 2026-10-04) — bloco do mockup aprovado
+   (docs/mockups/fase1-pra-revisar/revisar.css), só com tokens do tema, pra valer nos dez
+   temas. `.icone-so.revisar` é o alvo de dedo: `.icone-so` sozinho dá 25px (gate-ui.js:5819),
+   o mínimo de toque é 40 — mesmo motivo do `.engrenagem`/`.recarregar` acima. ── */
+.icone-so.revisar { position: relative; width: 40px; height: 40px; display: inline-grid; place-items: center; }
+.revisar-conta { position: absolute; top: 2px; right: 0; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; background: var(--accent); color: var(--sobre-accent);
+  font: 700 11px/17px var(--sans); text-align: center; }
+
+#dialogo-revisar { width: min(720px, 92vw); height: min(860px, 90dvh); padding: 0; background: var(--fundo); }
+@media (max-width: 760px) {
+  #dialogo-revisar[open] { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;
+    margin: 0; border: 0; border-radius: 0; }
+}
+.rv { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.rv-barra { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 16px;
+  border-bottom: 1px solid var(--borda); background: var(--fundo-2); }
+.rv-barra h2 { flex: 1; margin: 0; font-size: 18px; }
+.rv-barra .voltar-rv { display: inline-flex; align-items: center; gap: 2px; background: none; border: 0;
+  color: var(--accent); font: 600 15px var(--sans); padding: 8px 6px; cursor: pointer; }
+.rv-corpo { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 14px 24px; }
+.rv-rodape { flex: none; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--borda); background: var(--fundo-2); }
+.rv-rodape .btn { width: 100%; justify-content: center; padding: 13px; font-size: 15px; }
+
+/* resumo + filtros */
+.rv-resumo { color: var(--texto-2); font-size: 13.5px; margin: 0 2px 12px; }
+.rv-filtros { display: flex; gap: 8px; margin-bottom: 14px; overflow-x: auto; }
+.rv-filtro { flex: none; display: inline-flex; gap: 6px; align-items: center; padding: 7px 13px; border-radius: 999px;
+  border: 1px solid var(--borda); background: var(--fundo-2); color: var(--texto-2); font: 600 13px var(--sans); cursor: pointer; }
+.rv-filtro b { font-weight: 700; color: var(--texto); }
+.rv-filtro[aria-pressed="true"] { background: var(--accent-suave); border-color: var(--accent); color: var(--accent); }
+.rv-filtro[aria-pressed="true"] b { color: var(--accent); }
+
+/* cards */
+.rv-lista { display: grid; gap: 10px; }
+.rv-card { position: relative; display: block; width: 100%; text-align: left; cursor: pointer; font: inherit; color: var(--texto);
+  background: var(--fundo-2); border: 1px solid var(--borda); border-radius: 14px; padding: 13px 38px 13px 16px; overflow: hidden; }
+.rv-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--ok); }
+.rv-card[data-tom="aviso"]::before { background: var(--espera); }
+.rv-card[data-tom="perigo"]::before { background: var(--perigo); }
+.rv-card::after { content: '›'; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 24px; color: var(--texto-3); }
+.rv-card:active { background: var(--fundo-3); }
+.rv-linha1 { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--texto-2); margin-bottom: 4px; }
+.rv-proj { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; letter-spacing: .02em; }
+.rv-proj i { width: 8px; height: 8px; border-radius: 50%; background: var(--cor-proj, var(--texto-3)); }
+.rv-card h3 { margin: 0; font-size: 15.5px; line-height: 1.35; font-weight: 600;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rv-sub { display: block; margin-top: 4px; font-size: 12.5px; color: var(--texto-2); }
+.rv-sub::before { content: '↳ '; }
+.rv-linha3 { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rv-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--borda); color: var(--texto-2); }
+.rv-chip[data-tom="aviso"] { color: var(--espera); border-color: currentColor; }
+.rv-chip[data-tom="perigo"] { color: var(--perigo); border-color: currentColor; background: var(--perigo-suave); }
+.rv-chip[data-tom="info"] { color: var(--accent); border-color: currentColor; }
+.rv-chip[data-tom="smoke"] { color: var(--ok); border-color: currentColor; }
+/* Prévia do merge: texto no --texto-2 do chip (o "nada a fazer" não pesa mais que o conflito) e
+   borda --ok. color: var(--ok) dá ~2,2:1 sobre o fundo claro. */
+.rv-chip[data-tom="ok"] { border-color: var(--ok); }
+
+/* tela do job */
+.rv-hero { margin-bottom: 14px; }
+.rv-hero h2 { font-size: 21px; line-height: 1.3; margin: 6px 0 4px; }
+.rv-veredito { display: flex; gap: 10px; padding: 12px 14px; border-radius: 12px; margin-bottom: 18px;
+  background: color-mix(in srgb, var(--ok) 12%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); }
+.rv-veredito[data-tom="aviso"] { background: color-mix(in srgb, var(--espera) 12%, transparent); border-color: color-mix(in srgb, var(--espera) 45%, transparent); }
+.rv-veredito[data-tom="perigo"] { background: color-mix(in srgb, var(--perigo) 12%, transparent); border-color: color-mix(in srgb, var(--perigo) 45%, transparent); }
+.rv-veredito .selo { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--ok); color: var(--fundo);
+  display: grid; place-items: center; font-weight: 700; }
+.rv-veredito[data-tom="aviso"] .selo { background: var(--espera); }
+.rv-veredito[data-tom="perigo"] .selo { background: var(--perigo); }
+.rv-veredito p { margin: 0; font-size: 14px; line-height: 1.5; }
+.rv-veredito strong { display: block; margin-bottom: 2px; }
+.rv-secao { margin: 22px 0 10px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rv-secao h3 { margin: 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--texto-2); }
+.rv-progresso { font-size: 12.5px; color: var(--ok); font-weight: 600; }
+.rv-barra-prog { height: 4px; border-radius: 4px; background: var(--fundo-3); margin: -4px 0 12px; overflow: hidden; }
+.rv-barra-prog span { display: block; height: 100%; width: 0; background: var(--ok); transition: width .2s; }
+
+.rv-passos { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; counter-reset: passo; }
+.rv-passo { display: grid; grid-template-columns: 32px minmax(0,1fr); gap: 12px; padding: 13px 14px;
+  border: 1px solid var(--borda); border-radius: 14px; background: var(--fundo-2); cursor: pointer; }
+.rv-passo .num { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--borda);
+  display: grid; place-items: center; font-weight: 700; font-size: 14px; color: var(--texto-2); }
+.rv-passo input { position: absolute; opacity: 0; pointer-events: none; }
+.rv-passo .onde { font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); margin-bottom: 3px; }
+.rv-passo .faz { font-weight: 600; font-size: 14.5px; line-height: 1.4; }
+.rv-passo .ve { margin-top: 6px; font-size: 13.5px; color: var(--texto-2); line-height: 1.45; }
+.rv-passo .ve b { color: var(--texto); font-weight: 600; }
+.rv-passo:has(input:checked) { border-color: color-mix(in srgb, var(--ok) 55%, transparent); background: color-mix(in srgb, var(--ok) 7%, var(--fundo-2)); }
+.rv-passo:has(input:checked) .num { background: var(--ok); border-color: var(--ok); color: var(--fundo); }
+.rv-passo:has(input:checked) .faz { text-decoration: line-through; color: var(--texto-2); }
+
+/* markdown formatado */
+.rv-md { font-size: 14px; line-height: 1.55; }
+.rv-md h4 { margin: 18px 0 6px; font-size: 15px; }
+.rv-md p { margin: 0 0 10px; }
+.rv-md ul, .rv-md ol { margin: 0 0 10px; padding-left: 20px; }
+.rv-md li { margin: 3px 0; }
+.rv-md code { font: 12.5px var(--mono); background: var(--fundo-3); padding: 1px 5px; border-radius: 4px; word-break: break-word; }
+.rv-tabela { width: 100%; border-collapse: collapse; font-size: 13px; margin: 4px 0 12px; }
+.rv-tabela th, .rv-tabela td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--borda); vertical-align: top; }
+.rv-tabela th { color: var(--texto-2); font-weight: 600; }
+.rv-tabela td:last-child { color: var(--ok); font-weight: 600; white-space: nowrap; }
+.rv-cartao { background: var(--fundo-2); border: 1px solid var(--borda); border-radius: 14px; padding: 12px 14px; }
+.rv-merge-arquivos { margin: 6px 0 0; padding-left: 18px; }
+.rv-merge-arquivos code { font: 12.5px var(--mono); background: var(--fundo-3); padding: 1px 5px; border-radius: 4px; word-break: break-word; }
+.rv-cartao.rv-merge { margin-bottom: 14px; }
+.rv-cartao.rv-merge p { margin: 0; }
+details.rv-completo { margin-top: 22px; border: 1px solid var(--borda); border-radius: 14px; background: var(--fundo-2); }
+details.rv-completo summary { padding: 13px 14px; cursor: pointer; font-weight: 600; color: var(--texto-2); }
+details.rv-completo .rv-md { padding: 0 14px 12px; }
+.rv-md li.sub { margin-left: 18px; list-style: circle; }

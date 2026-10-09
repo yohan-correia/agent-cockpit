@@ -78,10 +78,11 @@ const VIEWPORTS = [
   // limiar de baixo (CAIXA_MINIMA), então é ele quem prova que o limiar não invadiu o celular.
   { nome: '360', largura: 360, altura: 740, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
   { nome: '390', largura: 390, altura: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
-  // O celular DEITADO. Entrou em 09/09 porque o painel de execução notou a faixa entre
-  // CAIXA_LARGA (460) e o breakpoint de 760px: nela a régua nova responde "cabe o texto longo"
-  // enquanto a régua antiga (matchMedia de 760px) respondia "estreito". Celular em landscape
-  // cai bem no meio dessa faixa, e "zero pixel novo no celular" tem que valer deitado também.
+  // O celular DEITADO. Entrou em 09/09 porque o painel de execução notou a faixa de largura
+  // entre CAIXA_LARGA (460) e o breakpoint de 760px: nela a régua nova responde "cabe o texto
+  // longo" enquanto a régua antiga (matchMedia de 760px) respondia "estreito". Celular em
+  // landscape cai bem no meio dessa faixa de largura, e "zero pixel novo no celular" tem que
+  // valer deitado também.
   { nome: '844x390', largura: 844, altura: 390, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
   { nome: '1600', largura: 1600, altura: 1000, isMobile: false, hasTouch: false, deviceScaleFactor: 1 },
 ];
@@ -122,9 +123,11 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 // ─── A ÚNICA aba da fixture ────────────────────────────────────────────────
 //
 // Uma só, de propósito: a pergunta desta fase é "o cabeçalho de UMA conversa mudou de
-// pixel?" — não "quantos painéis cabem". Com usage no `.jsonl` (acende o medidor) e um job
-// mock no projeto dela (acende a faixa e a etapa), o cabeçalho nasce no estado MAIS CHEIO
-// que existe hoje — é aí que uma regressão de layout apareceria primeiro.
+// pixel?" — não "quantos painéis cabem". Com usage no `.jsonl` (acende o medidor), o
+// cabeçalho nasce no estado mais cheio que o medidor sozinho permite — é aí que uma
+// regressão de layout apareceria primeiro. O job mock no projeto dela continua: antes
+// acendia a faixa e a etapa no CABEÇALHO (D51 a tirou de lá); hoje ele só aparece na barra
+// de agentes da lateral.
 
 const CWD_PROJETO = '/home/smoke/projetos/splitcheck';
 const SESSID = 'sess-splitcheck';
@@ -289,14 +292,6 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
       await pagina.waitForSelector('.chat-topo:not([hidden])', { timeout: 10000 }).catch(() => {});
       await espera(500);
-      try {
-        await pagina.waitForFunction(() => {
-          const f = document.querySelector('.faixa-jobs');
-          return f && !f.hidden;
-        }, { timeout: 20000 });
-      } catch {
-        problemas.push(vp.nome + ': a .faixa-jobs não apareceu em 20s');
-      }
       await espera(300);
 
       const geral = await pagina.evaluate(() => {
@@ -315,7 +310,6 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
       const medidas = await pagina.evaluate(() => {
         const rect = (el) => el.getBoundingClientRect();
-        const centro = (el) => rect(el).top + rect(el).height / 2;
         const visivel = (el) => Boolean(el) && !el.hidden && rect(el).width > 0 && rect(el).height > 0;
 
         // Alguns destes ids ainda não têm classe irmã no "antes" (develop, pré-refactor) —
@@ -324,13 +318,10 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
         const voltar = document.querySelector('.voltar');
         const identidade = document.querySelector('.chat-identidade');
         const medidor = document.querySelector('.medidor');
-        const faixaJobs = document.querySelector('.faixa-jobs');
         const btnParar = document.querySelector('.btn-parar, #btn-parar');
         const recarregar = document.querySelector('.btn-recarregar-conversa, #btn-recarregar-conversa');
         const matar = document.querySelector('.btn-matar-aba, #btn-matar-aba');
         const caminho = document.querySelector('.chat-caminho, #chat-caminho');
-        const faixaEtapa = document.querySelector('.faixa-etapa');
-        const faixaTitulos = document.querySelector('.faixa-titulos');
         const mensagens = document.querySelector('.mensagens');
         const fecharPainel = document.querySelector('.fechar-painel');
         const abrirAoLado = document.querySelector('.abrir-ao-lado');
@@ -360,22 +351,10 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
         const linhasDoTopo = linhasVisuais([voltar, identidade, medidor, btnParar, recarregar, matar]);
 
-        const alvosLinha2 = [medidor, faixaJobs, btnParar].filter((el) => el && rect(el).width > 0 && rect(el).height > 0);
-        let linha2Itens = 0;
-        if (alvosLinha2.length) {
-          const ref = rect(alvosLinha2[0]);
-          linha2Itens = alvosLinha2.filter((el) => { const r = rect(el); return r.top < ref.bottom && ref.top < r.bottom; }).length;
-        }
-
-        const etapaInline = Boolean(faixaEtapa && faixaTitulos && !faixaEtapa.hidden && faixaEtapa.textContent
-          && Math.abs(centro(faixaEtapa) - centro(faixaTitulos)) <= 4);
-
         return {
           linhasDoTopo,
           recarregarVisivel: visivel(recarregar),
           medidorVisivel: visivel(medidor),
-          linha2Itens,
-          etapaInline,
           caminhoTexto: caminho ? caminho.textContent : null,
           caminhoCortado: caminho ? caminho.scrollWidth > caminho.clientWidth + 1 : false,
           scrollWidth: mensagens ? mensagens.scrollWidth : document.documentElement.scrollWidth,

@@ -44,4 +44,56 @@ assert.equal(ui.definir('fr'),false);
 assert.equal(ui.idioma,'en');
 const privado = carregar(undefined,'pt-BR',true).ui;
 privado.definir('en');assert.equal(privado.t('Fechar'),'Close');
+
+// card `tela-de-uso-no-fuso-do-aparelho`: o template de rotuloPeriodo (public/uso.js) traduz —
+// sem este assert, a chave que diverge por um caractere cai calada no português
+// (public/i18n.js:53) e o smoke, fixado em pt-BR, não vê.
+const emIngles = carregar('en').ui;
+assert.equal(emIngles.t`Hoje · ${'04/09'} (${'UTC-3'})`, 'Today · 04/09 (UTC-3)');
+assert.equal(Object.hasOwn(catalogo, 'Hoje · {0} (UTC)'), false, 'a chave velha, com (UTC) cravado, não existe mais no catálogo');
+
+// card `foto-some-entre-upload-e-envio`: as três frases do Enviar com anexo, pelo MESMO caminho do
+// app.js (`tr` de template com `{0}` e `tr('...')` sem parâmetro).
+assert.equal(emIngles.t`Esperando ${2} anexo(s) subir — a mensagem sai sozinha.`, 'Waiting for 2 attachment(s) to upload — the message will send on its own.');
+assert.equal(emIngles.t('Escreva uma mensagem para ir junto do anexo.'), 'Write a message to go with the attachment.');
+assert.equal(emIngles.t('Um anexo não subiu. Toque no × dele e anexe de novo — nada foi enviado.'), 'An attachment did not upload. Tap its × and attach it again — nothing was sent.');
+
+// card `pra-revisar-v2-regra-main-retomada-branch-sumida`: as 8 chaves novas da tela Pra revisar v2
+// existem no catálogo (a chave que diverge por um caractere cai calada no português), e as duas
+// órfãs da v1 continuam lá, sinalizadas, não apagadas.
+for (const chave of [
+  'sem develop nem main',
+  'branch sumiu',
+  'retomada',
+  '{0} jobs terminaram e ainda não entraram na develop (ou main) do repo deles.',
+  'Em Atenção: {0} com a branch sumida.',
+  'Nenhum job esperando revisão.',
+  'retomou: {0}',
+  'inclui: {0}',
+]) assert.equal(Object.hasOwn(catalogo, chave), true, `chave nova ausente do catálogo: ${chave}`);
+for (const velha of ['sem develop', '{0} jobs terminaram e ainda não entraram na develop do repo deles.']) {
+  assert.equal(Object.hasOwn(catalogo, velha), true, `órfã sinalizada, não apagada: ${velha}`);
+}
+
+// card `criar-pasta-na-aba-nova`: as 5 chaves novas existem no catálogo, e o item sai pelo MESMO caminho de
+// template do app.js (`tr` com `{0}`).
+for (const chave of [
+  '+ Criar pasta {0}',
+  'nome de pasta inválido: use letras, números, - e _ (até 64)',
+  'já existe uma pasta com esse nome',
+  'a pasta de projetos não existe no servidor',
+  'não deu para criar a pasta',
+]) assert.equal(Object.hasOwn(catalogo, chave), true, `chave nova ausente do catálogo: ${chave}`);
+assert.equal(emIngles.t`+ Criar pasta ${'ap'}`, '+ Create folder ap');
+
+// card `pra-revisar-aviso-de-conflito-no-merge`: as chaves novas da prévia do merge existem no catálogo
+// (a que diverge por um caractere cai calada no português, public/i18n.js:53).
+for (const chave of [
+  'merge limpo', 'conflito em 1 arquivo', 'conflito em {0} arquivos', 'conflito só no roadmap.json',
+  'merge: não sei', 'Merge na {0}', 'Nenhum arquivo em conflito.', '{0} arquivo(s) em conflito:',
+  'e mais {0}', 'Só o roadmap.json conflita.',
+  'Não deu para saber agora (erro ou tempo do git). Isso não quer dizer limpo.',
+]) assert.equal(Object.hasOwn(catalogo, chave), true, `chave nova ausente do catálogo: ${chave}`);
+assert.equal(emIngles.t('conflito em {0} arquivos', 3), 'conflict in 3 files');
+
 console.log(`✅ idioma: ${Object.keys(catalogo).length} traduções, parâmetros, preferências, troca e conteúdo preservado`);

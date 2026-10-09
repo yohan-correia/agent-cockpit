@@ -1,0 +1,22 @@
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Audio  ☒ Aviso LGPD  ✔ Submit  →
+
+Review your answers
+
+ │ ● Qual formato de audio salvar no desenho que vamos montar para o cliente, considerando o espaco em disco e a qualidade final?
+   → FLAC sem perda
+ ● Quais avisos mostrar na tela de consentimento?
+   → Finalidade do uso, Direitos do titular, "Aviso de gravacao, com letra grande 2 vezes"
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
+
+
+
+
+

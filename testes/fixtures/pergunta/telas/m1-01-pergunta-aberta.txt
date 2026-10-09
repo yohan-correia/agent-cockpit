@@ -1,0 +1,34 @@
+claude --model sonnet
+usuario@servidor:/home/usuario/projetos/demo$ claude --model sonnet
+ ▐▛███▛█   Claude Code v2.1.292
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /home/usuario/projetos/demo
+
+▎ ※ You've been granted a $250 bonus credit for cloud sessions, on top of your plan limits · /claim-credit
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 2 perguntas: (1) header "Audio", pergunta "Qual formato
+  de audio salvar no desenho que vamos montar para o cliente, considerando o espaco em disco e a qualidade final?", multiSelect
+  false, 3 opcoes com descricao longa cada; (2) header "Aviso LGPD", pergunta "Quais avisos mostrar na tela de consentimento?",
+  multiSelect true, 3 opcoes com descricao. Depois de receber a resposta, apenas repita as respostas literalmente.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Audio  ☐ Aviso LGPD  ✔ Submit  →
+
+│ Qual formato de audio salvar no desenho que vamos montar para o cliente, considerando o espaco em disco e a qualidade final?
+
+❯ 1. WAV sem compressao
+     Guarda o som exatamente como foi captado, sem perder nada. Qualidade maxima, ideal se o cliente quiser editar ou masterizar
+     depois. O custo e o espaco: um minuto pode passar de 10 MB, e horas de gravacao enchem o disco rapido.
+  2. FLAC sem perda
+     Comprime o audio sem perder qualidade, como um arquivo ZIP que devolve o som identico ao original. Ocupa mais ou menos
+     metade do WAV. Boa escolha se qualidade e espaco importam, mas alguns players e editores mais antigos nao abrem.
+  3. MP3 ou AAC comprimido
+     Perde um pouco de qualidade, quase imperceptivel em voz, mas gera arquivos bem pequenos (cerca de 1 MB por minuto). Toca em
+     qualquer aparelho e e facil de enviar. Nao serve se o cliente precisar reeditar o audio com qualidade total no futuro.
+  4. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+

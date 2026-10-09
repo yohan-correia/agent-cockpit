@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.292
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /home/usuario/projetos/demo
+
+▎ ※ You've been granted a $250 bonus credit for cloud sessions, on top of your plan limits · /claim-credit
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 2 perguntas: (1) header "Audio", pergunta "Qual formato
+  de audio salvar no desenho que vamos montar para o cliente, considerando o espaco em disco e a qualidade final?", multiSelect
+  false, 3 opcoes com descricao longa cada; (2) header "Aviso LGPD", pergunta "Quais avisos mostrar na tela de consentimento?",
+  multiSelect true, 3 opcoes com descricao. Depois de receber a resposta, apenas repita as respostas literalmente.
+
+● User answered Claude's questions:
+  ⎿  · Qual formato de audio salvar no desenho que vamos montar para o cliente, considerando o espaco em disco e a qualidade
+     final? → FLAC sem perda
+     · Quais avisos mostrar na tela de consentimento? → Finalidade do uso, Direitos do titular, "Aviso de gravacao, com letra
+     grande 2 vezes"
+
+● Respostas literais:
+
+  - Audio: FLAC sem perda
+  - Aviso LGPD: Finalidade do uso, Direitos do titular, "Aviso de gravacao, com letra grande 2 vezes"
+
+✻ Sautéed for 8s · done 7:03 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Pode seguir com o desenho
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents                                      ✔ Update installed · /restart to apply
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Teach auto mode about your environment?
+
+  Auto mode works better when it knows your environment. Takes about a minute.
+
+  ❯ 1. Yes
+    2. Not now
+    3. Don't show again
+
+  Enter to confirm · Esc to cancel
+

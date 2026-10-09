@@ -50,6 +50,12 @@
       <div class="lateral-acoes-grupo" aria-label="Navegação">
       <button class="icone-so recarregar" id="btn-recarregar" type="button"
               title="Recarregar a lista de abas" aria-label="Recarregar a lista de abas"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3v6h6"/><path d="M3.5 9a9 9 0 1 1 .8 6.4"/></svg></button>
+      <!-- A tela "Pra revisar" (plano 2026-10-04): jobs terminados fora da develop do repo
+           deles, só leitura (D48 continua valendo — nenhum botão de ação aqui). O contador
+           nasce escondido; `revisar.js` o preenche no boot e ao fechar o diálogo, nunca no
+           tique de 15s. -->
+      <button class="icone-so revisar" id="btn-revisar" type="button" aria-haspopup="dialog"
+              title="Pra revisar" aria-label="Pra revisar"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg><span class="revisar-conta" id="revisar-conta" hidden>0</span></button>
       <!-- A porta do painel de configuração. Os quatro controles que moram lá dentro viviam
            empilhados no rodapé desta lateral, e no celular a lateral É a tela da lista: a
            altura que eles comiam era a da LISTA DE ABAS, que é a razão de o cockpit existir.
@@ -75,6 +81,19 @@
     </div>
     <!-- A lista é só as abas do tmux do usuário. O cockpit não abre nem fecha conversa:
          quem faz isso é o usuário, no terminal, e aqui a lista só reflete. Ver lib/abas.js. -->
+    <!-- Fica FORA da `.lista-area`, não dentro: o `.puxar-selo` é `position: absolute;
+         top: 6px` ancorado nela (comentário logo abaixo), e um título dentro passaria por
+         baixo do selo. -->
+    <h2 class="caixa-titulo" id="titulo-lista"></h2>
+    <!-- O filtro das leituras (D61) mora FORA do `#abas`: a lista é esvaziada e repintada a cada
+         5 s, e um campo de busca lá dentro perderia o foco — e fecharia o teclado do celular — no
+         meio da palavra. Aqui ele nasce uma vez e nunca é recriado. Só aparece na vista de
+         leituras; quem mostra e esconde é `pintarFiltroDeLeituras()`. -->
+    <div class="leituras-filtro" id="leituras-filtro" hidden>
+      <input type="search" id="filtro-texto" autocomplete="off" enterkeyhint="search">
+      <div class="filtro-chips" id="filtro-status" role="group"></div>
+      <select id="filtro-trilha"></select>
+    </div>
     <!-- A área da lista existe para ANCORAR o selo do gesto. A `.conversas` não serve de
          âncora: quem desce colado no dedo é ela, e um selo filho dela desceria junto — o
          contrário do que a fita faz, onde o rolador fica parado e só a `#fita` desce. Ela
@@ -85,6 +104,36 @@
            gesto é um só, em duas listas. Ver o bloco do selo no estilo.css. -->
       <div class="puxar-selo" id="puxar-selo-lista" aria-hidden="true"><span class="puxar-anel"></span></div>
       <div class="conversas" id="abas"></div>
+    </div>
+    <!-- A faixa do monitor (D64): CPU · RAM · disco do servidor, sempre à vista, irmã da barra de
+         vistas e FORA do #abas (repintado a cada 5 s). ACIMA da barra de vistas de propósito: a
+         barra continua sendo a borda inferior da lateral e fica com o `safe-area-inset-bottom`
+         dela (estilo.css, bloco do celular) — a faixa não precisa saber de safe area. `hidden` até
+         a primeira leitura — antes dela não se afirma nada. Quem pinta é public/monitor.js. -->
+    <button class="monitor-faixa" id="monitor-faixa" type="button" aria-haspopup="dialog"
+            aria-label="Monitor: abrir o detalhe de CPU, RAM e disco" hidden>
+      <span class="monitor-cela" data-eixo="cpu"><span class="monitor-rotulo">CPU</span><span class="monitor-barra"><span class="monitor-barra-cheia"></span></span><span class="monitor-pct">—</span></span>
+      <span class="monitor-cela" data-eixo="ram"><span class="monitor-rotulo">RAM</span><span class="monitor-barra"><span class="monitor-barra-cheia"></span></span><span class="monitor-pct">—</span></span>
+      <span class="monitor-cela" data-eixo="disco"><span class="monitor-rotulo">disco</span><span class="monitor-barra"><span class="monitor-barra-cheia"></span></span><span class="monitor-pct">—</span></span>
+      <span class="monitor-aviso-texto" id="monitor-faixa-aviso" aria-live="polite"></span>
+    </button>
+    <!-- A barra dos agentes: irmã da lista, NÃO filha dela. É o que tira a segunda rolagem de
+         dentro do scroller (a queixa de 13/09). Vazia no markup — quem escreve é
+         pintarBarraDeAgentes(); `hidden` de partida porque no boot ainda não lemos nada, e
+         `agentes · 0` antes da primeira leitura afirmaria o que não se sabe. -->
+    <div class="barra-vistas">
+      <button class="barra-agentes" id="barra-agentes" type="button" aria-pressed="false" hidden>
+        <span class="barra-agentes-nome" id="barra-agentes-nome"></span>
+        <!-- aria-live só no AVISO: a denúncia é requisito (spec §2.2) e não pode valer só para quem
+             enxerga. Na barra inteira, o contador anunciaria a cada 5s (MS_LISTA) — tagarelice. -->
+        <span class="barra-agentes-aviso" id="barra-agentes-aviso" aria-live="polite"></span>
+        <span class="barra-agentes-trabalho" id="barra-agentes-trabalho"></span>
+      </button>
+      <!-- A 3ª vista (D59): leituras. Irmã da barra dos agentes, mesma regra da D52 — o rótulo
+           diz para ONDE o clique leva. NÃO nasce `hidden`: não depende do painel de jobs. -->
+      <button class="barra-leituras" id="barra-leituras" type="button" aria-pressed="false">
+        <span class="barra-agentes-nome" id="barra-leituras-nome">leituras</span>
+      </button>
     </div>
   </aside>
 
@@ -114,6 +163,12 @@
     <div class="paineis" id="paineis"></div>
   </main>
 </div>
+
+<!-- O selo do aviso (S3 da spec): só aparece quando a faixa NÃO está à vista — celular com a
+     conversa aberta, desktop com a lateral recolhida. Quem decide é o CSS (duas regras, uma
+     por media query); o JS só escreve o texto e tira o `hidden`. Irmão do .app de propósito: o
+     combinador `~` precisa disso. -->
+<button class="monitor-selo" id="monitor-aviso" type="button" aria-live="polite" hidden></button>
 
 <dialog id="dialogo-diagnostico">
   <div class="dialogo-corpo">
@@ -227,6 +282,14 @@
           <span class="ajuste-valor" id="plano-valor"></span>
           <svg class="ajuste-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg>
         </button>
+        <!-- A lista de TODOS os inscritos: dado do servidor, por isso mora aqui e não em
+             "Este aparelho". Sem `.ajuste-valor`: não há contagem a mostrar, e um span vazio
+             seria elemento morto — ou um convite a inventar número sem chave de i18n. -->
+        <button class="lateral-acao ajuste" id="btn-aparelhos" type="button">
+          <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="5" width="14" height="10" rx="1.5"/><path d="M6 19h7"/><rect x="18" y="9" width="4" height="10" rx="1"/></svg>
+          <span class="ajuste-rotulo">Aparelhos com aviso</span>
+          <svg class="ajuste-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
         <button class="lateral-acao ajuste" id="btn-uso" type="button">
           <svg class="ajuste-icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10a2 2 0 0 1 2-1.5h1a2 2 0 0 1 0 4h-1a2 2 0 0 0 0 4h1a2 2 0 0 0 2-1.5"/></svg>
           <span class="ajuste-rotulo">Para onde vão meus tokens</span>
@@ -282,6 +345,41 @@
 </dialog>
 
 
+<!-- O monitor do servidor (D64, D68) — o 14º <dialog>. Vazio de dados: quem preenche é monitor.js, por
+     textContent (armadilha #26). Só leitura: nenhum botão de matar processo nem de mexer no disco. -->
+<dialog id="dialogo-monitor">
+  <div class="dialogo-corpo">
+    <h2 id="monitor-titulo">Monitor do servidor</h2>
+    <div class="monitor-agora" id="monitor-agora">
+      <button type="button" class="monitor-medidor" data-eixo="cpu" aria-expanded="false" aria-controls="monitor-detalhe"><span class="monitor-medidor-pct">—</span><span class="monitor-medidor-rotulo">CPU</span><span class="monitor-medidor-sub"></span></button>
+      <button type="button" class="monitor-medidor" data-eixo="ram" aria-expanded="false" aria-controls="monitor-detalhe"><span class="monitor-medidor-pct">—</span><span class="monitor-medidor-rotulo">RAM</span><span class="monitor-medidor-sub"></span></button>
+      <button type="button" class="monitor-medidor" data-eixo="disco" aria-expanded="false" aria-controls="monitor-detalhe"><span class="monitor-medidor-pct">—</span><span class="monitor-medidor-rotulo">disco</span><span class="monitor-medidor-sub"></span></button>
+    </div>
+    <p class="monitor-painel-aviso" id="monitor-painel-aviso" hidden></p>
+    <div class="monitor-grafico"><h3>últimas 24 horas</h3>
+      <div class="monitor-grafico-area">
+        <div class="monitor-grafico-y" aria-hidden="true"><span>100</span><span>50</span><span>0</span></div>
+        <svg id="monitor-grafico" viewBox="0 0 600 160" preserveAspectRatio="none" role="img"></svg>
+      </div>
+      <div class="monitor-legenda" id="monitor-legenda"></div></div>
+    <p class="monitor-dica" id="monitor-dica">Toque em CPU, RAM ou disco para ver o top 10.</p>
+    <section class="monitor-detalhe" id="monitor-detalhe" hidden>
+      <div data-secao="cpu" hidden><h3>Mais CPU agora <small>% de um núcleo</small></h3><div id="monitor-top-cpu"></div></div>
+      <div data-secao="ram" hidden><h3>Mais RAM agora</h3><div id="monitor-top-ram"></div></div>
+      <div data-secao="disco" hidden>
+        <div class="monitor-disco-cabeca"><span class="monitor-disco-quando" id="monitor-disco-quando"></span><button class="btn" id="btn-medir-disco" type="button">medir agora</button></div>
+        <p class="monitor-disco-nota">Tamanhos do que o usuário enxerga. O Docker mora em /var, que o usuário não lê — por isso vem à parte.</p>
+        <h3>Pasta pessoal (~)</h3><div id="monitor-disco-home"></div>
+        <h3>Raiz (/)</h3><div id="monitor-disco-raiz"></div>
+        <h3>Docker</h3><div id="monitor-disco-docker"></div>
+      </div>
+    </section>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-monitor" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
 <!-- Os números do medidor por extenso. Existe porque `title` é TOOLTIP DE MOUSE: no celular
      ele simplesmente não aparece, e era lá que estavam os tokens exatos, o teto e o nome
      cheio do modelo — inalcançáveis justo no aparelho que motivou o medidor. O `title`
@@ -290,6 +388,7 @@
   <div class="dialogo-corpo">
     <h2>Contexto desta conversa</h2>
     <p>Quanto da janela do agente j&aacute; est&aacute; ocupado. O n&uacute;mero sai do arquivo da pr&oacute;pria conversa &mdash; n&atilde;o custa turno da assinatura.</p>
+    <p id="contexto-nota-job" hidden>O n&uacute;mero &eacute; o da sess&atilde;o PRINCIPAL do job; os subagentes t&ecirc;m janela pr&oacute;pria.</p>
     <div class="contexto-destaque" id="contexto-destaque" hidden>
       <div class="contexto-destaque-topo"><span>Janela usada</span><strong id="contexto-percentual"></strong></div>
       <div class="contexto-trilho"><i id="contexto-cheio"></i></div>
@@ -313,16 +412,29 @@
   <div class="dialogo-corpo">
     <h2>Abrir uma aba nova</h2>
     <p>Escolha o projeto e o agente. A aba nasce no seu terminal com ele rodando, como se voc&ecirc; tivesse aberto &agrave; m&atilde;o.</p>
+    <!-- O <select> virou campo que filtra (card `pesquisar-a-pasta-na-aba-nova`): com 48 pastas,
+         rolar não é escolher. A lista mora FORA do <label> — botão dentro de label tem a ativação
+         repassada ao controle rotulado. O valor continua sendo só o NOME (#22). -->
     <label class="campo">
       <span>Projeto</span>
-      <select id="sel-projeto-novo" aria-label="Projeto da aba nova"></select>
+      <input id="sel-projeto-novo" type="text" role="combobox" aria-label="Projeto da aba nova"
+             aria-autocomplete="list" aria-expanded="false" aria-controls="lista-projeto-novo"
+             autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"
+             autofocus>
     </label>
+    <div class="lista-projeto" id="lista-projeto-novo" role="listbox" aria-label="Projetos" hidden></div>
     <!-- O agente vem do servidor (GET /api/agentes), nunca chumbado aqui: quem sabe quais
          existem é o registro em lib/agentes.js, e o dia em que o Cursor entrar esta lista
          cresce sozinha. Só {id, rotulo} chega — o caminho do binário fica no servidor (#22). -->
     <label class="campo">
       <span>Agente</span>
       <select id="sel-agente-novo" aria-label="Agente da aba nova"></select>
+    </label>
+    <!-- O modelo vem do servidor (GET /api/agentes, campo `modelos` de cada agente) — nunca
+         chumbado aqui (#40). Some quando o agente escolhido não tem lista (Codex). -->
+    <label class="campo" id="campo-modelo-novo" hidden>
+      <span>Modelo</span>
+      <select id="sel-modelo-novo" aria-label="Modelo da aba nova"></select>
     </label>
     <!-- O aviso é ANTES, não depois. O cockpit marca a pasta como confiável para o agente
          ao criar a aba (lib/abas.js, `confiarNaPasta`), e dizer isso só quando já aconteceu
@@ -359,6 +471,42 @@
   </div>
 </dialog>
 
+<!-- Renomear a aba — o DÉCIMO PRIMEIRO dos diálogos, no padrão .dialogo-corpo + .dialogo-acoes (D32).
+     Aberto pelo ✎ de CADA linha da lista; a chave vem de `edicaoDoNome` (app.js), nunca de `atual`.
+     O campo mora aqui e não na linha: a lista se redesenha inteira a cada 5 s e apagaria o que se
+     está digitando. Sem `maxlength`: o teto é regra do servidor (`lib/abas.js`, `nomeDeAba`), e
+     duas cópias da regra se separam caladas (#40). -->
+<dialog id="dialogo-renomear-aba">
+  <div class="dialogo-corpo">
+    <h2>Renomear a aba</h2>
+    <p>O nome muda tamb&eacute;m no seu terminal.</p>
+    <label class="campo">
+      <span>Nome</span>
+      <input id="nome-aba" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" aria-label="Nome da aba">
+    </label>
+    <small class="config-nota" id="nota-renomear-aba"></small>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-renomear-aba" type="button">Cancelar</button>
+      <button class="btn btn-principal" id="btn-confirma-renomear-aba" type="button">Salvar</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- O 12º <dialog> — a lista dos aparelhos inscritos, com o nome editável na própria linha.
+     Vizinho do renomear-aba de propósito: é o outro "renomear" da tela. A caixa da lista
+     nasce vazia; quem a preenche é o carregarAparelhos() do app.js, por createElement. -->
+<dialog id="dialogo-aparelhos">
+  <div class="dialogo-corpo">
+    <h2>Aparelhos que recebem aviso</h2>
+    <div class="aparelho-lista" id="aparelho-lista"></div>
+    <small class="config-nota" id="nota-aparelhos"></small>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-atualizar-aparelhos" type="button">Atualizar a lista</button>
+      <button class="btn btn-principal" id="btn-fechar-aparelhos" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
 <!-- Arquivos — o NONO <dialog>, no mesmo padrão dos oito (D32): `.dialogo-corpo` +
      `.dialogo-acoes`, aberto por `showModal()` e fechado por `close()` SEM pushState (#36, #39).
      É a outra porta de arquivo, ao lado do clipe: qualquer tipo até o teto que o servidor
@@ -377,8 +525,8 @@
       <h3>Mandar para o servidor</h3>
       <label class="campo"><span>Pasta em taildrop-inbox</span>
         <select id="sel-pasta-inbox" aria-label="Pasta de destino"></select></label>
-      <label class="arquivo-escolha"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 17V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg><strong>Escolher arquivo</strong><small id="rotulo-arquivo-servidor">Qualquer formato</small><small id="arquivo-servidor-selecionado">Nenhum arquivo escolhido</small>
-        <input type="file" id="inp-arquivo-servidor" aria-label="Escolher arquivo"></label>
+      <label class="arquivo-escolha"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 17V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg><strong>Escolher arquivos</strong><small id="rotulo-arquivo-servidor">Qualquer formato</small><small id="arquivo-servidor-selecionado">Nenhum arquivo escolhido</small>
+        <input type="file" id="inp-arquivo-servidor" multiple aria-label="Escolher arquivos"></label>
       <progress id="prog-arquivo-servidor" max="100" value="0" hidden></progress>
       <small class="config-nota" id="nota-arquivo-servidor"></small>
       <button class="btn btn-principal" id="btn-mandar-servidor" type="button">Mandar para o servidor</button>
@@ -423,7 +571,7 @@
 
     <header class="uso-topo">
       <h2 id="uso-titulo">Para onde vão meus tokens</h2>
-      <small>Só do Claude — o consumo do Codex mora no "Consumo do plano".</small>
+      <small>Claude e Codex aparecem separados: são assinaturas diferentes e os tokens não se somam.</small>
       <div class="uso-periodo" role="group" aria-label="Período">
         <button class="btn" id="btn-periodo-1" type="button" data-dias="1" aria-pressed="true">Hoje</button>
         <button class="btn" id="btn-periodo-7" type="button" data-dias="7" aria-pressed="false">7 dias</button>
@@ -438,6 +586,13 @@
     <section class="uso-custo" id="uso-custo"></section>
     <section class="uso-secao" id="uso-por-modelo"></section>
     <section class="uso-secao" id="uso-por-dia"></section>
+
+    <!-- A metade CODEX do relatório (card `codex-no-relatorio-de-tokens`) — seção PRÓPRIA,
+         fora de `#uso-lista` (que continua dona do ranking do Claude). Limpa por
+         `limparTudo()`, nunca por `limparSecoes()` (essa é só do Claude, chamada no `catch`
+         dele — se `#uso-codex` estivesse lá dentro, uma falha do Claude apagaria a seção do
+         Codex já desenhada). -->
+    <section class="uso-secao" id="uso-codex"></section>
 
     <!-- Uma div comum aqui, não a tag de marco de página (R4): o documento já tem UMA
          dessas — a área da conversa, lá em cima — e duas no mesmo HTML é documento inválido. -->
@@ -455,10 +610,17 @@
   </div>
 </dialog>
 
+<!-- A tela "Pra revisar" — o DÉCIMO TERCEIRO <dialog> (plano 2026-10-04). Vazio por dentro:
+     quem desenha é `revisar.js` (createElement/textContent, nunca innerHTML — o relatório do
+     job é texto que esta tela não escreveu, armadilha #26). -->
+<dialog id="dialogo-revisar" aria-label="Pra revisar"><div class="rv" id="rv"></div></dialog>
+
 <script src="traducoes.js"></script>
 <script src="i18n.js"></script>
 <script>cockpitI18n.estatico();</script>
 <script src="app.js"></script>
 <script src="uso.js"></script>
+<script src="revisar.js"></script>
+<script src="monitor.js"></script>
 </body>
 </html>

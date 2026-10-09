@@ -1,0 +1,44 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/medicao-menu-codex-kwb91mpd/home"))
+[2m╭───────────────────────────────────────────────────╮
+│ >_ [0;1mOpenAI Codex[0;2m (v0.153.4)                        │
+│                                                   │
+│ model:       [0mmock[2m   [0m[38;5;6m/model[2m[39m to change              │
+│ directory:   [0m/tmp/medicao-menu-codex-kwb91mpd/cwd[2m │
+│ permissions: [0;1m[38;5;5mYOLO mode[0;2m                            │
+╰───────────────────────────────────────────────────╯
+
+[0m  [1mTip:[0m [3mNew[0m Build faster with Codex.
+ 
+ 
+[1m›[0m [2mAsk Codex to do anything
+[0m 
+  [38;2;246;226;183mmock default[2m[39m · [0m[38;2;171;223;167m/tmp/medicao-menu-codex-kwb91mpd/cwd
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

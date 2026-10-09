@@ -1,0 +1,45 @@
+usuario@servidor:/home/usuario/projetos/demo$ claude --model sonnet
+Permission deny rule (/home/usuario/.claude/settings.json): Bash(curl * | bash:*) mixes * with the trailing :* prefix syntax,
+ so it is matched as a literal prefix (the * is not expanded) and will likely never match. Use Bash(curl * | bash*) for wildcard
+matching.
+Permission deny rule (/home/usuario/.claude/settings.json): Bash(wget * | bash:*) mixes * with the trailing :* prefix syntax,
+ so it is matched as a literal prefix (the * is not expanded) and will likely never match. Use Bash(wget * | bash*) for wildcard
+matching.
+ ▐▛███▛█   Claude Code v2.1.294
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /home/usuario/projetos/demo
+
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 1 pergunta: header "Cor", pergunta "Qual cor?",
+  multiSelect false, opcoes Azul e Verde com descricao curta. Depois de receber a resposta, apenas repita a resposta
+  literalmente.
+
+● User answered Claude's questions:
+  ⎿  · Qual cor? → Verde
+
+✻ Slithering… (3s · ↓ 145 tokens)
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 2 agents
+                           tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

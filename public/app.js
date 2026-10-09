@@ -27,7 +27,7 @@ let fluxo = null;      // EventSource — um cano só, multiplexado por `?abas=`
 // `ocupado`, `perguntando`, `destinoFita`, `ultimaFala`, `ultimaHora`, `pendentes`,
 // `grupoFerramentas`, `ferramentaSolta`, `desenhandoDeFora`, `catalogo`, `anexos`,
 // `contexto`, `textoNaCaixa`, `historicoEntrada`, `posHistorico`, `rascunho`,
-// `rolagemGuardada`, `timerTerminou`.
+// `rolagemGuardada`.
 const paineis = new Map();
 
 // O texto e os anexos de um painel que saiu da tela numa TROCA de conjunto, sem o usuário ter
@@ -35,6 +35,46 @@ const paineis = new Map();
 // `criarPainel` devolve se a mesma chave voltar a abrir NESTA sessão. Recarregar a página
 // descarta os órfãos, como tudo o mais (§4.5) — não é `localStorage`, é `Map` em memória.
 const orfaos = new Map();
+
+// Arrastar a aba para o split (D73): a linha da conversa na lateral vira origem de arrasto (só
+// desktop) e a área dos painéis vira alvo com ZONAS por painel. Ver `alvoDoSolto` e os ouvintes
+// de arrasto de ABA, ao lado dos de arquivo. Tipo PRÓPRIO no `dataTransfer` — é o que separa este
+// arrasto do de anexo; nunca `text/plain` (soltar na caixa de escrita colaria a chave).
+const TIPO_ARRASTO_ABA = 'application/x-cockpit-aba';
+// Fração da largura do painel que conta como BORDA, de cada lado (S1 da spec). O resto é centro.
+const FRACAO_BORDA = 0.25;
+let arrastoAba = null;        // { chave, titulo } do arrasto em andamento NESTA página; null fora dele
+let alvoDoArrasto = null;     // o alvo que o preview mostra agora (`alvoDoSolto`); null = nenhum
+let repinturaAdiada = false;  // `desenharAbas` pedida no meio do arrasto (§3.7 da spec)
+
+// Map(chave da aba → { texto, anexos }) — o ÚLTIMO envio recusado daquela aba, guardado
+// INTEIRO (card menu-da-tui-do-codex-na-tela, R11). Um por aba: guardar de novo revoga as
+// `objectURL` do par anterior. Só nesta sessão do navegador, como `orfaos` acima — F5 descarta.
+const recusados = new Map();
+
+/** Guarda o par recusado da aba, revogando `objectURL` do que estava guardado antes. */
+function guardarRecusado(chave, texto, anexos) {
+  const velho = recusados.get(chave);
+  if (velho) for (const a of velho.anexos) if (a.url) URL.revokeObjectURL(a.url);
+  recusados.set(chave, { texto, anexos });
+}
+
+/**
+ * Devolve o par recusado INTEIRO para a caixa do painel, e só quando a composição está
+ * VAZIA — é o que garante que ele nunca substitui o que o usuário escreveu depois, nem casa
+ * texto antigo com anexo novo. Os dois únicos pontos de consumo: o `catch` do envio (quando o
+ * selo bate) e `criarPainel`, depois do bloco de `orfaos` (órfão tem precedência).
+ */
+function restaurarRecusado(painel) {
+  const guardado = recusados.get(painel.chave);
+  if (!guardado) return false;
+  if (painel.textoNaCaixa !== '' || painel.anexos.length) return false;   // composição ocupada
+  recusados.delete(painel.chave);
+  escreverNaCaixa(painel, guardado.texto);
+  painel.anexos = guardado.anexos;
+  desenharAnexos(painel);
+  return true;
+}
 
 // O painel de quem está desenhando NA FITA agora — "a regra do dono" do plano. Só QUATRO
 // funções escrevem `P`: `aplicarNoPainel` (1ª linha), `criarPainel`/`abrirAba` (antes de
@@ -75,6 +115,7 @@ function fitaDe(painel) {
 function escreverNaCaixa(painel, texto, entrada = painel.entrada) {
   entrada.value = texto;
   painel.textoNaCaixa = texto;
+  painel.seloComposicao += 1;
 }
 
 // As abas do terminal são a ÚNICA lista desde 21/08: o cockpit deixou de criar conversas
@@ -88,6 +129,11 @@ let jobsPorAba = new Map();
 // para dizer sem inventar. Zerado junto com `jobsPorAba` em `semNoticiaDosJobs()`: sem
 // notícia é ignorância, não "zero jobs".
 let jobsRodando = [];
+// Os ids `running` da última leitura BEM-SUCEDIDA de `api/jobs?tudo=1` — o "antes" da transição
+// que avisa o Pra revisar (D76). `null` = ainda sem linha de base (boot). Ao contrário de
+// `jobsRodando`, NÃO é zerado em `semNoticiaDosJobs()`: lá zerar diz "não sei"; aqui diria
+// "todos terminaram", e cada queda de rede rodaria o git da tela Pra revisar (D60, #61).
+let idsRodandoNaUltimaLeitura = null;
 
 // ── Rede ────────────────────────────────────────────────────────────────
 //
@@ -131,7 +177,23 @@ async function api(rota, opcoes = {}) {
     throw new Error(tr('token ausente ou inválido'));
   }
   const dados = await resposta.json().catch(() => ({}));
-  if (!resposta.ok) throw new Error(dados.erro || tr`falha ${resposta.status}`);
+  if (!resposta.ok) {
+    const erro = new Error(dados.erro || tr`falha ${resposta.status}`);
+    // O status na exceção: a lista de aparelhos precisa distinguir 404 ("descadastrou no
+    // meio", a linha diz e a lista fica) de erro de rede, e comparar a MENSAGEM do servidor
+    // quebraria na primeira tradução. Quem lê: a lista de aparelhos (404) e
+    // `carregarMaisHistorico` (409 = âncora morta, que não adianta retentar).
+    erro.status = resposta.status;
+    // `colado` é ADITIVO (card menu-da-tui-do-codex-na-tela, R11): ninguém o lia antes de
+    // hoje. Este é o ÚNICO lugar onde `false` existe de verdade — o servidor só manda
+    // `colado` ausente ou `true` (nunca `false`); aqui, ausente vira `false` porque é onde
+    // o valor é consumido como condição.
+    erro.colado = Boolean(dados.colado);
+    // `parcial` (card pergunta-do-agente-em-cartao): o servidor avisa que ao menos uma tecla
+    // da resposta do cartão JÁ saiu — o cartão abre o "ver terminal" para o usuário terminar.
+    erro.parcial = Boolean(dados.parcial);
+    throw erro;
+  }
   return dados;
 }
 
@@ -546,19 +608,11 @@ function markdown(texto, destino) {
 // ── Lido e "te esperando" ───────────────────────────────────────────────
 //
 // A marca é por `sessaoId`, NÃO pela chave da aba: `aba-7` vem do window_id do tmux e
-// muda quando a aba é fechada e reaberta, mas a conversa continua a mesma. Fica no
-// aparelho (localStorage): "já li isto" é do celular na mão do usuário, não do servidor —
-// ler no celular não deveria apagar o destaque no note.
-
-const CHAVE_LIDAS = 'cockpit-lidas';
-
-function lidas() {
-  try { return JSON.parse(localStorage.getItem(CHAVE_LIDAS) || '{}') || {}; } catch { return {}; }
-}
-
-function ultimaLeitura(sessaoId) {
-  return sessaoId ? Number(lidas()[sessaoId] || 0) : 0;
-}
+// muda quando a aba é fechada e reaberta, mas a conversa continua a mesma. Desde 14/09
+// (D53) o carimbo mora no SERVIDOR, não no aparelho: o dono usa celular e desktop no
+// mesmo dia, e ler numa ponta tem de apagar o destaque na outra. `aba.lidoEm` chega pronto
+// dentro de cada aba, no `GET /api/abas` (o tique de 5s já busca) — não há mapa nem chave
+// própria no cliente para isso.
 
 /**
  * Marca a conversa desta aba como lida ATÉ o ponto em que o servidor a conhece.
@@ -588,11 +642,19 @@ function marcarLido(chave, quando) {
   if (!aba || !aba.sessaoId) return;
   const carimbo = quando === undefined ? aba.atualizadoEm : quando;
   if (!carimbo) return;
-  try {
-    const mapa = lidas();
-    mapa[aba.sessaoId] = carimbo;
-    localStorage.setItem(CHAVE_LIDAS, JSON.stringify(mapa));
-  } catch { /* modo privado: sem memória, tudo aparece esperando. Degrada, não quebra. */ }
+  // Já lida até aqui: não há o que dizer ao servidor. Esta linha é o que segura o volume —
+  // `turno_fim` chama esta função para TODAS as abas abertas, e a aba parada repete o mesmo
+  // carimbo em cada turno. Sem ela sai um POST por painel por turno, e cada POST é um
+  // `tmp+rename` no disco do servidor.
+  if (Number(aba.lidoEm || 0) >= carimbo) return;
+  // Otimista: a tela responde AGORA, com o número que o servidor acabou de mandar. Esperar
+  // o POST voltar deixaria o `◆` aceso por um ida-e-volta na conversa que ele está abrindo.
+  aba.lidoEm = carimbo;
+  api('api/lidas', { method: 'POST', corpo: { sessaoId: aba.sessaoId, carimbo } })
+    .catch(() => { /* Servidor fora, ou POST recusado: a marca vale até a próxima batida da
+                      lista, que traz o `lidoEm` do servidor e apaga esta. E é o certo — desde
+                      a D53 a fonte é o servidor, e marca que só vive no aparelho é exatamente
+                      o que este card veio matar. Degrada (um `◆` que volta), não quebra. */ });
   desenharAbas();
 }
 
@@ -632,117 +694,86 @@ function quandoCurto(ms) {
     : data.toLocaleDateString(idiomaUI.idioma, { day: '2-digit', month: '2-digit' });
 }
 
-// Preferências deste aparelho. O caminho completo distingue projetos homônimos.
-const CHAVE_PROJETOS = 'cockpit-projetos';
-let projetosSalvos = (() => {
-  try {
-    const valor = JSON.parse(localStorage.getItem(CHAVE_PROJETOS) || '{}');
-    const lista = v => Array.isArray(v) ? [...new Set(v.filter(x => typeof x === 'string'))] : [];
-    return { ordem: lista(valor?.ordem), fechados: lista(valor?.fechados) };
-  } catch { return { ordem: [], fechados: [] }; }
-})();
-function salvarProjetos() {
-  try { localStorage.setItem(CHAVE_PROJETOS, JSON.stringify(projetosSalvos)); } catch { /* continua nesta sessão */ }
+/**
+ * Os cinco booleanos que a linha da lista lê, numa função pura — a ordenação (Fase 2) e a linha
+ * usam os MESMOS. `pendente` é "esta aba está parada por minha causa?": pergunta aberta ou
+ * resposta que você ainda não leu. `●` (trabalhando) NÃO é pendente — ele não espera por você.
+ */
+function estadoDaAba(aba) {
+  // O cockpit passou a ter mais de um agente, e `temClaude` virou LEGADO: ele diz "é
+  // claude", não "tem alguém rodando". Uma aba de Codex tem `temClaude: false` e
+  // `temAgente: true` — sem esta linha ela nasceria visualmente QUEBRADA em nove pontos
+  // da lista, com pino de "fechado", linha apagada e bolha de erro.
+  //
+  // O `??` é obrigatório: mais de dez fixtures do gate montam abas só com `temClaude`, e
+  // trocar direto reprovaria todos eles por uma mudança que não é sobre nenhum.
+  const temAgente = aba.temAgente ?? aba.temClaude;
+  // "Te esperando" é o arquivo da conversa ter mexido DEPOIS da última vez que você
+  // abriu ela aqui. Aba sem agente não entra na conta: não há conversa viva ali.
+  const esperando = Boolean(temAgente && !aba.rodando && aba.atualizadoEm
+    && aba.atualizadoEm > (aba.lidoEm || 0));
+  // Estado PRÓPRIO, e diferente de "te esperando": o terminal abriu um menu e não anda
+  // sem alguém escolher. Vem do CLI (`status: waiting`), não de heurística — e é o que
+  // fazia a aba parecer livre enquanto o Claude estava parado esperando resposta.
+  //
+  // O `preSessao` entra no MESMO sinal porque a lista responde a uma pergunta só: "esta
+  // aba está parada por minha causa?". No prompt de confiança de pasta nova está, e ela
+  // aparecia com o `✓` de conversa lida — o pior sinal possível, porque diz "tudo em dia".
+  const pergunta = Boolean(aba.esperando) || Boolean(aba.preSessao);
+  // Os ~1,6 s entre "criei a aba" e "o CLI escreveu o arquivo de sessão". Os dois só
+  // valem sem agente: `temAgente` ganha de tudo, senão o `nascendo` viraria buraco na
+  // trava da #6. Nunca verdadeiros juntos — quem garante é a máquina de estados do
+  // servidor —, e o `&&` aqui é o que faz a tela mostrar UM só mesmo se ela falhar.
+  const abrindo = Boolean(!temAgente && aba.nascendo);
+  const naoSubiu = Boolean(!temAgente && !abrindo && aba.falhou);
+  return { temAgente, esperando, pergunta, abrindo, naoSubiu, pendente: pergunta || esperando };
 }
 
 function desenharAbas() {
+  // Repintar no meio de um arrasto tiraria do DOM a linha que está sendo arrastada — e nó de
+  // origem removido não recebe `dragend` (#91): o preview ficaria pendurado depois de um Esc. Os
+  // dados continuam chegando no ciclo de 5 s; só a pintura espera o gesto acabar
+  // (`encerrarArrasto` repinta).
+  if (arrastoAba) { repinturaAdiada = true; return; }
   const alvo = $('abas');
-  const rolagem = alvo.scrollTop;
+  const rolagem = alvo.scrollTop;   // como hoje: a repintura preserva a posição DESTA vista
   idiomaUI.bind(alvo, 'textContent', () => tr(''));
-  if (!abasDoTerminal.length) {
-    // O `return` daqui SAÍU (spec §4.8 item 1): job existe sem aba aberta, e o grupo de
-    // jobs precisa aparecer mesmo com a lista de projetos vazia. Segue para o rodapé
-    // compartilhado (grupo de jobs, scrollTop, resumo) em vez de voltar na hora.
+  app.dataset.listaVista = vistaDaLateral;
+  idiomaUI.bind($('titulo-lista'), 'textContent', () => (vistaDaLateral === 'agentes' ? tr('agentes')
+    : vistaDaLateral === 'leituras' ? tr('leituras') : `${tr('conversas')} · ${abasDoTerminal.length}`));
+
+  if (vistaDaLateral === 'leituras') {
+    alvo.append(grupoDeLeituras());
+  } else if (vistaDaLateral === 'agentes') {
+    const g = grupoDeJobs();
+    if (g) alvo.append(g);
+    else {
+      // A vista É a lista agora: sem esta linha o #abas fica em branco sob o título `agentes`.
+      // "na janela" e não "nenhum agente": done/merged/teardown saem da vista em 1h
+      // (JANELA_FIM_FELIZ_MS) — dizer "nenhum agente" afirmaria que nada rodou hoje.
+      const p = document.createElement('p');
+      p.className = 'lista-vazia';
+      idiomaUI.bind(p, 'textContent', () => tr('nenhum agente na janela'));
+      alvo.append(p);
+    }
+  } else if (!abasDoTerminal.length) {
+    // O aviso fala de abas — não é pintado na vista de agentes.
     const p = document.createElement('p');
     p.className = 'lista-vazia';
     idiomaUI.bind(p, 'textContent', () => tr('Nenhuma aba aberta no seu terminal.'));
     alvo.append(p);
   } else {
-  const grupos = new Map();
-  const nomeDoProjeto = (aba) => {
-    if (aba.projeto) return String(aba.projeto);
-    const caminho = String(aba.cwd || '').replace(/[\\/]$/, '');
-    const partes = caminho.split(/[\\/]/).filter(Boolean);
-    return partes.pop() || tr('Sem projeto');
-  };
-  const grupoDaAba = (aba) => {
-    const partes = [];
-    for (const parte of String(aba.cwd || '').replace(/\\/g, '/').split('/')) {
-      if (!parte || parte === '.') continue;
-      if (parte === '..') partes.pop(); else partes.push(parte);
-    }
-    const chave = partes.length ? '/' + partes.join('/') : 'sem-cwd:' + aba.chave;
-    if (grupos.has(chave)) return grupos.get(chave);
-    const projeto = nomeDoProjeto(aba);
-    const secao = document.createElement('section');
-    secao.className = 'conversa-grupo';
-    secao.dataset.cwd = chave;
-    const cabecalho = document.createElement('h2');
-    cabecalho.className = 'conversa-grupo-titulo';
-    const topo = document.createElement('div');
-    topo.className = 'projeto-topo';
-    const alternar = document.createElement('button');
-    alternar.className = 'projeto-alternar';
-    alternar.type = 'button';
-    const rotulos = document.createElement('span');
-    rotulos.className = 'projeto-rotulos';
-    const nome = document.createElement('span');
-    const aviso = document.createElement('span');
-    aviso.className = 'projeto-aviso';
-    aviso.hidden = true;
-    const trabalho = document.createElement('span');
-    trabalho.className = 'projeto-trabalhando';
-    trabalho.hidden = true;
-    rotulos.append(nome, aviso, trabalho);
-    alternar.append(rotulos);
-    const conteudo = document.createElement('div');
-    conteudo.className = 'projeto-conteudo';
-    conteudo.hidden = projetosSalvos.fechados.includes(chave);
-    alternar.setAttribute('aria-expanded', String(!conteudo.hidden));
-    alternar.onclick = () => {
-      conteudo.hidden = !conteudo.hidden;
-      alternar.setAttribute('aria-expanded', String(!conteudo.hidden));
-      aviso.hidden = !conteudo.hidden || !aviso.textContent;
-      trabalho.hidden = !conteudo.hidden || !trabalho.textContent;
-      projetosSalvos.fechados = projetosSalvos.fechados.filter(x => x !== chave);
-      if (conteudo.hidden) projetosSalvos.fechados.push(chave);
-      salvarProjetos();
-    };
-    cabecalho.append(alternar);
-    topo.append(cabecalho);
-    secao.append(topo, conteudo);
-    const grupo = { projeto, total: 0, pendentes: 0, trabalhando: 0, secao, topo, conteudo, alternar, nome, aviso, trabalho };
-    grupos.set(chave, grupo);
-    return grupo;
-  };
+  const lista = document.createElement('section');
+  lista.id = 'lista-conversas';
+  // D69: a ordem é `terminouEm` — a hora em que o último turno terminou, do servidor —, mais
+  // recente primeiro. Só o fim de um turno move uma conversa: abrir, enviar e Alt+J/K não movem, e
+  // a ● fica onde o turno anterior a deixou. Nulo conta como 0 e vai para o fim; empate fica na
+  // ordem do tmux — o sort é estável.
+  const ordenadas = abasDoTerminal
+    .map((aba) => ({ aba, estado: estadoDaAba(aba) }))
+    .sort((a, b) => (b.aba.terminouEm || 0) - (a.aba.terminouEm || 0));
 
-  for (const aba of abasDoTerminal) {
-    // O cockpit passou a ter mais de um agente, e `temClaude` virou LEGADO: ele diz "é
-    // claude", não "tem alguém rodando". Uma aba de Codex tem `temClaude: false` e
-    // `temAgente: true` — sem esta linha ela nasceria visualmente QUEBRADA em nove pontos
-    // desta função, com pino de "fechado", linha apagada e bolha de erro.
-    //
-    // O `??` é obrigatório: mais de dez fixtures do gate montam abas só com `temClaude`, e
-    // trocar direto reprovaria todos eles por uma mudança que não é sobre nenhum.
-    const temAgente = aba.temAgente ?? aba.temClaude;
-    // "Te esperando" é o arquivo da conversa ter mexido DEPOIS da última vez que você
-    // abriu ela aqui. Aba sem agente não entra na conta: não há conversa viva ali.
-    const esperando = Boolean(temAgente && !aba.rodando && aba.atualizadoEm
-      && aba.atualizadoEm > ultimaLeitura(aba.sessaoId));
-    // Estado PRÓPRIO, e diferente de "te esperando": o terminal abriu um menu e não anda
-    // sem alguém escolher. Vem do CLI (`status: waiting`), não de heurística — e é o que
-    // fazia a aba parecer livre enquanto o Claude estava parado esperando resposta.
-    //
-    // O `preSessao` entra no MESMO sinal porque a lista responde a uma pergunta só: "esta
-    // aba está parada por minha causa?". No prompt de confiança de pasta nova está, e ela
-    // aparecia com o `✓` de conversa lida — o pior sinal possível, porque diz "tudo em dia".
-    const pergunta = Boolean(aba.esperando) || Boolean(aba.preSessao);
-    // Os ~1,6 s entre "criei a aba" e "o CLI escreveu o arquivo de sessão". Os dois só
-    // valem sem agente: `temAgente` ganha de tudo, senão o `nascendo` viraria buraco na
-    // trava da #6. Nunca verdadeiros juntos — quem garante é a máquina de estados do
-    // servidor —, e o `&&` aqui é o que faz a tela mostrar UM só mesmo se ela falhar.
-    const abrindo = Boolean(!temAgente && aba.nascendo);
-    const naoSubiu = Boolean(!temAgente && !abrindo && aba.falhou);
+  for (const { aba, estado: { temAgente, esperando, pergunta, abrindo, naoSubiu } } of ordenadas) {
 
     const linha = document.createElement('div');
     linha.className = 'conversa-linha';
@@ -765,8 +796,8 @@ function desenharAbas() {
     const pino = document.createElement('span');
     pino.className = 'conversa-pino';
     // SEIS sinais, nesta ordem de urgência: esperando você · trabalhando · abrindo ·
-    // claude fechado · te esperando · lida. A lista NÃO reordena — quem usa conhece a ordem
-    // das próprias abas de cor. O `?` vem primeiro porque é o único estado em que a conversa
+    // claude fechado · te esperando · lida. A ORDEM da lista é outra conversa (D69: a hora em que o
+    // último turno terminou) — o pino diz o estado, a posição diz a urgência. O `?` vem primeiro porque é o único estado em que a conversa
     // está parada por sua causa: ninguém mais vai destravá-la.
     //
     // O `⋯` entra entre o `●` e o `○` e NÃO ganha cor própria: é estado de ~1,6 s, e uma
@@ -787,6 +818,8 @@ function desenharAbas() {
     const nome = document.createElement('span');
     nome.className = 'conversa-nome';
     nome.textContent = aba.titulo;
+    // O CSS corta o nome comprido em reticências (uma linha só); o inteiro fica aqui.
+    nome.title = aba.titulo;
     titulo.append(pino, nome);
 
     // O CHIP do agente. Ele entrou nesta entrega porque a chave virou por PANE: a janela do
@@ -819,31 +852,37 @@ function desenharAbas() {
       titulo.append(marca);
     }
 
-    const rodape = document.createElement('div');
-    rodape.className = 'conversa-rodape';
-    const estado = document.createElement('span');
-    estado.className = 'conversa-estado';
-    idiomaUI.bind(estado, 'textContent', () => tr(pergunta ? tr('esperando você escolher')
-      : (temAgente
-        ? (aba.rodando ? 'trabalhando' : (esperando ? tr('te esperando') : tr('no terminal')))
-        : (abrindo ? tr('abrindo o agente…') : (naoSubiu ? tr('o agente não subiu') : tr('agente fechado'))))));
-    rodape.append(estado);
-
     // Quando esta conversa mexeu pela última vez. Sai do `atualizadoEm` que a lista JÁ
     // recebe (mtime do .jsonl) — sem leitura de disco nova, sem rota nova, sem relógio
-    // novo: quem atualiza é o mesmo ciclo de 5s da lista (D21).
-    // A hora entra DEPOIS do estado, e é a última a caber: o estado é o que ele olha
-    // primeiro. Sem `atualizadoEm` não há placeholder — a marca simplesmente não existe.
+    // novo: quem atualiza é o mesmo ciclo de 5s da lista (D21). Desde D63 ela é o ÚLTIMO
+    // item da 1ª linha, à direita; quem encolhe primeiro quando aperta é o nome.
+    // Sem `atualizadoEm` não há placeholder — a marca simplesmente não existe.
     const marcaHora = quandoCurto(aba.atualizadoEm);
     if (marcaHora) {
       const hora = document.createElement('time');
       hora.className = 'conversa-hora';
       hora.setAttribute('datetime', new Date(aba.atualizadoEm).toISOString());
       hora.textContent = marcaHora;
-      rodape.append(hora);
+      titulo.append(hora);
     }
+    botao.append(titulo);
 
-    botao.append(titulo, rodape);
+    // A 2ª linha só existe quando há algo a dizer (D63). "no terminal" e "agente fechado"
+    // saíram: o ✓ e o ○ já dizem isso, e repetir em palavras era o que empurrava a lista
+    // para 6 por tela no celular. O aviso é escolhido UMA vez; o `bind` só traduz.
+    const aviso = pergunta ? 'esperando você escolher'
+      : (temAgente
+        ? (aba.rodando ? 'trabalhando' : (esperando ? 'te esperando' : null))
+        : (abrindo ? 'abrindo o agente…' : (naoSubiu ? 'o agente não subiu' : null)));
+    if (aviso) {
+      const rodape = document.createElement('div');
+      rodape.className = 'conversa-rodape';
+      const estado = document.createElement('span');
+      estado.className = 'conversa-estado';
+      idiomaUI.bind(estado, 'textContent', () => tr(aviso));
+      rodape.append(estado);
+      botao.append(rodape);
+    }
     botao.onclick = (evento) => {
       // O clique FANTASMA: terminado o arrasto de puxar para atualizar, o navegador ainda
       // dispara um `click` no que estava debaixo do dedo. Sem esta carência, puxar a lista
@@ -860,6 +899,18 @@ function desenharAbas() {
       if (evento.button !== 1) return;
       abrirAba(aba.chave, { aoLado: true });
     });
+    // Arrastar a linha para a área dos painéis (D73): borda de um painel abre ao lado dele, centro
+    // troca a conversa dele. Só desktop — no celular o atributo nem existe, e um long-press do
+    // Android não vira arrasto. Perguntado a cada repintura (D30), nunca no boot.
+    botao.draggable = !matchMedia('(max-width: 760px)').matches;
+    botao.addEventListener('dragstart', (evento) => {
+      // A janela pode ter estreitado entre a repintura e o gesto.
+      if (matchMedia('(max-width: 760px)').matches) { evento.preventDefault(); return; }
+      arrastoAba = { chave: aba.chave, titulo: aba.titulo };
+      evento.dataTransfer.setData(TIPO_ARRASTO_ABA, aba.chave);
+      evento.dataTransfer.effectAllowed = 'move';
+    });
+    botao.addEventListener('dragend', () => encerrarArrasto());
     linha.append(botao);
 
     // ⧉ — a versão DESCOBRÍVEL do Ctrl+clique (§3.2 do plano): sem ela, "abrir ao lado"
@@ -879,73 +930,35 @@ function desenharAbas() {
       abrirAba(aba.chave, { aoLado: true });
     };
     linha.append(abrirAoLado);
-    const grupo = grupoDaAba(aba);
-    linha.dataset.projeto = grupo.projeto;
-    grupo.conteudo.append(linha);
-    grupo.total++;
-    grupo.nome.textContent = `${grupo.projeto} · ${grupo.total}`;
-    if (pergunta || esperando) grupo.pendentes++;
-    idiomaUI.bind(grupo.aviso, 'textContent', () => tr(grupo.pendentes ? tr`${grupo.pendentes} te esperando` : ''));
-    grupo.aviso.hidden = !grupo.conteudo.hidden || !grupo.pendentes;
-    // Mesmo estado da conversa; uma pergunta aberta tem prioridade sobre rodando.
-    if (aba.rodando && !pergunta) grupo.trabalhando++;
-    idiomaUI.bind(grupo.trabalho, 'textContent', () => tr(grupo.trabalhando ? tr`${grupo.trabalhando} trabalhando` : ''));
-    grupo.trabalho.hidden = !grupo.conteudo.hidden || !grupo.trabalhando;
+
+    // ✎ — renomear a aba (card `renomear-a-aba`, decisão de 11/09): um lápis ao lado do nome.
+    // Irmão do `.conversa`, como o ⧉: botão dentro de botão é HTML inválido. Com mouse o CSS o
+    // esconde até o hover da linha; no toque ele fica sempre à vista (`estilo.css`, `.renomear-aba`).
+    const renomear = document.createElement('button');
+    renomear.className = 'renomear-aba';
+    renomear.type = 'button';
+    renomear.setAttribute('aria-haspopup', 'dialog');
+    idiomaUI.bind(renomear, 'title', () => tr('Renomear a aba'));
+    idiomaUI.attr(renomear, 'aria-label', () => tr('Renomear a aba'));
+    renomear.append(iconeContorno('icone-botao', 'M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z', 'M13.5 6.5l3 3'));
+    renomear.onclick = (evento) => {
+      evento?.stopPropagation?.();
+      // A mesma carência do cartão (`botao.onclick`, acima): no toque o ✎ está SEMPRE à vista, e
+      // o clique fantasma do fim do puxar-para-atualizar o acharia sem esta linha.
+      if (Date.now() < toqueBloqueadoAte) return;
+      abrirRenomear(aba);
+    };
+    linha.append(renomear);
+    lista.append(linha);
   }
-  const posicao = chave => {
-    const i = projetosSalvos.ordem.indexOf(chave);
-    return i < 0 ? Infinity : i;
-  };
-  const ordenados = [...grupos.keys()].sort((a, b) => posicao(a) - posicao(b));
-  for (const [indice, chave] of ordenados.entries()) {
-    const grupo = grupos.get(chave);
-    for (const [direcao, simbolo, rotulo] of [[-1, '↑', tr('Subir')], [1, '↓', tr('Descer')]]) {
-      const botao = document.createElement('button');
-      botao.className = 'projeto-mover';
-      botao.type = 'button';
-      botao.textContent = simbolo;
-      idiomaUI.attr(botao, 'aria-label', () => tr`${tr(rotulo)} projeto ${grupo.projeto}`);
-      idiomaUI.bind(botao, 'title', () => tr`${tr(rotulo)} projeto`);
-      botao.disabled = indice + direcao < 0 || indice + direcao >= ordenados.length;
-      botao.onclick = () => {
-        const vizinho = ordenados[indice + direcao];
-        if (!vizinho) return;
-        const ordem = [...new Set([...projetosSalvos.ordem, ...ordenados])];
-        const a = ordem.indexOf(chave), b = ordem.indexOf(vizinho);
-        [ordem[a], ordem[b]] = [ordem[b], ordem[a]];
-        projetosSalvos.ordem = ordem;
-        salvarProjetos();
-        desenharAbas();
-        // Após mover, mantém o projeto à vista e o teclado no seu cabeçalho.
-        // `[data-cwd]` (R1): sem ele este `.find` casaria também com `#grupo-jobs`, que
-        // NÃO tem `data-cwd` de propósito (§4.4 da spec) — aqui é só coerência, o grupo de
-        // jobs nunca teria `dataset.cwd === chave` de um projeto de qualquer jeito.
-        const movido = [...alvo.querySelectorAll('.conversa-grupo[data-cwd]')].find(e => e.dataset.cwd === chave);
-        movido?.querySelector('.projeto-alternar')?.focus({ preventScroll: true });
-        movido?.scrollIntoView?.({ block: 'nearest' });
-      };
-      grupo.topo.append(botao);
-    }
-    alvo.append(grupo.secao);
-  }
+  alvo.append(lista);
   }
 
-  // Rodapé compartilhado pelos dois ramos de cima (§4.8): o grupo de jobs é `append`ado por
-  // ÚLTIMO, depois de qualquer projeto — por construção ele nunca empurra conversa, só ocupa
-  // o espaço abaixo delas. `secaoDeJobs` é reatribuída SEMPRE, inclusive para `null`: deixar
-  // a referência de uma pintura anterior faria a guarda de baixo rolar um nó já removido.
-  const g = grupoDeJobs();
-  secaoDeJobs = g;
-  if (g) alvo.append(g);   // testar antes de pendurar — `append(null)` escreveria "null" na tela
-  alvo.scrollTop = rolagem;
-  // A rolagem pedida pelo clique da faixa (§5.2): consumida aqui, nunca no clique em si — a
-  // bandeira sobrevive a uma pintura no celular (vista ainda em 'chat') e só é gasta quando
-  // a lista de verdade estiver à vista.
-  if (rolarAteJobs && secaoDeJobs && app.dataset.vista !== 'chat') {
-    rolarAteJobs = false;
-    secaoDeJobs.scrollIntoView({ block: 'nearest' });
-  }
+  pintarFiltroDeLeituras();   // roda em toda vista — é ela quem ESCONDE fora de leituras
+  alvo.scrollTop = rolagem;   // quem troca de vista é trocarVistaDaLateral, não aqui (passo 2.2)
   pintarResumoVazio();
+  pintarBarraDeAgentes();
+  pintarBarraDeLeituras();
 }
 
 /**
@@ -962,7 +975,7 @@ function pintarResumoVazio() {
   const trabalhando = abasDoTerminal.filter((a) => a.rodando).length;
   const teEsperando = abasDoTerminal.filter((a) => {
     const temAgente = a.temAgente ?? a.temClaude;
-    return Boolean(temAgente && !a.rodando && a.atualizadoEm && a.atualizadoEm > ultimaLeitura(a.sessaoId));
+    return Boolean(temAgente && !a.rodando && a.atualizadoEm && a.atualizadoEm > (a.lidoEm || 0));
   }).length;
   const partes = [tr`${trabalhando} trabalhando`, tr`${teEsperando} te esperando`];
   if (jobsRodando.length) {
@@ -971,6 +984,69 @@ function pintarResumoVazio() {
     partes.push(`${jobsRodando.length} ${rotuloJob} ${haQuantoTempo(desde)}`);
   }
   idiomaUI.bind(alvo, 'textContent', () => tr(partes.join(' · ')));
+}
+
+/** Só escreve quando o TEXTO muda. `bind` recria o nó de texto, e o aria-live do aviso
+ *  reanunciaria a cada 5s com a mesma frase. `calcular` lê o estado de módulo (não locais),
+ *  para que um registro antigo continue devolvendo o valor certo na troca de idioma. */
+function pintarRotulo(el, calcular) {
+  if (el.textContent !== calcular()) idiomaUI.bind(el, 'textContent', calcular);
+}
+
+/**
+ * A barra fina no rodapé da lateral (§2.2 da spec): o contador de agentes precisa estar à
+ * vista nas DUAS vistas, senão a barra some justo quando ela seria mais útil. Chamada de um
+ * lugar só, o fim de `desenharAbas()` — como `pintarResumoVazio()`, ao lado.
+ */
+function pintarBarraDeAgentes() {
+  const barra = $('barra-agentes');
+  // `null` é ignorância (ainda não li o painel nenhuma vez): não afirmar nada (§4.6 da D49).
+  barra.hidden = painelDosJobs === null;
+  if (barra.hidden) return;
+  barra.setAttribute('aria-pressed', String(vistaDaLateral === 'agentes'));
+
+  const nomeEl = $('barra-agentes-nome');
+  const avisoEl = $('barra-agentes-aviso');
+  const trabalhoEl = $('barra-agentes-trabalho');
+
+  // A barra diz para ONDE o clique leva, não onde você está (o dono, 14/09): na vista de
+  // agentes ela é a porta de volta, e mostrar "agentes · 12" ali seria o rótulo do que já
+  // está na tela. O contador e o aviso ficam para a vista de conversas, que é onde eles
+  // denunciam algo invisível — na vista de agentes o travado está à vista, na própria lista.
+  const naVistaDeAgentes = vistaDaLateral === 'agentes';
+
+  pintarRotulo(nomeEl, () => (naVistaDeAgentes
+    ? tr('conversas')
+    : (painelDosJobs === false
+      ? tr('agentes')
+      : `${tr('agentes')} · ${jobsDaLista.length}`)));
+
+  // Travado = blocked + orfao (§4.8 da spec da D49): os dois estados que exigem AÇÃO. Um
+  // rótulo por vez, travado ganha de rodando.
+  pintarRotulo(avisoEl, () => (naVistaDeAgentes ? '' : tr(painelDosJobs === false
+    ? tr('sem contato com o painel')
+    : (() => {
+      const travados = jobsDaLista.filter((j) => j.estado === 'blocked' || j.estado === 'orfao').length;
+      return travados ? `${travados} ${travados === 1 ? tr('travado') : tr('travados')}` : '';
+    })())));
+
+  pintarRotulo(trabalhoEl, () => (naVistaDeAgentes ? '' : tr((() => {
+    if (painelDosJobs === false) return '';
+    const travados = jobsDaLista.filter((j) => j.estado === 'blocked' || j.estado === 'orfao').length;
+    const rodando = jobsDaLista.filter((j) => j.estado === 'running').length;
+    return (!travados && rodando) ? tr`${rodando} rodando` : '';
+  })())));
+}
+
+/**
+ * A barra de leituras (D59): função PRÓPRIA, não dentro de `pintarBarraDeAgentes` — ela sai
+ * cedo com `painelDosJobs === null` (acima), e a barra de leituras ficaria sem texto até o
+ * painel responder. `#barra-leituras` nunca fica `hidden` — não depende do painel de jobs.
+ */
+function pintarBarraDeLeituras() {
+  const naVista = vistaDaLateral === 'leituras';
+  $('barra-leituras').setAttribute('aria-pressed', String(naVista));
+  pintarRotulo($('barra-leituras-nome'), () => tr(naVista ? 'conversas' : 'leituras'));
 }
 
 // ── O painel de uma conversa ─────────────────────────────────────────────
@@ -1016,6 +1092,25 @@ function iconeParar() {
 // deles pediu (R17 da spec). `matarAba()` lê daqui, nunca de `atual`.
 let painelPedindoMorte = null;
 
+// O `<dialog>` de renomear também é UM só, compartilhado pelas linhas da lista (card
+// `renomear-a-aba`). Cada toque no ✎ grava aqui um objeto NOVO — `{ chave }` —, e é a IDENTIDADE
+// dele, não a chave, que diz à resposta de um `PATCH` se a edição dela ainda é a que está na tela:
+// salvar A, cancelar e abrir B não pode deixar a resposta de A fechar B.
+let edicaoDoNome = null;
+// Duas guardas contra resposta fora de ordem, cada uma com a SUA pergunta:
+//  - `aplicadoPorChave`: o número do envio MAIS NOVO que já teve SUCESSO em cada aba. Um sucesso
+//    só escreve o nome devolvido no cabeçalho se for mais novo que ele — salvar a mesma aba duas
+//    vezes com as respostas invertidas não deixa o nome da primeira por cima. Recusa não entra na
+//    conta (um 2º Salvar recusado não impede o 1º, que deu certo, de aparecer), e é por CHAVE (um
+//    envio em B não mexe na régua de A). O servidor aplica os PATCH de uma aba na ordem em que
+//    chegam (fila por aba), então "mais novo no envio" é "o que ficou no tmux";
+//  - `leituraDoNome`: quantas leituras de lista um rename BEM-SUCEDIDO já pediu. Só a mais recente
+//    copia os títulos da lista para os cabeçalhos: se A e B forem renomeadas em sequência, a lista
+//    pedida por A pode chegar DEPOIS da de B, com o nome velho de B. Recusa não pede leitura.
+let enviosDoNome = 0;
+const aplicadoPorChave = new Map();
+let leituraDoNome = 0;
+
 /**
  * Monta o painel de uma conversa. Devolve o objeto com os elementos e o estado que hoje era
  * de módulo — os handlers são ligados AQUI, no closure, e é isso que faz a "regra do dono"
@@ -1023,8 +1118,17 @@ let painelPedindoMorte = null;
  * deste painel só podem mexer NESTE painel, nunca em `atual`.
  */
 function criarPainel(chave, info) {
+  // O prefixo `job-` (§7.1) já é a declaração de tipo — `trocarConjunto` (abaixo) monta o
+  // `info` a partir de `abasDoTerminal`, que nunca tem job dentro, então o tipo não pode
+  // viajar por ali. A CHAVE é o tipo, sempre.
+  const tipo = chave.startsWith('job-') ? 'job' : 'aba';
   const raiz = document.createElement('div');
   raiz.className = 'painel';
+  // Gravado no elemento também, para o CSS e o smoke poderem ver — mesma forma do conserto
+  // de 08/09 (hoje `#lista-conversas`): atributo que só o lugar carrega.
+  raiz.dataset.tipo = tipo;
+  // A chave no elemento (D73): o arrasto, o gate e o print leem a ordem dos painéis pela tela.
+  raiz.dataset.chave = chave;
 
   // ── .chat-topo ──────────────────────────────────────────────────────
   const topo = document.createElement('div');
@@ -1083,6 +1187,14 @@ function criarPainel(chave, info) {
   faixaPino.textContent = '●';
   const faixaConta = document.createElement('span');
   faixaConta.className = 'faixa-conta';
+  // 🔴 `aria-live` na CONTA, não na faixa inteira (achado do painel, rodada 1). O
+  // `bbf90c0^` punha `aria-live="polite"` no botão, e a etapa embaixo carrega
+  // `haQuantoTempo(j.desde)`: o texto muda SOZINHO de "há 4 min" para "há 5 min" a cada
+  // minuto, e um leitor de tela releria a faixa inteira nessa cadência. É a mesma decisão
+  // que a `.barra-agentes` já tomou (`index.html`: "aria-live só no AVISO … na barra
+  // inteira, o contador anunciaria a cada 5s — tagarelice"). A conta só muda quando o
+  // NÚMERO de jobs muda, que é a notícia que vale interromper alguém.
+  faixaConta.setAttribute('aria-live', 'polite');
   const faixaTitulos = document.createElement('span');
   faixaTitulos.className = 'faixa-titulos';
   const faixaEtapa = document.createElement('span');
@@ -1091,13 +1203,9 @@ function criarPainel(chave, info) {
   faixaEl.className = 'faixa-jobs';
   faixaEl.type = 'button';
   faixaEl.hidden = true;
-  faixaEl.setAttribute('aria-live', 'polite');
-  idiomaUI.bind(faixaEl, 'title', () => tr('Ver os jobs na lista'));
+  idiomaUI.bind(faixaEl, 'title', () => tr('Ver os agentes'));
   faixaEl.append(faixaPino, faixaConta, faixaTitulos, faixaEtapa);
-  // Desenho C (D40): o clique leva ao grupo de jobs na lista lateral. Antes ele abria o
-  // painel externo (`https://<host>/jobs`) numa aba nova — trocado de propósito, e o `title`
-  // acompanha. Cada painel tem a sua faixa, e todas apontam para a MESMA lista.
-  faixaEl.onclick = verOsJobsNaLista;
+  faixaEl.onclick = verOsAgentes;   // §4.5 — o destino mudou com a D51
 
   const pararRotulo = document.createElement('span');
   pararRotulo.className = 'parar-rotulo';
@@ -1207,7 +1315,9 @@ function criarPainel(chave, info) {
   teclaEsc.className = 'btn tecla tecla-esc';
   teclaEsc.type = 'button';
   teclaEsc.dataset.tecla = 'Escape';
-  idiomaUI.bind(teclaEsc, 'title', () => tr('Cancelar a pergunta (Esc)'));
+  // O que o botão FAZ, não o que ele consegue: no prompt de update do Codex o Esc não fecha
+  // nada, e no prompt de confiança ele ENCERRA o agente — "Cancelar" mentiria nos dois.
+  idiomaUI.bind(teclaEsc, 'title', () => tr('Mandar a tecla Esc para o terminal'));
   teclaEsc.textContent = 'Esc';
   teclaEsc.onclick = () => apertarTecla(painel, 'Escape');
   perguntaTeclas.append(...botoesTecla, teclaEnter, teclaEsc);
@@ -1215,10 +1325,53 @@ function criarPainel(chave, info) {
   const telaDaPane = document.createElement('pre');
   telaDaPane.className = 'pergunta-tela';
 
+  // O cartão da pergunta (card pergunta-do-agente-em-cartao, D74): o servidor manda `cartao`
+  // na resposta da tela quando o hook do Claude Code gravou a pergunta E a tela confere. O
+  // terminal cru vira um "ver terminal" fechado; sem cartão ele fica aberto e a tela é a de
+  // sempre (quebrando linha). As teclas ficam FORA do <details> de propósito: a .pergunta é
+  // coluna flex e elas descem ao rodapé por `margin-top: auto` — dentro do <details> isso
+  // deixaria de valer. Nasce no estado "sem cartão" para os menus que não são pergunta.
+  const cartaoEl = document.createElement('div');
+  cartaoEl.className = 'pergunta-cartao';
+  cartaoEl.hidden = true;
+  const terminalPergunta = document.createElement('details');
+  terminalPergunta.className = 'pergunta-terminal';
+  terminalPergunta.open = true;
+  terminalPergunta.dataset.semCartao = '1';
+  const terminalRotulo = document.createElement('summary');
+  terminalRotulo.className = 'pergunta-terminal-rotulo';
+  idiomaUI.bind(terminalRotulo, 'textContent', () => tr('ver terminal'));
+  terminalPergunta.append(terminalRotulo, telaDaPane);
+  // As teclas só aparecem com o terminal aberto quando há cartão (spec §4.8).
+  terminalPergunta.addEventListener('toggle', () => {
+    perguntaTeclas.hidden = Boolean(painel.cartao) && !terminalPergunta.open;
+  });
+
+  // Card escrever-texto-na-pergunta-aberta (spec §5.1): o Enviar destravado não pode
+  // parecer o Enviar de sempre — mandar Esc antes do texto tem consequência, e ela precisa
+  // estar visível ANTES do dedo. Descreve a AÇÃO, não o resultado (não promete "cancela a
+  // pergunta": há menu que o Esc não fecha, `:3244-3247`). No DOM, nunca em `title` (#31):
+  // `title` é tooltip de mouse, não existe no celular. Visível só com `motivo === 'menu'`
+  // (marcarPergunta decide) — `.pergunta` é flex COLUNA (estilo.css), então esta linha é
+  // item PRÓPRIO e não quebra letra a letra.
+  const avisoEscrita = document.createElement('div');
+  avisoEscrita.className = 'aviso-escrita';
+  avisoEscrita.hidden = true;
+  idiomaUI.bind(avisoEscrita, 'textContent', () => tr('Escrever aqui manda Esc antes do texto.'));
+
+  // Card pergunta-sem-gancho-avisa: sem o hook do D74 o cartão nunca nasce e a pergunta cai calada no
+  // terminal cru. O servidor diz `semGancho` (lê o settings, só leitura); aqui só se mostra. Item PRÓPRIO
+  // da coluna flex, no FIM: a 1ª pintura rola para o fim, e é ali que o olho está no celular. No DOM,
+  // nunca em `title` (#31). Não é botão e não captura tecla — a resposta pelas teclas continua igual.
+  const avisoGancho = document.createElement('div');
+  avisoGancho.className = 'aviso-gancho';
+  avisoGancho.hidden = true;
+  idiomaUI.bind(avisoGancho, 'textContent', () => tr('Cartão da pergunta desligado: o hook não está instalado (DECISOES.md, D74).'));
+
   const pergunta = document.createElement('div');
   pergunta.className = 'pergunta';
   pergunta.hidden = true;
-  pergunta.append(telaDaPane, perguntaTeclas);
+  pergunta.append(cartaoEl, terminalPergunta, perguntaTeclas, avisoEscrita, avisoGancho);
 
   mensagens.append(puxarSelo, fitaEl, pergunta);
 
@@ -1284,6 +1437,7 @@ function criarPainel(chave, info) {
     // digitação — `escreverNaCaixa` cobre as quatro escritas PROGRAMÁTICAS, que não
     // disparam este evento.
     painel.textoNaCaixa = entrada.value;
+    painel.seloComposicao += 1;
     talvezAbrirPaleta(painel);
   });
   // O fechamento por SAÍDA é do `blur` — quem abre por CURSOR é o `focus`, e nenhum dos
@@ -1293,6 +1447,25 @@ function criarPainel(chave, info) {
   // sair de A e entrar em B pelo teclado (§3.7 da spec).
   entrada.addEventListener('focus', () => { if (painel.chave !== atual) focar(painel); });
   entrada.addEventListener('keydown', (e) => {
+    // A régua de quem ganha a tecla com a pergunta aberta (card
+    // escrever-texto-na-pergunta-aberta, spec §5.3): caixa VAZIA cede as seis ao menu (D57,
+    // intacta); caixa COM TEXTO é dona da tecla — o Enviar destravou (Fase 5), e o Enter que
+    // envia não pode virar Enter de menu. O `keydown` do elemento roda na fase de ALVO,
+    // antes do ouvinte do `document`, então a decisão mora AQUI — o de lá não tem como saber
+    // que este já agiu.
+    if (painel.perguntando && TECLAS_FISICAS[e.key]) {
+      // Modificador é ATALHO (`combinacaoDe`, :6319), e IME em composição não é tecla de
+      // ninguém. `return` e não `stopPropagation`: seguir daqui cairia abaixo, que dispara
+      // `enviar()` sem olhar ctrl/alt/meta NEM `isComposing` — hoje quem protege os dois é a
+      // cessão ao `document`, cujas guardas 2 e 4 os descartam. Cortar a propagação sem
+      // repetir as duas guardas aqui transformaria `Ctrl+Enter` e o Enter de IME em envio.
+      if (e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+      // Vazia: cede as seis ao menu — a D57, intacta.
+      if (painel.textoNaCaixa.trim() === '') return;
+      // Com texto: a tecla é DESTA caixa. A decisão mora aqui (#77 metade 2) porque
+      // `escreverNaCaixa('')` esvazia a caixa antes de o evento chegar ao `document`.
+      e.stopPropagation();
+    }
     const paletaAberta = !painel.paleta.hidden;
     if (paletaAberta) {
       if (e.key === 'ArrowDown') { e.preventDefault(); return navegarPaleta(painel, 1); }
@@ -1351,15 +1524,30 @@ function criarPainel(chave, info) {
 
   raiz.append(topo, mensagens, envio);
 
+  // Os controles que miram uma aba do tmux não fazem sentido num painel de job (§4.4): não
+  // há objeto para o ✕ matar (o único botão irreversível da tela, #51) e não se fala com um
+  // job (Fase 0 do card) — a caixa inteira some. `btnParar` já nasce `hidden = true` acima
+  // (nenhum turno para parar na abertura); a guarda extra contra `marcarOcupado`/
+  // `marcarPergunta` reescreverem isso está NELAS, não aqui (4.4 do plano).
+  if (tipo === 'job') {
+    btnMatarAba.hidden = true;
+    envio.hidden = true;
+  }
+
   const painel = {
-    chave, raiz, topo, titulo, caminho, agente, aviso, voltar,
+    chave, raiz, tipo, topo, titulo, caminho, agente, aviso, voltar,
     medidor: {
       el: medidorEl, trilho: medidorTrilho, cheio: medidorCheio,
       modelo: medidorModelo, effort: medidorEffort, pct: medidorPct,
     },
     faixa: { el: faixaEl, pino: faixaPino, conta: faixaConta, titulos: faixaTitulos, etapa: faixaEtapa },
     btnParar, pararRotulo, btnRecarregar, btnFecharPainel, btnMatarAba,
-    mensagens, fita: fitaEl, selo: puxarSelo, pergunta, telaDaPane,
+    mensagens, fita: fitaEl, selo: puxarSelo, pergunta, telaDaPane, avisoEscrita, avisoGancho,
+    // O cartão da pergunta: `cartao` é o último `{ toolUseId, perguntas }` pintado,
+    // `respostasCartao` o que o usuário marcou (uma entrada por pergunta) e `estadoCartao` em
+    // que pé está o envio ('editando' | 'enviando' | 'enviado' | 'erro').
+    cartaoEl, terminalPergunta, perguntaTeclas,
+    cartao: null, respostasCartao: [], estadoCartao: 'editando',
     envio, entrada, btnEnviar, btnAnexar, inpArquivo, paleta, anexosEl, dica,
     // A escolha da paleta é do PAINEL, não de módulo (§3.5 da spec): mover o DOM e deixar
     // o estado para trás é a #51 uma camada acima.
@@ -1373,10 +1561,26 @@ function criarPainel(chave, info) {
     catalogo: null, anexos: [], contexto: null,
     textoNaCaixa: '', historicoEntrada: [], posHistorico: null, rascunho: '',
     rolagemGuardada: null, timerTerminou: null,
+    // O selo do envio recuperável (card menu-da-tui-do-codex-na-tela, R11) — NÃO confundir
+    // com `painel.selo`, que é o elemento DOM do gesto de puxar-para-recarregar, alguns
+    // campos acima. Um inteiro que sobe a cada mudança da composição (texto/anexo): se ele
+    // mudou entre o momento do envio e a resposta, a composição já não é a mesma, e o par
+    // recusado vai para a gaveta (`recusados`) em vez de voltar para a caixa na hora.
+    seloComposicao: 0,
+    // O nó do aviso enquanto um envio espera anexo subir (card foto-some-entre-upload-e-envio).
+    esperandoAnexo: null,
+    // Tocou Enviar de novo DEPOIS do último × durante a espera: o toque novo decide (o × zera).
+    tocouDeNovo: false,
     // O `/status` do Codex (develop, 08/09). Eram `let` de módulo; com N painéis, duas abas
     // de Codex na tela dividiriam o mesmo bloco de resultado e a mesma dedupe por `id`.
     statusCodexSessao: null, statusCodexGeracao: 0, statusCodexEl: null,
     statusCodexIds: new Set(),
+    // O chip `início` virando controle (card `carregar-mais-historico`): a âncora do
+    // próximo clique, a bandeira de pedido em voo, a geração que descarta resposta vencida,
+    // o `sessaoId` PRÓPRIO desta guarda (não `statusCodexSessao`, que é do `/status`), o
+    // elemento da marca (para mover/atualizar) e a bandeira que neutraliza o replay.
+    inicioDoHistorico: 0, carregandoHistorico: false, geracaoHistorico: 0,
+    sessaoDaConversa: null, marcaDeInicio: null, replayAntigo: false,
   };
 
   pintarDicaNo(painel);
@@ -1395,6 +1599,11 @@ function criarPainel(chave, info) {
     escreverNaCaixa(painel, orfao.textoNaCaixa);
     desenharAnexos(painel);
   }
+  // O envio recusado desta aba (card menu-da-tui-do-codex-na-tela, R11) — SEMPRE depois do
+  // bloco de `orfaos` acima, nunca antes: o órfão é a composição de AGORA (o que o usuário
+  // estava escrevendo) e tem precedência sobre o par de um envio anterior. `restaurarRecusado`
+  // só age com a caixa vazia, então os dois nunca se misturam.
+  restaurarRecusado(painel);
 
   ligarGestoDePuxar(painel);
   // Registra e monta — quem chama `criarPainel` não precisa repetir os dois passos (e é o
@@ -1409,6 +1618,7 @@ function criarPainel(chave, info) {
   // vira o alvo do desenho até o próximo `aplicarNoPainel`/`noPainel` apontar para outro.
   P = painel;
   atualizarBotaoFecharPainel();
+  pintarFaixaDe(painel);
 
   return painel;
 }
@@ -1533,7 +1743,7 @@ function pintarCanoCaido(caido) {
 }
 
 /**
- * Tira o painel da TELA: sai do `Map` e do DOM, limpa `timerTerminou` (R36 da spec) e guarda
+ * Tira o painel da TELA: sai do `Map` e do DOM e guarda
  * o texto e os anexos no `Map` de órfãos (R28) para o caso de a mesma aba reabrir NESTA
  * sessão. PURA: não decide foco, não religa o cano, não mexe na vista — quem decide é
  * `fecharPainel` (o gesto do usuário) ou `trocarConjunto` (a transação de troca de conjunto).
@@ -1542,9 +1752,9 @@ function pintarCanoCaido(caido) {
 function tirarPainel(chave) {
   const painel = paineis.get(chave);
   if (!painel) return null;
-  clearTimeout(painel.timerTerminou);
   observadorDeLargura?.unobserve(painel.entrada);
   orfaos.set(chave, { textoNaCaixa: painel.textoNaCaixa, anexos: painel.anexos });
+  painel.seloComposicao += 1;
   paineis.delete(chave);
   painel.raiz.remove();
   atualizarBotaoFecharPainel();
@@ -1585,15 +1795,20 @@ function trocarConjunto(chaves) {
  * `aoLado`, o conjunto inteiro é substituído por esta conversa (`trocarConjunto`, o
  * comportamento de sempre: clicar na lista troca o que está na tela). Com `aoLado`, o painel
  * novo se ACRESCENTA ao que já está aberto e rouba o foco (R25) — ignorado no celular, onde
- * só existe um painel por vez (D30, `matchMedia` perguntado na hora, nunca no boot).
+ * só existe um painel por vez (D30, `matchMedia` perguntado na hora, nunca no boot). Com `soltoEm`
+ * (o arrasto da linha, D73), o painel vai para a zona escolhida — ver `encaixarPainel`.
  *
  * Dá para reusar `aplicarNoPainel()` inteiro porque o servidor traduz o arquivo do CLI para
  * o MESMO vocabulário de eventos do adaptador. O que muda é só o que não existe aqui: uso,
  * arquivos e encerrar são da sessão do cockpit, e somem.
  */
-async function abrirAba(chave, { aoLado = false } = {}) {
+async function abrirAba(chave, { aoLado = false, soltoEm = null } = {}) {
   const jaAberta = paineis.has(chave);
-  if (jaAberta) {
+  if (soltoEm && !matchMedia('(max-width: 760px)').matches) {
+    // Arrastada para uma zona de um painel (D73). Âncora sumida no meio do gesto: nada muda, e o
+    // rabo abaixo NÃO roda — ele marcaria lida uma conversa que nem abriu.
+    if (!encaixarPainel(chave, soltoEm)) return;
+  } else if (jaAberta) {
     const painel = paineis.get(chave);
     focar(painel);
     // Redesenhar o aviso é barato e idempotente (é a MESMA leitura de `abasDoTerminal` que
@@ -1630,6 +1845,200 @@ async function abrirAba(chave, { aoLado = false } = {}) {
   paineis.get(atual)?.entrada.focus();
 }
 
+
+/**
+ * Põe a conversa `chave` no lugar que o arrasto escolheu (§3.5 da spec). Devolve `false` sem tocar
+ * em nada quando a âncora do alvo já não está na tela (o tmux fechou a aba no meio do gesto).
+ * Conversa já aberta MUDA de lugar (P4); nova nasce lá. O `Map` acompanha o DOM — `fecharPainel`,
+ * `Alt+J/K` e o colapso do celular leem a ordem dele como a da tela. O cano só religa quando o
+ * CONJUNTO mudou: o servidor não liga para a ordem do `?abas=`.
+ */
+function encaixarPainel(chave, alvo) {
+  const ancora = alvo.tipo === 'trocar' ? alvo.chave : alvo.antesDe;
+  if (ancora && !paineis.has(ancora)) return false;
+  const jaAberta = paineis.has(chave);
+  if (ancora === chave) { focar(paineis.get(chave)); return true; }
+  const ordem = [...paineis.keys()].filter((k) => k !== chave);
+  let painel = paineis.get(chave);
+  if (!painel) {
+    const info = abasDoTerminal.find((a) => a.chave === chave);
+    painel = criarPainel(chave, info);
+    desenharAvisoDoAgente(painel, info);
+  }
+  moverPainel(painel, ancora ? paineis.get(ancora).raiz : null);
+  if (alvo.tipo === 'trocar') {
+    ordem.splice(ordem.indexOf(alvo.chave), 1, chave);
+    tirarPainel(alvo.chave);
+  } else {
+    ordem.splice(alvo.antesDe ? ordem.indexOf(alvo.antesDe) : ordem.length, 0, chave);
+  }
+  ordenarMapa(ordem);
+  focar(painel);
+  atualizarBotaoFecharPainel();
+  if (!jaAberta || alvo.tipo === 'trocar') religarFluxo();
+  return true;
+}
+
+/**
+ * Põe o `raiz` do painel antes de `ref` (ou no fim) em `#paineis`. Mover um nó o tira e o põe de
+ * volta, e o navegador ZERA a rolagem da `.mensagens` e tira o cursor da caixa (medido no Chromium
+ * em 08/10, §5 da spec) — por isso guarda os dois antes e devolve depois (#52).
+ */
+function moverPainel(painel, ref) {
+  const caixa = painel.mensagens;
+  const rolagem = { noFim: estaNoFim(painel), scrollTop: caixa.scrollTop };
+  const { entrada } = painel;
+  const comCursor = document.activeElement === entrada;
+  const selecao = [entrada.selectionStart, entrada.selectionEnd];
+  $('paineis').insertBefore(painel.raiz, ref);
+  if (rolagem.noFim) rolarFim(painel);
+  else caixa.scrollTop = rolagem.scrollTop;
+  if (comCursor) {
+    entrada.focus();
+    entrada.setSelectionRange(selecao[0], selecao[1]);
+  }
+}
+
+/** Recria o `Map` de painéis na ordem `chaves` (só as que existem) — a ordem do `Map` é a da tela. */
+function ordenarMapa(chaves) {
+  const lista = chaves.map((k) => paineis.get(k)).filter(Boolean);
+  paineis.clear();
+  for (const p of lista) paineis.set(p.chave, p);
+}
+
+/**
+ * O alvo do solto pela posição X do cursor — PURA (§3.2 da spec). `faixas` são os painéis abertos
+ * na ordem do `Map` (`{ chave, left, right }`). Um painel colapsado (largura 0) nunca contém o X e
+ * sai sozinho da conta. A âncora é a CHAVE do vizinho, nunca um índice: se o tmux fechar uma aba no
+ * meio do gesto, o índice mudaria calado; a chave some e o `drop` cancela.
+ */
+function alvoDoSolto(x, faixas, chaveArrastada) {
+  if (!faixas.length) return { tipo: 'vazio' };
+  const i = faixas.findIndex((f) => x >= f.left && x < f.right);
+  if (i === -1) return null;
+  const { chave, left, right } = faixas[i];
+  const fracao = (x - left) / (right - left);
+  let alvo;
+  if (fracao < FRACAO_BORDA) alvo = { tipo: 'inserir', antesDe: chave };
+  else if (fracao > 1 - FRACAO_BORDA) alvo = { tipo: 'inserir', antesDe: faixas[i + 1]?.chave ?? null };
+  else alvo = { tipo: 'trocar', chave };
+  // S4: a conversa já aberta, solta onde ela JÁ está, não muda nada.
+  const j = faixas.findIndex((f) => f.chave === chaveArrastada);
+  if (j !== -1) {
+    if (alvo.tipo === 'trocar' && alvo.chave === chaveArrastada) return null;
+    const depoisDela = faixas[j + 1]?.chave ?? null;
+    if (alvo.tipo === 'inserir' && (alvo.antesDe === chaveArrastada || alvo.antesDe === depoisDela)) return null;
+  }
+  return alvo;
+}
+
+/** As faixas horizontais dos painéis abertos, na ordem do `Map` — a entrada de `alvoDoSolto`. */
+function faixasDosPaineis() {
+  return [...paineis.values()].map((p) => {
+    const r = p.raiz.getBoundingClientRect();
+    return { chave: p.chave, left: r.left, right: r.right };
+  });
+}
+
+/** Tira o preview da tela (coluna fantasma, destaque do centro, marca da origem). Idempotente. */
+function limparPreview() {
+  $('paineis').querySelector('.fantasma-painel')?.remove();
+  for (const p of paineis.values()) {
+    delete p.raiz.dataset.alvoTroca;
+    delete p.raiz.dataset.arrastoOrigem;
+    p.raiz.querySelector('.rotulo-troca')?.remove();
+  }
+  alvoDoArrasto = null;
+}
+
+/**
+ * Desenha o preview de `alvo` (§3.4 da spec) — só mexe no DOM quando o alvo MUDOU. A coluna
+ * fantasma é item flex como o painel: os outros encolhem e a tela mostra COMO VAI FICAR.
+ */
+function mostrarPreview(alvo) {
+  const igual = (a, b) => a === b
+    || Boolean(a && b && a.tipo === b.tipo && a.antesDe === b.antesDe && a.chave === b.chave);
+  if (igual(alvo, alvoDoArrasto)) return;
+  limparPreview();
+  if (!alvo) return;
+  alvoDoArrasto = alvo;
+  const { titulo } = arrastoAba;
+  if (alvo.tipo === 'trocar') {
+    const raiz = paineis.get(alvo.chave).raiz;
+    raiz.dataset.alvoTroca = '1';
+    const rotulo = document.createElement('div');
+    rotulo.className = 'rotulo-troca';
+    rotulo.setAttribute('aria-hidden', 'true');
+    idiomaUI.bind(rotulo, 'textContent', () => tr`Troca por: ${titulo}`);
+    raiz.append(rotulo);
+  } else {
+    const coluna = document.createElement('div');
+    coluna.className = 'fantasma-painel';
+    coluna.setAttribute('aria-hidden', 'true');
+    const nome = document.createElement('span');
+    idiomaUI.bind(nome, 'textContent', () => tr`Abre aqui: ${titulo}`);
+    coluna.append(nome);
+    const antes = alvo.tipo === 'inserir' && alvo.antesDe ? paineis.get(alvo.antesDe).raiz : null;
+    $('paineis').insertBefore(coluna, antes);
+  }
+  // S3: a conversa já aberta que vai mudar de lugar — na borda colapsa (o nº de colunas do preview é
+  // o do resultado), no centro só esmaece.
+  const origem = paineis.get(arrastoAba.chave);
+  if (origem) origem.raiz.dataset.arrastoOrigem = alvo.tipo === 'trocar' ? 'esmaece' : 'colapsa';
+}
+
+/** Fim do gesto, por qualquer porta (drop, dragend, rede do pointerdown). Idempotente. */
+function encerrarArrasto() {
+  limparPreview();
+  arrastoAba = null;
+  if (repinturaAdiada) {
+    repinturaAdiada = false;
+    desenharAbas();
+  }
+}
+
+/** O arrasto é de uma ABA desta tela (tipo próprio), não de arquivo. */
+function ehArrastoDeAba(evento) {
+  return [...(evento.dataTransfer?.types || [])].includes(TIPO_ARRASTO_ABA);
+}
+
+/**
+ * Abre o PAINEL de um job — irmã de `abrirAba` (§7.3 do plano), não um parâmetro dela: um
+ * job não tem `sessaoId` (`marcarLido`), não casa `abasDoProjeto` (`atualizarFaixaJobs`), não
+ * tem caixa de escrita (`pintarDica`, `entrada.focus()` chamaria o teclado do celular numa
+ * tela sem escrita). Enfiar isso em `abrirAba` seria a armadilha #40 pela porta dos fundos.
+ *
+ * No desktop o job abre AO LADO do que já está na tela (o mesmo caminho de `aoLado: true` em
+ * `abrirAba` — split view de graça, D40); no celular só existe um painel por vez, e o caminho
+ * é `trocarConjunto`, como `abrirAba` sem `aoLado`.
+ */
+async function abrirJob(id) {
+  const chave = `job-${id}`;
+  const jaAberta = paineis.has(chave);
+  if (jaAberta) {
+    // 🔴 O ramo "já aberta" NÃO é opcional (§4.2). Sem ele, o segundo clique cairia em
+    // `trocarConjunto([chave])`, que tira TODOS os outros painéis e PULA a criação deste
+    // (`paineis.has` já é `true`) — e portanto nunca chama `focar`: `atual` ficaria
+    // apontando para uma chave que acabou de ser removida da tela.
+    focar(paineis.get(chave));
+    if (!fluxo) religarFluxo();
+  } else if (!matchMedia('(max-width: 760px)').matches) {
+    const painel = criarPainel(chave, undefined);
+    focar(painel);
+    religarFluxo();
+  } else {
+    trocarConjunto([chave]);
+  }
+
+  // 🔴 `desenharAbas()` tem de estar aqui: é ela que redesenha `#abas` (grupo de jobs
+  // incluído) — sem ela, `linha.dataset.aberta` (§4.3) só acenderia no ciclo de 15 s.
+  desenharAbas();
+
+  $('vazio').hidden = true;
+  empilharConversa();
+  app.dataset.vista = 'chat';
+}
+
 // ── Recarregar na mão ───────────────────────────────────────────────────
 //
 // "Às vezes buga" e não havia como forçar uma atualização sem fechar o app inteiro. O que
@@ -1647,13 +2056,15 @@ async function abrirAba(chave, { aoLado = false } = {}) {
  * reconexão do `EventSource`).
  */
 async function recarregarPainel(painel) {
-  const guardados = painel.anexos;
-  painel.anexos = [];
+  // A lista de anexos NÃO sai do lugar durante o `await` (card foto-some-entre-upload-e-envio):
+  // a troca por `[]` era resto do `reabrirAba()` antigo, que recriava a conversa. Com o envio
+  // que espera a foto subir, um upload terminando nessa janela mandava o texto sem ela. O selo
+  // continua subindo — o envio recuperável (R11) conta com isso.
+  painel.seloComposicao += 1;
   await carregarAbas();
   try {
     religarFluxo();
   } finally {
-    painel.anexos = guardados;
     desenharAnexos(painel);
   }
 }
@@ -1693,6 +2104,16 @@ function limparFita() {
   P.statusCodexGeracao += 1;
   P.statusCodexEl = null;      // o bloco "Resultados de /status" é reconstruído pelo replay do SSE
   P.statusCodexIds = new Set();
+  // O chip `início` (card `carregar-mais-historico`): um `/clear` ou uma reconexão do
+  // `EventSource` não pode deixar o painel apontando para a âncora da conversa velha
+  // (armadilha #33). `geracaoHistorico` INCREMENTA, nunca zera — é o que descarta uma
+  // resposta em voo mesmo quando a âncora nova por acaso é igual à antiga.
+  P.inicioDoHistorico = 0;
+  P.carregandoHistorico = false;
+  P.geracaoHistorico += 1;
+  P.sessaoDaConversa = null;
+  P.marcaDeInicio = null;
+  P.replayAntigo = false;
 }
 
 /**
@@ -1937,13 +2358,39 @@ function pendenteVencida(p, agora) {
   return p.ocioso !== null && agora - p.ocioso > MS_PENDENTE;
 }
 
+// DUPLICADA em `lib/abas.js` — o navegador não faz `require`; a paridade é trancada no
+// `gate-ui`. Mudou aqui, muda lá.
+//
+// A forma "para casar": linha em branco fora, espaço solto no fim de cada linha fora. É o que
+// o CLI colapsa sozinho quando a colagem vem junto de uma foto (armadilha #84).
+function formaDeCasar(texto) {
+  return String(texto || '').split('\n').map((l) => l.trimEnd()).filter(Boolean).join('\n').trim();
+}
+// O grau do casamento: 1 = idêntico, 2 = igual sem linha em branco (ou sem o espaço do "!"
+// inicial), 3 = termina igual sem linha em branco (#21: foto/rascunho na frente), 0 = não casa.
+// Menor é melhor.
+function casaComEnviado(doDisco, enviado) {
+  const cru = String(doDisco || '').trim();
+  const alvo = String(enviado || '').trim();
+  if (!cru || !alvo) return 0;
+  if (cru === alvo) return 1;
+  const a = formaDeCasar(cru);
+  const b = formaDeCasar(alvo);
+  if (!a || !b) return 0;
+  // "! cmd" que passou pela fila do CLI volta "!cmd" (#95).
+  if (a === b || a.replace(/^! +/, '!') === b.replace(/^! +/, '!')) return 2;
+  return a.endsWith(b) ? 3 : 0;
+}
+
 /**
  * Acha a bolha pendente que casa com o texto que voltou do disco, desmarca e devolve.
  * Sem par, devolve null — e aí o evento vira bolha nova, como sempre foi.
  *
- * O casamento é por TEXTO, nunca por posição: `send-keys` CONCATENA com o que já estivesse
- * digitado na aba (armadilha #21), então o que volta pode ser "<rascunho do usuário><o que
- * eu mandei>". Por isso vale tanto a igualdade quanto o "termina com".
+ * O casamento é por GRAU (`casaComEnviado`, acima), menor primeiro, empate → a mais antiga:
+ * `send-keys` CONCATENA com o que já estivesse digitado na aba (armadilha #21), então o que
+ * volta pode ser "<rascunho do usuário><o que eu mandei>" — e desde o CLI 2.1.280 uma colagem
+ * com foto ainda colapsa a linha em branco do texto (armadilha #84). Exato primeiro evita que
+ * essa tolerância roube a pendente CERTA numa colisão de duas mensagens parecidas.
  *
  * Pendente que nunca casa — a aba engoliu o texto, o CLI morreu no meio — não pode ficar
  * presa para sempre: passados 60s ela volta a ser bolha normal e não absorve mais nada.
@@ -1951,17 +2398,22 @@ function pendenteVencida(p, agora) {
 function absorverPendente(texto, quando) {
   const agora = Date.now();
   const alvo = String(texto).trim();
-  const sobrando = [];
-  let achada = null;
+  const vivas = [];
   for (const p of P.pendentes) {
     if (pendenteVencida(p, agora)) { desmarcarPendente(p.el); continue; }
+    vivas.push(p);
+  }
+  let achada = null;
+  let grauAchada = 4;
+  for (const p of vivas) {
     // `soltou` (D-l): o POST dela foi recusado, a bolha já perdeu o selo e virou bolha
     // comum ao lado do erro. Ela NÃO absorve mais nada — mas continua na lista, porque a
     // dedupe por `id` do aviso ao vivo (D-m) ainda precisa enxergá-la.
-    if (!p.soltou && !achada && alvo && (alvo === p.texto || alvo.endsWith(p.texto))) { achada = p; continue; }
-    sobrando.push(p);
+    if (p.soltou || !alvo) continue;
+    const grau = casaComEnviado(alvo, p.texto);
+    if (grau && grau < grauAchada) { achada = p; grauAchada = grau; }
   }
-  P.pendentes = sobrando;
+  P.pendentes = achada ? vivas.filter((p) => p !== achada) : vivas;
   if (!achada) return null;
   desmarcarPendente(achada.el);
   // A hora do envio dá lugar à do disco, no mesmo ponto em que a bolha vira definitiva.
@@ -2031,6 +2483,10 @@ function blocoFerramenta(evento) {
   det.dataset.ferramentaId = evento.id || '';
   det.dataset.estado = 'rodando';
   if (evento.t) det.dataset.t = evento.t;
+  // A marca de subagente TAMBÉM vai no cartão de ferramenta (§4.5 item 6 do plano): num job,
+  // ferramenta é o que domina a fita — sem a marca aqui, a cauda ficaria cheia de cartões
+  // anônimos, e é justamente neles que a tabela de riscos apoia a mitigação declarada.
+  if (evento.sub) det.dataset.sub = evento.sub;
 
   const sum = document.createElement('summary');
 
@@ -2051,6 +2507,17 @@ function blocoFerramenta(evento) {
   estado.textContent = '·';
 
   sum.append(icone, nome, alvo, estado);
+  // O NOME do subagente, visível — não só o `data-sub` de cima. A tabela de riscos do plano
+  // justifica contar os dois lados na cauda dizendo que "40 passos rotulados └ executor-plano
+  // contam a verdade", e passo, na fita, é ESTE cartão: sem o rótulo aqui, a mitigação
+  // declarada não existia (achado do painel de execução, 12/09). `data-sub` continua sendo o
+  // que o CSS e o gate leem; este é o que o olho lê.
+  if (evento.sub) {
+    const marca = document.createElement('span');
+    marca.className = 'fer-sub';
+    marca.textContent = `└ ${evento.subNome || 'subagente'}`;
+    sum.append(marca);
+  }
   det.append(sum);
 
   const pre = document.createElement('pre');
@@ -2092,13 +2559,21 @@ function marcaDeCorte(qual, texto) {
 }
 
 /**
- * Régua no topo da fita: o arquivo do CLI era grande demais e só a cauda foi carregada.
+ * Régua no topo da fita: o arquivo do CLI era grande demais e só a cauda foi carregada — e,
+ * a partir do card `carregar-mais-historico`, o botão que pede o lote anterior.
  *
  * Sem ela a conversa simplesmente começa no meio de um assunto, e não há como distinguir
  * "foi só isto que aconteceu" de "o resto ficou de fora". Discreta de propósito: é um
  * aviso, não um erro.
+ *
+ * Três leituras de `inicio`, e a distinção importa — é o que dispensa uma função "marca de
+ * fim" própria (a spec trata "fim" como um ESTADO desta marca, não como irmã dela):
+ *   `inicio > 0`    → a nota de sempre, COM o botão (há histórico atrás)
+ *   `inicio === 0`  → "este é o começo da conversa", sem botão
+ *   `undefined`     → a nota de sempre, sem botão — o evento sem âncora que
+ *                     `gate-ui.js:1096` e `:2283` aplicam
  */
-function marcaDeInicio() {
+function marcaDeInicio(inicio) {
   const div = document.createElement('div');
   div.className = 'corte corte-inicio';
   const rotulo = document.createElement('span');
@@ -2106,22 +2581,187 @@ function marcaDeInicio() {
   idiomaUI.bind(rotulo, 'textContent', () => tr('início'));
   const nota = document.createElement('span');
   nota.className = 'corte-nota';
-  idiomaUI.bind(nota, 'textContent', () => tr('o começo do histórico não foi carregado — só a parte mais recente está aqui'));
+  const textoDaNota = inicio === 0
+    ? 'este é o começo da conversa'
+    : 'o começo do histórico não foi carregado — só a parte mais recente está aqui';
+  idiomaUI.bind(nota, 'textContent', () => tr(textoDaNota));
   div.append(rotulo, nota);
+  if (inicio > 0) {
+    // O painel é CAPTURADO aqui, na construção do botão — não no instante do clique. `P` no
+    // instante do clique é o último painel que recebeu evento do SSE, não necessariamente o
+    // dono deste botão (split view): `onclick = () => carregarMaisHistorico(P)` leria o
+    // painel ERRADO.
+    const dono = P;
+    const botao = document.createElement('button');
+    botao.className = 'corte-mais';
+    botao.type = 'button';
+    idiomaUI.bind(botao, 'textContent', () => tr('carregar mais'));
+    botao.onclick = () => carregarMaisHistorico(dono);
+    div.append(botao);
+  }
   fita().append(div);
+  P.marcaDeInicio = div;
   return div;
+}
+
+/**
+ * Troca o texto do botão e da nota do elemento guardado em `painel.marcaDeInicio` — os
+ * quatro estados que NÃO são a marca recém-desenhada (`marcaDeInicio`) ganham UMA função só,
+ * nunca uma cada. `ancoraMorta()`/`estadoErro()` não existem e não devem ser criadas.
+ *
+ * Os textos saem por `idiomaUI.bind`, nunca `textContent` cru — senão o rótulo fica em
+ * português no inglês, e nenhum gate de hoje pega isso além do H14.
+ */
+const TEXTOS_ESTADO_MARCA = {
+  parado: {
+    nota: 'o começo do histórico não foi carregado — só a parte mais recente está aqui',
+    botao: true, rotulo: 'carregar mais', desabilitado: false,
+  },
+  carregando: {
+    nota: 'o começo do histórico não foi carregado — só a parte mais recente está aqui',
+    botao: true, rotulo: 'carregando…', desabilitado: true,
+  },
+  erro: {
+    nota: 'o começo do histórico não foi carregado — só a parte mais recente está aqui',
+    botao: true, rotulo: 'tentar de novo', desabilitado: false,
+  },
+  morta: {
+    nota: 'a conversa mudou — recarregue',
+    botao: false, rotulo: null, desabilitado: true,
+  },
+};
+function pintarEstadoDaMarca(painel, estado) {
+  const marca = painel.marcaDeInicio;
+  if (!marca) return;
+  const cfg = TEXTOS_ESTADO_MARCA[estado];
+  const nota = marca.querySelector('.corte-nota');
+  if (nota) idiomaUI.bind(nota, 'textContent', () => tr(cfg.nota));
+  const botao = marca.querySelector('.corte-mais');
+  if (botao) {
+    botao.hidden = !cfg.botao;
+    botao.disabled = cfg.desabilitado;
+    if (cfg.rotulo) idiomaUI.bind(botao, 'textContent', () => tr(cfg.rotulo));
+  }
+}
+
+/**
+ * O clique no botão `.corte-mais` — pede à `GET /api/historico` o lote ANTERIOR ao que já
+ * está na tela.
+ *
+ * `painel` é o CAPTURADO no fecho do `onclick` de `marcaDeInicio`, nunca lido de `P`: fora do
+ * bloco síncrono de `desenharLoteAntigo`, `P` não é lido para NADA — nem para a geração. Ler
+ * `++P.geracaoHistorico` antes do `await` incrementaria a geração do painel VIZINHO no split.
+ */
+async function carregarMaisHistorico(painel) {
+  if (painel.carregandoHistorico || !painel.inicioDoHistorico) return;
+  painel.carregandoHistorico = true;
+  pintarEstadoDaMarca(painel, 'carregando');
+  const ate = painel.inicioDoHistorico;
+  // A geração é do painel CAPTURADO, nunca de `P`.
+  const geracao = ++painel.geracaoHistorico;
+  try {
+    const sessao = painel.sessaoDaConversa ? `&sessao=${encodeURIComponent(painel.sessaoDaConversa)}` : '';
+    const r = await api(`api/historico?chave=${encodeURIComponent(painel.chave)}&ate=${ate}${sessao}`);
+    // O único `await` da função ficou para trás: uma resposta de geração vencida (um
+    // `limparFita()` correu no meio) é descartada AQUI, antes de tocar a fita.
+    if (painel.geracaoHistorico !== geracao) return;
+    desenharLoteAntigo(painel, r);
+  } catch (e) {
+    if (painel.geracaoHistorico !== geracao) return;
+    pintarEstadoDaMarca(painel, e.status === 409 ? 'morta' : 'erro');
+  } finally {
+    // O `finally` TAMBÉM confere a geração: um `painel.carregandoHistorico = false`
+    // incondicional deixaria a bandeira falsa enquanto um pedido NOVO ainda está em voo —
+    // pedido antigo → `limparFita()` → pedido novo → a resposta antiga chega e libera a
+    // guarda do novo (achado do painel, Codex [Média] #3).
+    if (painel.geracaoHistorico === geracao) painel.carregandoHistorico = false;
+  }
+}
+
+/**
+ * Desenha o lote antigo por cima da fita — SÍNCRONA do começo ao fim, sem `await` nenhum no
+ * meio: é o que garante que nenhum evento do SSE ao vivo possa ser desviado para dentro do
+ * fragmento deste lote (armadilha #47, pelo caminho do `destinoFita`).
+ */
+function desenharLoteAntigo(painel, r) {
+  const antes = painel.mensagens.scrollHeight;
+  const salvo = {
+    ultimaFala: painel.ultimaFala, grupoFerramentas: painel.grupoFerramentas,
+    ferramentaSolta: painel.ferramentaSolta, ultimaHora: painel.ultimaHora,
+    desenhandoDeFora: painel.desenhandoDeFora, destinoFita: painel.destinoFita,
+  };
+  // A marca SE MOVE, não duplica — mas ela só sai DEPOIS de a nova entrar na fita (lá
+  // embaixo, junto do `prepend`). Removê-la aqui, antes do desenho, deixava o usuário SEM o
+  // chip e SEM o botão se o desenho estourasse: o `finally` restaura os campos salvos, e a
+  // marca não é um deles — `pintarEstadoDaMarca(…, 'erro')` pintaria um nó fora do documento
+  // e o erro não apareceria em lugar nenhum (achado do painel de execução, os dois modelos).
+  const marcaAntiga = painel.marcaDeInicio;
+  let entrou = false;
+  noPainel(painel, () => {
+    try {
+      painel.ultimaFala = null;
+      painel.grupoFerramentas = null;
+      painel.ferramentaSolta = null;
+      painel.ultimaHora = null;
+      painel.desenhandoDeFora = false;
+      painel.replayAntigo = true;
+      segurarFita();
+      // PRIMEIRO no fragmento ⇒ topo do lote, depois de prependado.
+      marcaDeInicio(r.cortado ? r.inicio : 0);
+      for (const evento of r.eventos) aplicarNoPainel(painel, evento);
+      encerrarGrupoFerramentas(); // fecha um grupo de ferramenta aberto no fim do lote
+      const fragmento = painel.destinoFita;
+      painel.destinoFita = null;
+      painel.mensagens.dataset.pintando = '1';
+      painel.fita.prepend(fragmento); // na FITA, não na `mensagens`
+      // SÓ AGORA a marca velha sai: a nova já está na fita, e ninguém chega a ver as duas
+      // (isto é síncrono). Falhou antes daqui? A velha continua na tela, com o botão.
+      marcaAntiga?.remove();
+      entrou = true;
+    } finally {
+      // Devolve tudo, inclusive `destinoFita` — no painel CAPTURADO, nunca em `P` (armadilha
+      // #47: restaurar em `P` deixaria o painel A com o destino setado se `P` tivesse mudado).
+      Object.assign(painel, salvo);
+      painel.replayAntigo = false;
+      // O ponteiro volta para a marca que está NA TELA. Sem isto, depois de uma exceção ele
+      // apontaria para a marca nova — que ficou dentro do fragmento, fora do documento — e o
+      // estado de erro seria pintado onde ninguém vê.
+      if (!entrou) painel.marcaDeInicio = marcaAntiga;
+    }
+  });
+  // Nada abaixo daqui roda se o desenho estourou: a exceção sobe para o `catch` do
+  // `carregarMaisHistorico`, que pinta o estado de erro na marca que sobreviveu.
+  painel.inicioDoHistorico = r.cortado ? r.inicio : 0;
+  const depois = painel.mensagens.scrollHeight;
+  painel.mensagens.scrollTop += (depois - antes);
+  const proximoQuadro = typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame
+    : (fn) => setTimeout(fn, 0);
+  proximoQuadro(() => { delete painel.mensagens.dataset.pintando; });
 }
 
 /**
  * O prompt gravado em disco carrega um cabeçalho `[anexo] /caminho` que existe para o
  * AGENTE saber onde estão os arquivos. Na tela isso é ruído: o usuário escreveu a frase,
  * não os caminhos. Separa um do outro para a bolha mostrar só o que ele digitou.
+ *
+ * Desde que foto vira `[Image #N]` na frente da mensagem (CLI 2.1.258), a linha `[anexo]`
+ * correspondente perde o caminho — só resta a ORDEM (N tokens ↔ N linhas, medido no caso real
+ * de 4 fotos, card fila-presa-com-colagem-embrulhada). Por decisão (spec §4.3): a bolha
+ * RECARREGADA do disco mostra o clipe como `📎 Image #N`, não o nome do arquivo — o CLI
+ * apagou o caminho da fala, e costurá-lo de volta é escopo novo. A bolha AO VIVO (evento
+ * `pendente`) continua com o nome de sempre, porque usa `evento.mensagem`, não este caminho.
  */
 function separarAnexos(texto) {
-  const casou = String(texto).match(/^((?:\[anexo\] .+\n)+)\nOs arquivos acima[^\n]*\n\n([\s\S]*)$/);
+  const casou = String(texto).match(/^((?:\[Image #\d+\]\s*)*)((?:\[anexo\][^\n]*\n)+)\n?Os arquivos acima[^\n]*\n\n?([\s\S]*)$/);
   if (!casou) return { texto, anexos: [] };
-  const anexados = casou[1].trim().split('\n').map((l) => l.replace(/^\[anexo\]\s*/, '').split('/').pop());
-  return { texto: casou[2], anexos: anexados };
+  const imagens = casou[1].match(/Image #\d+/g) || [];
+  let proxima = 0;
+  const anexados = casou[2].trim().split('\n').map((l) => {
+    const caminho = l.replace(/^\[anexo\]\s*/, '');
+    return caminho ? caminho.split('/').pop() : (imagens[proxima++] || 'anexo');
+  });
+  return { texto: casou[3], anexos: anexados };
 }
 
 // ── Ferramentas agrupadas ──────────────────────────────────────────────
@@ -2299,14 +2939,33 @@ function atualizarGrupoDoPasso(passo) {
  * É um `<details open>`, e não uma `<div>`, porque no evento seguinte esta fala pode virar
  * nota de trabalho (ver `recolherFala`). Enquanto está aberta o CSS esconde o `summary`, e
  * ela é exatamente a bolha de sempre — o `<details>` não aparece em lugar nenhum.
+ *
+ * `evento` é OPCIONAL, e é aditivo (§4.5 item 3 do plano): o chamador de sempre (`:2617`, uma
+ * conversa de aba) não muda uma linha. Quando vem, `sub` marca a fala como de subagente —
+ * `└ ${subNome}` no topo dela — e fica gravado em `fala.sub`/`dataset.sub` para a
+ * concatenação de `case 'texto'` distinguir autores.
  */
-function desenharFala(bruto, quando) {
-  const fala = { bruto };
+function desenharFala(bruto, quando, evento = null) {
+  const sub = evento?.sub ?? null;
+  const fala = { bruto, sub };
   // Mesma regra da bolha: a hora só aparece quando o minuto muda, e vem antes da fala.
   marcarHora(quando, 'agente');
   fala.el = document.createElement('details');
   fala.el.className = P.desenhandoDeFora ? 'fala de-fora' : 'fala';
   fala.el.open = true;
+
+  // A marca de subagente (§4.5 item 3) vai PRIMEIRO na ordem de `append` — é o que a põe no
+  // TOPO da fala sem precisar de `prepend` (que o `<details>` desta tela nunca usou até
+  // aqui). `subTarefa` NÃO é desenhada nesta entrega: o texto é longo e, em 60 falas, vira
+  // ruído; `title` seria a #31 (tooltip não existe no celular). O campo continua no evento,
+  // para quem desenhar depois.
+  if (sub) {
+    const marca = document.createElement('div');
+    marca.className = 'fala-sub';
+    marca.textContent = `└ ${evento.subNome || 'subagente'}`;
+    fala.el.append(marca);
+    fala.el.dataset.sub = sub;
+  }
 
   fala.resumo = document.createElement('summary');
   fala.resumo.className = 'fala-resumo';
@@ -2451,6 +3110,10 @@ function linhasDoContexto(contexto) {
 function abrirContexto(painel) {
   const alvo = $('contexto-grade');
   idiomaUI.bind(alvo, 'textContent', () => tr(''));
+  // O `<dialog>` é UM SÓ no documento e é reusado por todo painel (job e aba) — atribuição
+  // INCONDICIONAL nos dois estados. Escrito como `if (job) p.hidden = false`, a frase sobre
+  // subagentes vazaria para o diálogo da aba na abertura seguinte.
+  $('contexto-nota-job').hidden = painel.tipo !== 'job';
   const destaque = $('contexto-destaque');
   const contextoAtual = painel.contexto;
   const pct = contextoAtual && contextoAtual.pct;
@@ -2472,7 +3135,15 @@ function abrirContexto(painel) {
   $('dialogo-contexto').showModal();
 }
 
-const NEUTROS_DO_GRUPO = new Set(['ferramenta', 'resultado_ferramenta', 'turno_fim']);
+// `job_estado` é estado de CABEÇALHO (§4.5 item 7 do plano) — o mesmo papel que `turno_fim`
+// já tem aqui: não pode partir ao meio um grupo de ferramentas seguidas de um job.
+//
+// `contexto` (card `contexto-da-sessao-do-job`, 22/09) é a mesma história: o evento sai sempre
+// que um `assistant` novo traz `usage` novo — ENTRE as ferramentas de uma rajada — e sem estar
+// aqui, cada atualização do medidor partia em dois o grupo aberto na fita. Defeito
+// PRÉ-EXISTENTE (a aba emite `contexto` desde 24/08): esta entrada não o cria, ela o conserta —
+// nas duas superfícies, aba e job.
+const NEUTROS_DO_GRUPO = new Set(['ferramenta', 'resultado_ferramenta', 'turno_fim', 'job_estado', 'contexto']);
 
 /**
  * A casca fina que as 176 chamadas `cliente.aplicar({...})` do gate continuam falando com:
@@ -2509,6 +3180,10 @@ function aplicarNoPainel(painel, evento) {
   switch (evento.tipo) {
     case 'sessao': {
       painel.statusCodexSessao = evento.meta.sessaoId || null;
+      // Campo PRÓPRIO do chip `início` (card `carregar-mais-historico`) — nunca reusar
+      // `statusCodexSessao`, que é do `/status` do Codex: amarrar as duas guardas de
+      // identidade faz quem mexer numa quebrar a outra sem saber.
+      painel.sessaoDaConversa = evento.meta.sessaoId || null;
       // O `/clear` do Codex (develop, 08/09): a aba fica sem arquivo e o cabeçalho passa a
       // dizer "Conversa limpa". A aba é a DESTE painel — `atual` é o painel FOCADO, e com N
       // painéis o `sessao` que chega quase nunca é o do foco.
@@ -2518,13 +3193,21 @@ function aplicarNoPainel(painel, evento) {
         desenharAvisoDoAgente(painel, info);
       }
       painel.titulo.textContent = evento.meta.titulo;
-      painel.caminho.textContent = encurtarCaminho(evento.meta.cwd);
+      // `cwd: null` é o contrato de um job (§5.3 do plano — worktree é caminho de disco e
+      // não vai para o navegador): sem a guarda, `encurtarCaminho(null)` escreve a STRING
+      // "null" no cabeçalho. `''` é o mesmo vazio que a conversa de sempre nunca produzia,
+      // porque toda aba tem `cwd`.
+      painel.caminho.textContent = evento.meta.cwd ? encurtarCaminho(evento.meta.cwd) : '';
       // O caminho CHEIO no `title` — extra de desktop (tooltip é coisa de mouse, #31), e por
       // isso nunca é a entrega: no celular a entrega é o caminho visível e inteiro, que a
       // linha 1 do topo em duas linhas dá. `encurtarCaminho` fica intacto — é compartilhado
       // com a lista e com os cartões de ferramenta.
-      painel.caminho.title = evento.meta.cwd;
+      painel.caminho.title = evento.meta.cwd || '';
       desenharMedidor(painel, evento.meta.contexto);
+      // O estado de PARTIDA de um job aparece já na abertura, não só na transição
+      // (`job_estado` abaixo) — sem isto, um job já `blocked` ao abrir o painel ficaria com
+      // o aviso mudo até a próxima mudança de estado, que pode nunca vir.
+      if (evento.meta.job) desenharEstadoDoJob(painel, evento.meta.job);
       break;
     }
     // O topo se corrigindo ENTRE turnos, sem relógio novo: o relógio de arquivo que já
@@ -2551,7 +3234,9 @@ function aplicarNoPainel(painel, evento) {
     case 'humano': {
       painel.ultimaFala = null;
       const { texto, anexos: enviados } = separarAnexos(evento.texto);
-      lembrar(painel, texto);
+      // Lote antigo (`carregarMaisHistorico`): não empurrar para o fim de `historicoEntrada`
+      // (a seta-para-cima ofereceria a mensagem mais VELHA como se fosse a última enviada).
+      if (!painel.replayAntigo) lembrar(painel, texto);
       // O eco de um `/effort` é o CLI devolvendo, do disco, o prompt que ele LEU de verdade —
       // e é o gatilho honesto da conferência: antes dele não há o que conferir. Vale igual
       // para o que saiu do painel e para o que o usuário digitou aqui na fita, à mão.
@@ -2565,7 +3250,12 @@ function aplicarNoPainel(painel, evento) {
       // desenhá-la. Se for, a bolha que já está na tela vira a definitiva — e recebe o
       // texto do disco, que é o que o agente realmente leu (com o rascunho grudado, se
       // houver). Uma bolha, e ela conta a verdade.
-      const minha = absorverPendente(texto, evento.quando);
+      // Idem: um `continua` no lote antigo não pode roubar o selo da pendente ATUAL (ela casa
+      // por TEXTO, não por data) nem corrigir a hora dela para a hora antiga.
+      // `evento.texto` (cru, com cabeçalho), não `texto` (já sem ele): é o MESMO texto que o
+      // servidor usa em `consumirPendente` (armadilha #84) — com entradas diferentes, o
+      // casamento por grau escolheria pendentes diferentes numa colisão com foto.
+      const minha = painel.replayAntigo ? null : absorverPendente(evento.texto, evento.quando);
       if (minha) {
         // /clear vira régua, não bolha: a hora que nasceu com a pendente sai junto com ela.
         if (corte) { if (minha.horaEl) minha.horaEl.remove(); minha.remove(); }
@@ -2576,20 +3266,30 @@ function aplicarNoPainel(painel, evento) {
       break;
     }
     case 'texto': {
-      // Blocos de texto seguidos do mesmo turno pertencem à mesma fala. Com markdown não dá
-      // para concatenar no nó já renderizado: guardamos o cru e redesenhamos a fala inteira.
-      if (painel.ultimaFala) {
+      // Blocos de texto seguidos do mesmo turno pertencem à mesma fala — MAS só quando são
+      // do MESMO autor. `sub` é a identidade do subagente (job) ou `null` (todo mundo mais):
+      // `null === null` junta o principal com ele mesmo; qualquer outra combinação separa —
+      // sem isso, a fala de um avaliador colaria na do agente principal (§3.4 da spec).
+      // Com markdown não dá para concatenar no nó já renderizado: guardamos o cru e
+      // redesenhamos a fala inteira.
+      const sub = evento.sub ?? null;
+      if (painel.ultimaFala && painel.ultimaFala.sub === sub) {
         painel.ultimaFala.bruto += evento.texto;
         idiomaUI.bind(painel.ultimaFala.corpo, 'textContent', () => tr(''));
         markdown(painel.ultimaFala.bruto, painel.ultimaFala.corpo);
       } else {
-        painel.ultimaFala = desenharFala(evento.texto, evento.quando);
+        painel.ultimaFala = desenharFala(evento.texto, evento.quando, evento);
       }
       break;
     }
     case 'ferramenta':
-      // A fala aberta vira nota: quem fala e em seguida usa ferramenta estava pensando.
-      recolherFala();
+      // A fala aberta vira nota: quem fala e em seguida usa ferramenta estava pensando. MAS
+      // num JOB a fala entre as ações é a única coisa que se quer ler (§1.3 da spec): toda
+      // fala tem ferramenta em seguida, e recolher entregaria uma parede de notas. Zerar
+      // `ultimaFala` sem recolher continua SEPARANDO a próxima fala desta — sem isso, ela
+      // cairia no `if` do `case 'texto'` e seria anexada à bolha de cima, fora de ordem.
+      if (painel.tipo === 'job') painel.ultimaFala = null;
+      else recolherFala();
       blocoFerramenta(evento);
       break;
     case 'resultado_ferramenta': {
@@ -2617,12 +3317,29 @@ function aplicarNoPainel(painel, evento) {
       break;
     case 'historico_cortado':
       // A conversa é grande e só a cauda veio. Ver ALVO_MENSAGENS/TETO_DURO em lib/externo.js.
-      marcaDeInicio();
+      //
+      // A ÂNCORA primeiro, no painel — sem esta linha o botão nasce morto:
+      // `inicioDoHistorico` nasce `0` (criarPainel) e a primeira linha do clique é
+      // `if (… || !painel.inicioDoHistorico) return;` — nenhum pedido sairia nunca.
+      //
+      // `marcaDeInicio` recebe `evento.inicio`, NÃO o campo já coagido do painel: um evento
+      // SEM âncora (`gate-ui.js:1096`/`:2283`, sem o campo `inicio`) precisa continuar
+      // desenhando a nota muda de hoje — `undefined` é uma das três leituras que a função
+      // distingue. Coagir para `0` aqui trocaria essa nota por "este é o começo da conversa".
+      painel.inicioDoHistorico = Number(evento.inicio) || 0;
+      marcaDeInicio(evento.inicio);
       break;
     case 'sincronizado':
       // Fim da rajada inicial: o histórico inteiro entra na página de uma vez.
       despejarFita();
       marcarOcupado(painel, Boolean(evento.turnoEmAndamento));
+      break;
+    // A transição de estado de um JOB (Fase 3 do plano) — irmã de `esperando`/`status_codex`:
+    // atualiza o cabeçalho sem tocar na fita (§5.3.3 da spec). Quem limpa a fita é só o
+    // `sessao`. `marcarOcupado` ajusta o "trabalhando" pela MESMA régua do cabeçalho.
+    case 'job_estado':
+      if (evento.job) desenharEstadoDoJob(painel, evento.job);
+      marcarOcupado(painel, evento.job?.estado === 'running');
       break;
     case 'fim':
       if (evento.negacoes && evento.negacoes.length) {
@@ -2722,7 +3439,10 @@ function marcarOcupado(painel, valor) {
   }
   painel.ocupado = valor;
   // Parar vale com turno rodando E com pergunta aberta: nos dois casos a tecla é o Escape.
-  painel.btnParar.hidden = !valor && !painel.perguntando;
+  // Num painel de JOB não há turno para parar — a guarda entra AQUI, no escritor, e não só
+  // no nascimento do painel: `sincronizado { turnoEmAndamento: true }` para job `running`
+  // (Fase 3) reescreveria este mesmo campo a cada tique se a guarda vivesse só na criação.
+  painel.btnParar.hidden = painel.tipo === 'job' || (!valor && !painel.perguntando);
   const alvoFita = fitaDe(painel);
   const existente = alvoFita.querySelector('.trabalhando');
   if (valor && !existente) {
@@ -2748,8 +3468,9 @@ function marcarOcupado(painel, valor) {
  *
  * Três coisas mudam ao mesmo tempo, e é de propósito que sejam as três: aparece o aviso com
  * a tela do terminal (senão a fita fica muda e parece que não há nada acontecendo), o Enviar
- * trava (texto vira TECLA dentro de um menu — ver a recusa em lib/abas.js) e o Parar assume
- * o papel de cancelar a pergunta, que é o Escape de sempre.
+ * trava **só no `pre-sessao`** (D58: com `menu` ele fica ATIVO, e escrever ali manda `Esc`
+ * antes do texto — no `pre-sessao` o Esc fecharia o agente, por isso lá a trava fica) e o
+ * Parar assume o papel de cancelar a pergunta, que é o Escape de sempre.
  *
  * `motivo` são DOIS estados com o mesmo desenho e textos diferentes (`lib/abas.js`,
  * `podeVerTela`): `'menu'` é o menu de múltipla escolha de sempre; `'pre-sessao'` é o prompt
@@ -2761,24 +3482,38 @@ function marcarPergunta(painel, valor, motivo = 'menu') {
   if (valor === painel.perguntando && (!valor || motivo === painel.motivoPergunta)) return;
   painel.perguntando = valor;
   painel.motivoPergunta = valor ? motivo : 'menu';
-  painel.pergunta.hidden = !valor;
+  // Um job nunca tem TUI — este evento não deveria nem chegar a um painel de job, mas a
+  // guarda entra no escritor por hábito da casa (o mesmo raciocínio do `btnParar` acima).
+  painel.pergunta.hidden = painel.tipo === 'job' || !valor;
   const preSessao = valor && painel.motivoPergunta === 'pre-sessao';
   // P7/R2: escrever direto no botão apagaria o SVG (M2) — quem muda é só o rótulo.
-  idiomaUI.bind(painel.pararRotulo, 'textContent', () => tr(valor ? (preSessao ? tr('Fechar o agente') : tr('Cancelar pergunta')) : tr('Parar')));
+  // O ramo `menu` diz o genérico "Parar", não "Cancelar pergunta": no prompt de UPDATE do
+  // Codex (`menu-update-disponivel.txt`, que a régua classifica como menu) o Esc NÃO fecha
+  // nada — medido. O rótulo não pode prometer o que o Esc às vezes não faz.
+  idiomaUI.bind(painel.pararRotulo, 'textContent', () => tr(valor ? (preSessao ? tr('Fechar o agente') : tr('Parar')) : tr('Parar')));
   idiomaUI.bind(painel.btnParar, 'title', () => tr(valor
     ? (preSessao
       ? tr('O agente ainda não abriu conversa: Esc aqui FECHA o agente desta aba')
-      : tr('Cancelar a pergunta aberta no terminal (Esc)'))
+      : tr('Mandar a tecla Esc para o terminal'))
     : tr('Parar o turno em andamento')));
-  painel.btnParar.hidden = !valor && !painel.ocupado;
-  // A ÚNICA trava do Enviar. Turno rodando não trava nada desde 22/08 — ver marcarOcupado.
-  // Caixa de envio por painel (D42): o botão é do PAINEL, não do foco — cada Enviar trava
-  // pelo `perguntando` do SEU painel, nunca pelo de outro.
-  painel.btnEnviar.disabled = valor;
+  painel.btnParar.hidden = painel.tipo === 'job' || (!valor && !painel.ocupado);
+  // A trava do Enviar (card escrever-texto-na-pergunta-aberta): só no `pre-sessao`. Com
+  // `menu` o servidor faz o gesto (Escape → reconfere → cola → Enter) em vez do cliente
+  // recusar de cara — ver lib/abas.js `digitarNaAba`. Caixa de envio por painel (D42): o
+  // botão é do PAINEL, não do foco — cada Enviar trava pelo `perguntando` do SEU painel,
+  // nunca pelo de outro.
+  painel.btnEnviar.disabled = valor && motivo === 'pre-sessao';
+  // O aviso da AÇÃO (não do resultado — §5.1 da spec), só quando o Esc de fato vai sair:
+  // no `pre-sessao` o Enviar continua travado, e este texto não se aplica.
+  painel.avisoEscrita.hidden = !valor || preSessao;
   if (valor) {
     atualizarTelaDaPane(painel);
   } else {
     idiomaUI.bind(painel.telaDaPane, 'textContent', () => tr(''));
+    // Pergunta fechada: o cartão (e o que o usuário marcou nele) vai junto — reabrir, mesmo
+    // com o mesmo `toolUseId`, monta de novo do zero.
+    painel.avisoGancho.hidden = true;
+    limparCartao(painel);
   }
   // A lista também muda: a aba aberta passa a mostrar (ou deixa de mostrar) o `?`.
   carregarAbas();
@@ -2820,6 +3555,225 @@ function pintarTelaDaPane(painel, tela) {
 }
 
 /**
+ * Volta ao estado "sem cartão": é a tela de sempre (menu de permissão, confiança de pasta,
+ * Codex), só que quebrando linha. Cartão escondido, terminal ABERTO com o rótulo escondido
+ * (`data-sem-cartao`, o CSS cuida) e as seis teclas à vista.
+ */
+function limparCartao(painel) {
+  painel.cartao = null;
+  painel.respostasCartao = [];
+  painel.estadoCartao = 'editando';
+  painel.cartaoEl.textContent = '';
+  painel.cartaoEl.hidden = true;
+  painel.terminalPergunta.open = true;
+  painel.terminalPergunta.dataset.semCartao = '1';
+  painel.perguntaTeclas.hidden = false;
+}
+
+/** Uma pergunta está respondida: uma opção marcada, ou texto na Outra resposta. */
+function perguntaRespondida(resposta) {
+  return resposta.opcoes.length > 0 || resposta.texto.trim() !== '';
+}
+
+/**
+ * Põe o DOM do cartão em dia com `painel.respostasCartao` e `painel.estadoCartao`: quem está
+ * marcado, se o Enviar destrava e o texto ao lado dele. Só lê estado e DOM do cartão — é o
+ * único lugar que escreve `aria-pressed` e `disabled`, para os dois nunca discordarem.
+ */
+function sincronizarCartao(painel) {
+  const travado = painel.estadoCartao !== 'editando';
+  painel.cartaoEl.querySelectorAll('.cartao-questao').forEach((questao, i) => {
+    const resposta = painel.respostasCartao[i];
+    questao.querySelectorAll('.cartao-opcao').forEach((botao, k) => {
+      botao.setAttribute('aria-pressed', resposta.opcoes.includes(k) ? 'true' : 'false');
+      botao.disabled = travado;
+    });
+    questao.querySelector('.cartao-outra-campo').disabled = travado;
+  });
+  const completo = painel.respostasCartao.every(perguntaRespondida);
+  const enviar = painel.cartaoEl.querySelector('.cartao-enviar');
+  enviar.disabled = travado || !completo;
+  idiomaUI.bind(enviar, 'textContent',
+    () => tr(painel.estadoCartao === 'enviando' ? 'Enviando…' : 'Enviar respostas'));
+  const aviso = painel.cartaoEl.querySelector('.cartao-aviso');
+  const frases = { enviado: 'Respostas enviadas.', erro: 'Termine pelo terminal.' };
+  const frase = frases[painel.estadoCartao] || (painel.estadoCartao === 'editando' && !completo
+    ? 'Responda todas as perguntas.' : '');
+  idiomaUI.bind(aviso, 'textContent', () => tr(frase));
+}
+
+/**
+ * Desenha o cartão da pergunta do agente (card pergunta-do-agente-em-cartao, D74, spec §4.8).
+ *
+ * O conteúdo vem do arquivo que o hook do Claude Code gravou, nunca do terminal. É tudo
+ * `createElement`/`textContent`: texto de pergunta e de opção é dado do agente e nunca vira
+ * HTML (por isso também nenhum `title` — não existe no celular — e nenhum `placeholder`).
+ *
+ * Três regras do tique de 5s, que chama isto com o que o servidor devolveu AGORA:
+ *  - mesmo `toolUseId`: não refaz — o que o usuário marcou fica;
+ *  - `toolUseId` novo: refaz do zero;
+ *  - `null`: some, EXCETO no meio do envio e com erro. A 1ª tecla que o servidor manda já
+ *    tira a tela do estado inicial, a conferência deixa de casar e o tique passa a dizer
+ *    `null` — sem esta exceção o "Enviando…" e o erro sumiriam junto com o cartão. Depois de
+ *    `enviado` ele SAI: o CLI pode abrir outro menu na mesma aba ainda `waiting` ("Teach auto
+ *    mode", medido), e esse menu precisa do terminal e das teclas à vista.
+ */
+function pintarCartao(painel, cartao) {
+  if (!cartao) {
+    if (painel.cartao && (painel.estadoCartao === 'editando' || painel.estadoCartao === 'enviado')) limparCartao(painel);
+    return;
+  }
+  if (painel.cartao && painel.cartao.toolUseId === cartao.toolUseId) return;
+
+  painel.cartao = cartao;
+  painel.estadoCartao = 'editando';
+  painel.respostasCartao = cartao.perguntas.map(() => ({ opcoes: [], texto: '' }));
+
+  const questoes = cartao.perguntas.map((pergunta, i) => {
+    const resposta = painel.respostasCartao[i];
+    const questao = document.createElement('section');
+    questao.className = 'cartao-questao';
+    const chip = document.createElement('span');
+    chip.className = 'cartao-chip';
+    chip.textContent = pergunta.cabecalho;
+    const texto = document.createElement('div');
+    texto.className = 'cartao-texto';
+    texto.textContent = pergunta.texto;
+    questao.append(chip, texto);
+    if (pergunta.multipla) {
+      const dica = document.createElement('div');
+      dica.className = 'cartao-multipla';
+      idiomaUI.bind(dica, 'textContent', () => tr('Pode marcar mais de uma.'));
+      questao.append(dica);
+    }
+    const lista = document.createElement('div');
+    lista.className = 'cartao-opcoes';
+    const campo = document.createElement('input');
+    pergunta.opcoes.forEach((opcao, k) => {
+      const botao = document.createElement('button');
+      botao.className = 'cartao-opcao';
+      botao.type = 'button';
+      botao.dataset.cartao = '1';
+      botao.setAttribute('aria-pressed', 'false');
+      const rotulo = document.createElement('span');
+      rotulo.className = 'cartao-opcao-rotulo';
+      rotulo.textContent = opcao.rotulo;
+      botao.append(rotulo);
+      if (opcao.descricao) {
+        const descricao = document.createElement('span');
+        descricao.className = 'cartao-opcao-descricao';
+        descricao.textContent = opcao.descricao;
+        botao.append(descricao);
+      }
+      botao.onclick = () => {
+        if (painel.estadoCartao !== 'editando') return;
+        if (pergunta.multipla) {
+          resposta.opcoes = resposta.opcoes.includes(k)
+            ? resposta.opcoes.filter((n) => n !== k)
+            : [...resposta.opcoes, k].sort((a, b) => a - b);
+        } else {
+          // Simples: a Outra resposta é "mais uma opção" — tocar uma opção a esvazia.
+          resposta.opcoes = [k];
+          resposta.texto = '';
+          campo.value = '';
+        }
+        sincronizarCartao(painel);
+      };
+      lista.append(botao);
+    });
+    questao.append(lista);
+
+    const outra = document.createElement('label');
+    outra.className = 'cartao-outra';
+    const outraRotulo = document.createElement('span');
+    outraRotulo.className = 'cartao-outra-rotulo';
+    idiomaUI.bind(outraRotulo, 'textContent', () => tr('Outra resposta'));
+    campo.className = 'cartao-outra-campo';
+    campo.type = 'text';
+    campo.maxLength = 500;
+    campo.autocomplete = 'off';
+    campo.dataset.cartao = '1';
+    campo.addEventListener('input', () => {
+      if (painel.estadoCartao !== 'editando') return;
+      resposta.texto = campo.value;
+      // Simples: escrever na Outra resposta desmarca a opção. Multi: o texto soma.
+      if (!pergunta.multipla && resposta.texto.trim() !== '') resposta.opcoes = [];
+      sincronizarCartao(painel);
+    });
+    outra.append(outraRotulo, campo);
+    questao.append(outra);
+    return questao;
+  });
+
+  const erro = document.createElement('div');
+  erro.className = 'cartao-erro';
+  erro.setAttribute('role', 'alert');
+  erro.hidden = true;
+  const rodape = document.createElement('div');
+  rodape.className = 'cartao-rodape';
+  const enviar = document.createElement('button');
+  enviar.className = 'btn btn-principal cartao-enviar';
+  enviar.type = 'button';
+  enviar.dataset.cartao = '1';
+  enviar.onclick = () => enviarCartao(painel);
+  const aviso = document.createElement('span');
+  aviso.className = 'cartao-aviso';
+  aviso.setAttribute('aria-live', 'polite');
+  rodape.append(enviar, aviso);
+
+  painel.cartaoEl.textContent = '';
+  painel.cartaoEl.append(...questoes, erro, rodape);
+  painel.cartaoEl.hidden = false;
+  // Primeira pintura deste `toolUseId`: o terminal cru fica FECHADO (abrir depois é do
+  // usuário) e as teclas só aparecem com ele aberto.
+  painel.terminalPergunta.open = false;
+  delete painel.terminalPergunta.dataset.semCartao;
+  painel.perguntaTeclas.hidden = true;
+  sincronizarCartao(painel);
+}
+
+/**
+ * Manda as respostas do cartão: UM POST, e o servidor digita na TUI conferindo cada passo.
+ * Estados: `editando` → `enviando` → `enviado` | `erro`. Fora de `editando` o clique não faz
+ * nada (o segundo clique durante o envio não pode virar um segundo POST), e `erro` trava o
+ * Enviar de vez: com `parcial` já saiu tecla, e refazer por cima bagunçaria a TUI.
+ */
+async function enviarCartao(painel) {
+  const cartao = painel.cartao;
+  if (!cartao || painel.estadoCartao !== 'editando') return;
+  if (!painel.respostasCartao.every(perguntaRespondida)) return;
+  painel.estadoCartao = 'enviando';
+  sincronizarCartao(painel);
+  const erroEl = painel.cartaoEl.querySelector('.cartao-erro');
+  erroEl.hidden = true;
+  erroEl.textContent = '';
+  try {
+    await api(`api/abas/${painel.chave}/pergunta`, {
+      method: 'POST',
+      corpo: {
+        toolUseId: cartao.toolUseId,
+        respostas: painel.respostasCartao.map((r) => ({ opcoes: r.opcoes, texto: r.texto.trim() })),
+      },
+    });
+    // O cartão foi refeito ou limpo durante o `await`: esta resposta é de um cartão que já
+    // não existe, e não pode mexer no novo.
+    if (painel.cartao !== cartao) return;
+    painel.estadoCartao = 'enviado';
+  } catch (erro) {
+    if (painel.cartao !== cartao) return;
+    painel.estadoCartao = 'erro';
+    erroEl.textContent = erro.message;
+    erroEl.hidden = false;
+    if (erro.parcial) {
+      // Já saiu tecla: o resto se termina no terminal, que tem de estar à vista.
+      painel.terminalPergunta.open = true;
+      painel.perguntaTeclas.hidden = false;
+    }
+  }
+  sincronizarCartao(painel);
+}
+
+/**
  * Busca a tela da pane. Só existe enquanto a aba está `waiting` — fora disso o servidor
  * responde 409, e é assim que esta rota não vira espelho do terminal na web.
  *
@@ -2829,8 +3783,13 @@ function pintarTelaDaPane(painel, tela) {
 async function atualizarTelaDaPane(painel) {
   if (!painel || !painel.perguntando) return;
   try {
-    const { tela } = await api(`api/abas/${painel.chave}/tela`);
+    const { tela, cartao, semGancho } = await api(`api/abas/${painel.chave}/tela`);
+    // ANTES de pintar: o `rolarFim` da 1ª pintura mede o `scrollHeight` naquela hora — desesconder depois
+    // deixaria o aviso abaixo da dobra (card pergunta-sem-gancho-avisa, achado do painel da spec).
+    painel.avisoGancho.hidden = !(semGancho === true && painel.perguntando);
     pintarTelaDaPane(painel, tela);
+    // Se a pergunta fechou enquanto a resposta voltava, o cartão não pode renascer.
+    if (painel.perguntando) pintarCartao(painel, cartao || null);
   } catch {
     // 409 = a pergunta já foi respondida no terminal e o estado ainda não chegou aqui.
     // Não vira erro na tela: o evento `esperando` do fluxo fecha o bloco na sequência.
@@ -2854,6 +3813,15 @@ async function atualizarTelaDaPane(painel) {
  */
 async function apertarTecla(painel, nome) {
   if (!painel.perguntando) return;
+  // A luz do botão (card responder-a-pergunta-pelo-teclado): `painel.pergunta.querySelector`
+  // porque `painel.perguntaTeclas` NÃO existe fora do closure de `criarPainel` — `.pergunta`
+  // CONTÉM `.pergunta-teclas`, e o `data-tecla` já existe nos seis botões. Vale para o
+  // clique também: um caminho só, a mesma marca.
+  const botao = painel.pergunta.querySelector(`[data-tecla="${nome}"]`);
+  // CONTADOR, não booleano (R8): a própria função avisa que "dois toques rápidos no ↓" é
+  // esperado — um booleano apagaria a luz na primeira resposta a voltar, com a segunda
+  // tecla ainda no ar. `+1` antes do `await`, `-1` no `finally`, some só em zero.
+  if (botao) botao.dataset.apertada = String(Number(botao.dataset.apertada || 0) + 1);
   try {
     const r = await api(`api/abas/${painel.chave}/teclas`, { method: 'POST', corpo: { tecla: nome } });
     // O Esc (e o Enter que fecha o menu) tira a aba de `waiting`. O servidor avisa nesse
@@ -2871,6 +3839,12 @@ async function apertarTecla(painel, nome) {
   } catch (erro) {
     noPainel(painel, () => bolha('bolha-erro', tr`não deu para apertar ${nome}: ${erro.message}`));
     rolarFim(painel);
+  } finally {
+    if (botao) {
+      const restantes = Number(botao.dataset.apertada || 0) - 1;
+      if (restantes <= 0) delete botao.dataset.apertada;
+      else botao.dataset.apertada = String(restantes);
+    }
   }
 }
 
@@ -2919,9 +3893,6 @@ function fecharPainel(chave) {
     // `trocarConjunto`/`tirarPainel`, nunca por aqui.
     pedirLista();
   }
-  // A faixa é da conversa aberta desde 22/08. Sem conversa, ela some na hora em vez de ficar
-  // mostrando o job da aba anterior até a próxima batida.
-  esconderFaixa(painel);
   desenharAbas();
 }
 
@@ -2936,29 +3907,239 @@ function fecharPainel(chave) {
 //   · o recado de erro vai DENTRO do diálogo, que continua aberto. Os dois painéis são
 //     <dialog> MODAIS: uma bolha na fita nasceria atrás deles, invisível (D32).
 
-/** Enche o <select> do diálogo com os projetos de ~/projetos. Só o NOME vem do servidor. */
+// A lista de modelos do agente escolhido e o agente padrão — guardados aqui para
+// `mostrarModelos()` reler sem precisar de outro `fetch` a cada troca do <select> de agente.
+let agentesDaAba = [];
+let agentePadraoDaAba = 'claude';
+
+// O campo Projeto que filtra (card `pesquisar-a-pasta-na-aba-nova`). O diálogo é ÚNICO, então o
+// estado é de módulo, como o de cima — não é por painel. `projetosDaAba` é a lista que VALE para
+// recusar nome, e só troca quando o GET responde (S4 da spec): o Criar clicado durante o `fetch`
+// não pode validar contra lista vazia. O servidor valida de novo de qualquer jeito (#22).
+let projetosDaAba = [];
+let escolhidosProjeto = [];
+let indiceProjeto = 0;
+// Criar pasta pela aba nova (card `criar-pasta-na-aba-nova`). A MESMA régua do servidor (`server.js`,
+// `NOME_DE_PASTA`); mudou uma, muda a outra.
+const NOME_DE_PASTA = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// Cada abertura do diálogo ganha um número (S15): a resposta de um POST só vale para a abertura que o
+// pediu — senão criar `x`, fechar, reabrir e escolher `app` terminaria com o campo trocado para `x`.
+let aberturaDaAba = 0;
+// A abertura com um POST de pasta em voo (S10): dois toques = um POST, e a trava de uma abertura velha
+// não trava a nova.
+let criandoPasta = null;
+// A abertura cujo GET de projetos já respondeu (S17): antes disso não há como saber se o nome existe, e o
+// item de criar não aparece.
+let aberturaLida = 0;
+
+/** Enche a lista do campo Projeto com os projetos de ~/projetos. Só o NOME vem do servidor. */
 async function carregarProjetos() {
+  // Reset SÍNCRONO, antes do primeiro `await`: sem ele, o Criar fica habilitado (`:3508`)
+  // antes de `carregarAgentes()` terminar, e com `/api/agentes` lento a escolha da abertura
+  // ANTERIOR do diálogo (ex.: Fable) sairia numa aba que o usuário achava estar em Padrão.
+  const campoModelo = $('campo-modelo-novo');
+  if (campoModelo) campoModelo.hidden = true;
+  const selModelo = $('sel-modelo-novo');
+  if (selModelo) idiomaUI.bind(selModelo, 'textContent', () => tr(''));
+
+  // O campo zera e a lista fecha na hora; `projetosDaAba` só troca quando o GET responde (S4).
+  // S15/S17 (card `criar-pasta-na-aba-nova`): cada abertura tem número; respostas de abertura velha não escrevem.
+  aberturaDaAba += 1;
+  const abertura = aberturaDaAba;
   const alvo = $('sel-projeto-novo');
-  idiomaUI.bind(alvo, 'textContent', () => tr(''));
+  alvo.value = '';
+  fecharListaProjetos();
   idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(''));
   let projetos = [];
   try {
     projetos = (await api('api/projetos')).projetos || [];
+    if (abertura !== aberturaDaAba) return;   // S17a: uma abertura mais nova já cuida da tela
+    projetosDaAba = projetos.map((p) => p.nome);
+    aberturaLida = abertura;                  // S17b: agora dá para oferecer criar pasta
   } catch (erro) {
+    if (abertura !== aberturaDaAba) return;   // S17a
     idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr`não deu para ler os projetos: ${erro.message}`);
-  }
-  for (const p of projetos) {
-    const opcao = document.createElement('option');
-    opcao.value = p.nome;
-    opcao.textContent = p.nome;
-    alvo.append(opcao);
   }
   // Sem projeto não há o que criar, e o Criar nasce travado com o motivo escrito — nunca
   // um botão que só sabe falhar.
   $('btn-criar-aba').disabled = projetos.length === 0;
   if (!projetos.length) idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr('nenhum projeto em ~/projetos'));
 
+  // O `autofocus` pôs o cursor no campo antes do GET voltar: a lista do foco foi desenhada com a
+  // lista velha (ou vazia). Redesenha com a nova — só se o cursor continua lá.
+  if (document.activeElement === alvo) filtrarProjetos();
   await carregarAgentes();
+}
+
+// ── A lista do campo Projeto: o padrão da paleta de comandos (`desenharPaleta`/`escolher`),
+// num campo no topo de um diálogo. Itens com as classes da paleta; contêiner próprio.
+
+/** Recorta `projetosDaAba` pelo que está no campo: sem acento e sem caixa, prefixo primeiro. */
+function filtrarProjetos() {
+  const busca = normalizarBusca($('sel-projeto-novo').value);
+  // S4 (card `criar-pasta-na-aba-nova`): "Meu Projeto" acha `Meu-Projeto` pelo nome convertido — senão a lista
+  // diria "nenhuma pasta" e o item de criar também sumiria (a pasta existe), um beco sem saída.
+  const convertida = normalizarBusca(nomeDePasta($('sel-projeto-novo').value));
+  const casa = (nome) => normalizarBusca(nome).includes(busca) || (convertida !== '' && normalizarBusca(nome).includes(convertida));
+  const comeca = (nome) => (normalizarBusca(nome).startsWith(busca) ? 0 : 1);
+  // `sort` é estável: dentro de cada grupo fica a ordem do servidor (localeCompare).
+  escolhidosProjeto = projetosDaAba
+    .filter(casa)
+    .sort((a, b) => comeca(a) - comeca(b));
+  // S5: sem nome nenhum, nada nasce destacado — Enter "no vazio" não pode criar pasta.
+  indiceProjeto = escolhidosProjeto.length ? 0 : -1;
+  desenharProjetos();
+}
+
+function desenharProjetos() {
+  const lista = $('lista-projeto-novo');
+  const campo = $('sel-projeto-novo');
+  lista.textContent = '';
+  lista.hidden = false;
+  campo.setAttribute('aria-expanded', 'true');
+  // O destacado guardado aqui, e não relido por id: no DOM falso do gate `getElementById` cria qualquer id (#55).
+  let destacado = null;
+  if (!escolhidosProjeto.length) {
+    const vazio = document.createElement('div');
+    vazio.className = 'paleta-vazia';
+    idiomaUI.bind(vazio, 'textContent', () => tr('Nenhuma pasta com esse nome.'));
+    lista.append(vazio);
+  }
+  escolhidosProjeto.forEach((nome, i) => {
+    const botao = document.createElement('button');
+    botao.type = 'button';
+    botao.className = 'paleta-item';
+    botao.id = `projeto-opcao-${i}`;
+    botao.setAttribute('tabindex', '-1');
+    botao.setAttribute('role', 'option');
+    botao.setAttribute('aria-selected', String(i === indiceProjeto));
+    botao.textContent = nome;
+    // mousedown, não click: o clique tira o foco do campo e o `blur` fecharia a lista antes.
+    botao.onmousedown = (evento) => { evento.preventDefault(); escolherProjeto(i); };
+    lista.append(botao);
+    if (i === indiceProjeto) destacado = botao;
+  });
+  // O "+ Criar pasta" no FIM (card `criar-pasta-na-aba-nova`): é a última posição da navegação (S6).
+  const pasta = pastaOferecida();
+  if (pasta) {
+    const botao = document.createElement('button');
+    botao.type = 'button';
+    botao.className = 'paleta-item paleta-criar';
+    botao.id = 'projeto-opcao-criar';
+    botao.dataset.criar = '1';
+    botao.setAttribute('tabindex', '-1');
+    botao.setAttribute('role', 'option');
+    botao.setAttribute('aria-selected', String(indiceProjeto === escolhidosProjeto.length));
+    idiomaUI.bind(botao, 'textContent', () => tr`+ Criar pasta ${pasta}`);
+    botao.onmousedown = (evento) => { evento.preventDefault(); criarPasta(); };
+    lista.append(botao);
+    if (indiceProjeto === escolhidosProjeto.length) destacado = botao;
+  }
+  if (destacado) {
+    campo.setAttribute('aria-activedescendant', destacado.id);
+    destacado.scrollIntoView({ block: 'nearest' });
+  } else {
+    campo.removeAttribute('aria-activedescendant');
+  }
+}
+
+function fecharListaProjetos() {
+  const lista = $('lista-projeto-novo');
+  const campo = $('sel-projeto-novo');
+  lista.textContent = '';
+  lista.hidden = true;
+  campo.setAttribute('aria-expanded', 'false');
+  campo.removeAttribute('aria-activedescendant');
+  escolhidosProjeto = [];
+  indiceProjeto = 0;
+}
+
+/** Escreve o nome CANÔNICO no campo — é o que o Criar compara, byte a byte (S3). */
+function escolherProjeto(i) {
+  const nome = escolhidosProjeto[i];
+  if (nome === undefined) return;
+  $('sel-projeto-novo').value = nome;
+  fecharListaProjetos();
+  idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(''));
+}
+
+/**
+ * Abre a lista sem digitar (foco, clique, ↓). Com o campo valendo EXATAMENTE um nome da lista —
+ * acabou de escolher —, mostra todas as pastas com a escolhida destacada: filtrar pelo nome
+ * inteiro daria 1 item, e trocar de ideia exigiria apagar o texto à mão (S8 da spec).
+ */
+function abrirListaProjetos() {
+  const valor = $('sel-projeto-novo').value;
+  if (!projetosDaAba.includes(valor)) return filtrarProjetos();
+  escolhidosProjeto = [...projetosDaAba];
+  indiceProjeto = escolhidosProjeto.indexOf(valor);
+  desenharProjetos();
+}
+
+function navegarProjetos(passo) {
+  if ($('lista-projeto-novo').hidden) return abrirListaProjetos();
+  // O item de criar pasta é a última posição (S6).
+  const total = escolhidosProjeto.length + (pastaOferecida() ? 1 : 0);
+  if (!total) return;
+  if (indiceProjeto < 0) indiceProjeto = passo > 0 ? 0 : total - 1;
+  else indiceProjeto = (indiceProjeto + passo + total) % total;
+  desenharProjetos();
+}
+
+/**
+ * O nome de pasta que o texto digitado vira (card `criar-pasta-na-aba-nova`, S1): sem acento, espaço vira
+ * hífen, o resto que não for letra/número/-/_ sai. A caixa fica: há pastas camelCase.
+ */
+function nomeDePasta(texto) {
+  return String(texto ?? '').normalize('NFD').replace(/\p{M}/gu, '').trim()
+    .replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '');
+}
+
+/** O convertido do campo quando ele vale o item "+ Criar pasta" (S1–S3); senão `null`. */
+function pastaOferecida() {
+  // S17b: sem a lista DESTA abertura não dá para saber se o nome já existe.
+  if (aberturaLida !== aberturaDaAba) return null;
+  const nome = nomeDePasta($('sel-projeto-novo').value);
+  if (!NOME_DE_PASTA.test(nome)) return null;
+  // A mesma chave do servidor (sem acento, sem caixa): `Demo` existindo, `demo` não é oferecido — o
+  // servidor devolveria 409.
+  const chave = normalizarBusca(nome);
+  return projetosDaAba.some((n) => normalizarBusca(n) === chave) ? null : nome;
+}
+
+/**
+ * Cria a pasta e a deixa escolhida no campo (decisão 6). O Criar continua sendo quem abre a aba.
+ *
+ * POST e GET em `try` separados (#32): o 201 já prova que a pasta existe, então um GET que falha não é
+ * erro para a tela (S9). E a resposta só vale para a abertura do diálogo que a pediu (S15): UMA
+ * conferência depois dos dois `await`, antes de qualquer escrita.
+ */
+async function criarPasta() {
+  const nome = pastaOferecida();
+  const abertura = aberturaDaAba;
+  if (!nome || criandoPasta === abertura) return;
+  criandoPasta = abertura;
+  try {
+    const criada = await api('api/projetos', { method: 'POST', corpo: { nome } });
+    let lista = null;
+    try { lista = ((await api('api/projetos')).projetos || []).map((p) => p.nome); }
+    catch { /* S9: o 201 já provou que a pasta existe */ }
+    if (abertura !== aberturaDaAba) return;
+    if (lista) projetosDaAba = lista;
+    if (!projetosDaAba.includes(criada.nome)) projetosDaAba.push(criada.nome);
+    $('sel-projeto-novo').value = criada.nome;
+    fecharListaProjetos();
+    idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(''));
+    // Com a pasta de projetos vazia o Criar nascia travado; a primeira pasta o destrava.
+    $('btn-criar-aba').disabled = projetosDaAba.length === 0;
+  } catch (erro) {
+    if (abertura !== aberturaDaAba) return;
+    // A lista fecha para a nota ficar à vista no celular; o texto digitado fica.
+    fecharListaProjetos();
+    idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(erro.message));
+  } finally {
+    if (criandoPasta === abertura) criandoPasta = null;
+  }
 }
 
 /**
@@ -2983,6 +4164,8 @@ async function carregarAgentes() {
     lista = r.agentes || [];
     padrao = r.padrao || padrao;
   } catch { /* o campo fica vazio e o POST vai sem `agente` — o servidor usa o padrão */ }
+  agentesDaAba = lista;
+  agentePadraoDaAba = padrao;
   for (const a of lista) {
     const opcao = document.createElement('option');
     opcao.value = a.id;
@@ -2990,6 +4173,36 @@ async function carregarAgentes() {
     if (a.id === padrao) opcao.selected = true;
     alvo.append(opcao);
   }
+  alvo.onchange = mostrarModelos;
+  mostrarModelos();
+}
+
+/**
+ * Enche o <select> do Modelo com a lista do agente ESCOLHIDO — some quando ele não tem
+ * lista (Codex, #40). A lista vem do servidor (`agentesDaAba`, lido em `carregarAgentes()`);
+ * reabre sempre em Padrão: esvaziar e reencher a cada troca garante que voltar do Codex para
+ * o Claude não arrasta a escolha de antes.
+ */
+function mostrarModelos() {
+  const campo = $('campo-modelo-novo');
+  const alvo = $('sel-modelo-novo');
+  if (!campo || !alvo) return;
+  const id = $('sel-agente-novo')?.value || agentePadraoDaAba;
+  const modelos = (agentesDaAba.find((a) => a.id === id)?.modelos) || [];
+  idiomaUI.bind(alvo, 'textContent', () => tr(''));
+  const padrao = document.createElement('option');
+  padrao.value = '';
+  idiomaUI.bind(padrao, 'textContent', () => tr('Padrão'));
+  padrao.selected = true;
+  alvo.append(padrao);
+  for (const m of modelos) {
+    const opcao = document.createElement('option');
+    opcao.value = m.id;
+    opcao.textContent = m.rotulo;
+    alvo.append(opcao);
+  }
+  alvo.value = '';
+  campo.hidden = modelos.length === 0;
 }
 
 /**
@@ -3006,16 +4219,29 @@ async function carregarAgentes() {
  */
 async function criarAba(botao) {
   if (botao && botao.dataset.recarregando === '1') return;
+  // Nome fora da lista não sai daqui (card `pesquisar-a-pasta-na-aba-nova`). Valor EXATO, sem
+  // trim: o servidor preserva espaço no nome da pasta, e aparar `app ` mandaria a aba para `app`
+  // (S3). A recusa é conforto — quem garante é o servidor (#22), que casa exato e devolve 400.
+  const projeto = $('sel-projeto-novo').value;
+  if (!projetosDaAba.includes(projeto)) {
+    idiomaUI.bind($('nota-nova-aba'), 'textContent', () => (projeto
+      ? tr`nenhuma pasta "${projeto}" em ~/projetos — escolha uma da lista`
+      : tr('escolha um projeto da lista')));
+    return;
+  }
   if (botao) botao.dataset.recarregando = '1';
   idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(''));
   try {
-    // O corpo leva o NOME do projeto e o ID do agente — nunca caminho de disco nenhum, dos
-    // dois lados (#22). `agente` vazio é omitido de propósito: ausente vira o padrão no
-    // servidor, e mandar string vazia seria pedir uma validação que não precisa existir.
+    // O corpo leva o NOME do projeto, o ID do agente e o ID do modelo — nunca caminho de
+    // disco nenhum, dos dois lados (#22). `agente`/`modelo` vazios são omitidos de
+    // propósito: ausente vira o padrão no servidor, e mandar string vazia seria pedir uma
+    // validação que não precisa existir. `hidden === false`, não `!hidden`: no DOM falso do
+    // gate `hidden` pode nascer `undefined` (#55), e "não sei" deve valer como escondido.
     const agente = $('sel-agente-novo')?.value || '';
+    const modelo = $('campo-modelo-novo')?.hidden === false ? ($('sel-modelo-novo')?.value || '') : '';
     const nova = await api('api/abas', {
       method: 'POST',
-      corpo: { projeto: $('sel-projeto-novo').value, ...(agente ? { agente } : {}) },
+      corpo: { projeto, ...(agente ? { agente } : {}), ...(modelo ? { modelo } : {}) },
     });
     $('dialogo-nova-aba').close();
     await carregarAbas();
@@ -3103,6 +4329,29 @@ function desenharAvisoDoAgente(painel, info) {
   alvo.hidden = false;
 }
 
+/**
+ * Escreve o estado + desfecho de um JOB no cabeçalho (`painel.aviso`) — chamada tanto pelo
+ * `case 'sessao'` (estado de PARTIDA, para não ficar mudo até a primeira transição) quanto
+ * pelo `case 'job_estado'` (a transição em si). NUNCA toca na fita: é irmã de `esperando` e
+ * `status_codex`, que já atualizam estado sem mexer no histórico (§5.3.3 da spec — o `sessao`
+ * continua sendo o único que limpa a fita).
+ *
+ * `aviso` nasce escondido (`criarPainel`) e `desenharAvisoDoAgente(painel, undefined)` o
+ * esconde de novo — é o que `trocarConjunto` chama para TODO painel novo, job incluído. Este
+ * escritor tem de SOLTAR o `hidden` de novo, e escreve pelo `idiomaUI.bind` como todo texto
+ * desta tela — senão a troca de idioma apaga a frase.
+ */
+function desenharEstadoDoJob(painel, job) {
+  const alvo = painel.aviso;
+  if (!alvo) return;
+  idiomaUI.bind(alvo, 'textContent', () => tr(''));
+  const rotulo = ROTULOS_DE_JOB[job.estado] || job.estado || tr('desconhecido');
+  const linha = document.createElement('div');
+  idiomaUI.bind(linha, 'textContent', () => tr(job.desfecho ? `${tr(rotulo)} — ${job.desfecho}` : tr(rotulo)));
+  alvo.append(linha);
+  alvo.hidden = false;
+}
+
 /** O que a confirmação escreve, tirado da aba que a lista JÁ tem. */
 function estadoParaMatar(aba) {
   if (!aba) return tr('Esta aba não está mais na lista.');
@@ -3142,6 +4391,73 @@ async function matarAba(painel, botao) {
     idiomaUI.bind($('nota-matar-aba'), 'textContent', () => tr(erro.message));
   } finally {
     if (botao) botao.dataset.recarregando = '';
+  }
+}
+
+/**
+ * Abre o diálogo de renomear para `aba` (card `renomear-a-aba`). Objeto NOVO em `edicaoDoNome` a
+ * cada abertura: é o que deixa um `PATCH` antigo saber que a edição dele já acabou.
+ */
+function abrirRenomear(aba) {
+  edicaoDoNome = { chave: aba.chave, enviando: false };
+  // A trava de duplo toque é da EDIÇÃO, não do botão (que é um só): um pedido de A ainda no ar não
+  // pode deixar o Salvar de B travado e mudo. Abrir destrava o botão; quem trava é o envio DESTA
+  // edição (`renomearAba`).
+  $('btn-confirma-renomear-aba').dataset.recarregando = '';
+  const campo = $('nome-aba');
+  campo.value = aba.titulo || '';
+  idiomaUI.bind($('nota-renomear-aba'), 'textContent', () => tr(''));
+  $('dialogo-renomear-aba').showModal();
+  // `setSelectionRange`, não `select()`: o DOM de mentira do gate não tem `select`, e um TypeError
+  // dentro de handler morre calado (#55).
+  campo.focus();
+  campo.setSelectionRange(0, campo.value.length);
+}
+
+/**
+ * Manda o nome novo. O que é do SERVIDOR acontece sempre (o nome já mudou no tmux, a tela tem de
+ * refletir); o que é do DIÁLOGO só se a edição ainda for a mesma — ver `edicaoDoNome`.
+ */
+async function renomearAba(botao) {
+  const edicao = edicaoDoNome;
+  // Duplo toque: a trava mora na EDIÇÃO (ver `abrirRenomear`). O `data-recarregando` do botão é
+  // só o retorno visual, o mesmo do `criarAba`/`matarAba`.
+  if (!edicao || edicao.enviando) return;
+  edicao.enviando = true;
+  if (botao) botao.dataset.recarregando = '1';
+  const chave = edicao.chave;
+  enviosDoNome += 1;
+  const envio = enviosDoNome;
+  idiomaUI.bind($('nota-renomear-aba'), 'textContent', () => tr(''));
+  try {
+    const r = await api(`api/abas/${chave}`, { method: 'PATCH', corpo: { nome: $('nome-aba').value } });
+    if (envio > (aplicadoPorChave.get(chave) || 0)) {
+      aplicadoPorChave.set(chave, envio);
+      const painel = paineis.get(chave);
+      if (painel) painel.titulo.textContent = r.titulo;
+    }
+    if (edicaoDoNome === edicao) $('dialogo-renomear-aba').close();
+    leituraDoNome += 1;
+    const leitura = leituraDoNome;
+    await carregarAbas();
+    // Todo painel aberto copia o título da lista nova. Desde a D66 o ✎ de uma pane de janela dividida
+    // não muda a irmã (#67 resolvida), mas o caminho `rename-window` (janela de 1 pane, aba de janela)
+    // ainda muda o `window_name`, que é o título de toda pane sem nome próprio — e um nome trocado
+    // pelo terminal também chega aqui. O cliente não sabe quem divide janela com quem; a lista sabe.
+    // Lista vazia (o GET falhou) não acha ninguém e não apaga título nenhum. E só a
+    // leitura MAIS RECENTE sincroniza (ver `leituraDoNome`): a de um rename antigo pode ser velha.
+    if (leitura !== leituraDoNome) return;
+    for (const [chaveDoPainel, p] of paineis) {
+      const daLista = abasDoTerminal.find((a) => a.chave === chaveDoPainel);
+      if (daLista && daLista.titulo) p.titulo.textContent = daLista.titulo;
+    }
+  } catch (erro) {
+    if (edicaoDoNome === edicao) idiomaUI.bind($('nota-renomear-aba'), 'textContent', () => tr(erro.message));
+  } finally {
+    edicao.enviando = false;
+    // Só destrava o botão se ele ainda for DESTA edição: se B já abriu (e talvez já esteja
+    // enviando), o botão é de B e quem o destrava é o `finally` de B.
+    if (botao && edicaoDoNome === edicao) botao.dataset.recarregando = '';
   }
 }
 
@@ -3323,23 +4639,73 @@ async function enviar(painel) {
   if (!painel) return;
   const entrada = painel.entrada;
   const texto = entrada.value.trim();
-  if (!texto) return;
-  // Com menu aberto na TUI, cada letra vira tecla do menu e pode escolher a opção errada.
-  // O servidor recusa igual (409): aqui é só para o recado aparecer sem viagem de rede.
+  if (!texto) {
+    // Caixa vazia COM anexo: o servidor exige texto (lib/abas.js:1207). O toque responde em vez de
+    // sumir — "não acontece nada" foi o relato de 29/09. Sem anexo não há o que mandar.
+    if (painel.anexos.length) {
+      noPainel(painel, () => bolha('bolha-erro', tr('Escreva uma mensagem para ir junto do anexo.')));
+      rolarFim(painel);
+    }
+    return;
+  }
+  // `pre-sessao`: o prompt de confiança de pasta nova. Mandar o usuário "cancelar com Esc"
+  // ali o faria fechar o agente que ele acabou de abrir — a trava continua, e o recado é
+  // o que resolve: responder pelas setas, que é o que os botões logo acima já fazem.
   //
-  // No prompt de confiança de pasta nova o recado é OUTRO, e não por capricho: mandar o
-  // usuário "cancelar com Esc" ali o faria fechar o agente que ele acabou de abrir. O que
-  // resolve é responder pelas setas, que é o que os botões logo acima já fazem.
-  if (painel.perguntando) {
-    const recado = painel.motivoPergunta === 'pre-sessao'
-      ? tr('O agente está pedindo uma confirmação no terminal e ainda não abriu conversa. ')
-        + tr('Responda pelas setas e o Enter aqui em cima — o Esc FECHA o agente.')
-      : tr('O terminal está com uma pergunta aberta; cancele com Esc (botão Cancelar pergunta) para escrever.');
+  // `menu` (card escrever-texto-na-pergunta-aberta): a guarda SAIU. O servidor faz o gesto
+  // (Escape → reconfere → cola → Enter, `lib/abas.js` `digitarNaAba`) em vez de recusar de
+  // cara — o POST segue, e é o servidor quem decide.
+  if (painel.perguntando && painel.motivoPergunta === 'pre-sessao') {
+    const recado = tr('O agente está pedindo uma confirmação no terminal e ainda não abriu conversa. ')
+      + tr('Responda pelas setas e o Enter aqui em cima — o Esc FECHA o agente.');
     noPainel(painel, () => bolha('bolha-erro', recado));
     rolarFim(painel);
     return;
   }
-  if (painel.anexos.some((a) => a.estado === 'subindo')) return; // espera o upload terminar
+  // Anexo ainda subindo (card foto-some-entre-upload-e-envio): o toque ESPERA e o envio sai
+  // sozinho. Antes isto era um `return` calado — com 3,6 MB no 4G, segundos de "não acontece
+  // nada", e o usuário acabava mandando o texto sem as fotos. Depois da espera o envio RELÊ a
+  // caixa (o que vale é o que está nela quando sai) e passa por todas as regras outra vez.
+  const subindo = painel.anexos.filter((a) => a.estado === 'subindo');
+  if (subindo.length) {
+    const avisar = () => noPainel(painel, () => bolha('bolha-aviso',
+      tr`Esperando ${subindo.length} anexo(s) subir — a mensagem sai sozinha.`));
+    if (painel.esperandoAnexo) {
+      // Segundo toque: não duplica. Redesenha o aviso no fim — se um `sessao` o levou, o toque
+      // continua tendo resposta. Sem `isConnected`: o DOM do gate não o tem (#55).
+      painel.esperandoAnexo.remove();
+      painel.esperandoAnexo = avisar();
+      painel.tocouDeNovo = true;
+      rolarFim(painel);
+      return;
+    }
+    painel.tocouDeNovo = false;
+    painel.esperandoAnexo = avisar();
+    rolarFim(painel);
+    try {
+      await Promise.all(subindo.map((a) => a.subida));
+    } finally {
+      painel.esperandoAnexo.remove();
+      painel.esperandoAnexo = null;
+    }
+    if (paineis.get(painel.chave) !== painel) return;   // o painel saiu da tela no meio
+    // Tirou no `×` um anexo que estava esperando: foi desistência, não "manda sem ela". O
+    // envio automático para aqui — a caixa fica como o usuário deixou e o próximo toque decide.
+    // Se esse próximo toque JÁ veio (Enviar depois do ×, com outra foto ainda subindo), ele não
+    // pode ser engolido: vale a última ação do usuário.
+    const tocouDeNovo = painel.tocouDeNovo;
+    painel.tocouDeNovo = false;
+    if (!tocouDeNovo && subindo.some((a) => !painel.anexos.includes(a))) return;
+    return enviar(painel);
+  }
+  // Anexo que não subiu: nada sai e nada some. Antes o envio filtrava só `pronto` e mandava o
+  // texto sem a foto, calado.
+  if (painel.anexos.some((a) => a.estado === 'erro')) {
+    noPainel(painel, () => bolha('bolha-erro',
+      tr('Um anexo não subiu. Toque no × dele e anexe de novo — nada foi enviado.')));
+    rolarFim(painel);
+    return;
+  }
 
   // `/status` exato numa aba de Codex: rota dedicada, nunca /turnos. Com anexo, a spec
   // pede recusa — nem status (o anexo seria ignorado sem aviso), nem envio genérico (o
@@ -3366,6 +4732,12 @@ async function enviar(painel) {
   const caminhos = painel.anexos.filter((a) => a.estado === 'pronto').map((a) => a.caminho);
   const nomes = painel.anexos.filter((a) => a.estado === 'pronto').map((a) => a.nome);
 
+  // O envio recusado (card menu-da-tui-do-codex-na-tela, R11) precisa dos ANEXOS de antes de
+  // `limparAnexos` zerar a lista — capturado AQUI, antes das duas limpezas de baixo (que
+  // fazem parte do envio, não mudança do usuário: o selo colhido depois delas é que prova
+  // isso; ver `seloDaComposicao` abaixo).
+  const anexosDoEnvio = painel.anexos.slice();
+
   // R35 da spec: `escreverNaCaixa` é o dono ÚNICO do `.value` — a atribuição programática
   // não dispara `input`, e é o `input` quem mantém `painel.textoNaCaixa` em dia na digitação.
   escreverNaCaixa(painel, '');
@@ -3390,6 +4762,10 @@ async function enviar(painel) {
   ));
   const ficha = el.fichaPendente;   // §3.3: marcarPendente devolve o ELEMENTO, a ficha vai nele
   limparAnexos(painel);
+  // O selo vem DEPOIS das duas limpezas (`escreverNaCaixa`/`limparAnexos`) de propósito: elas
+  // são PARTE do envio, não mudança do usuário. Colhê-lo antes invalidaria o próprio envio que
+  // ele existe para proteger — nenhuma restauração aconteceria nem no caso feliz.
+  const seloDaComposicao = painel.seloComposicao;
   // Se o POST falhar, o "trabalhando" volta ao que ERA, não a `false`: com a mensagem indo
   // para a fila havia um turno rodando antes deste envio, e apagá-lo mentiria na tela.
   const jaRodava = painel.ocupado;
@@ -3401,6 +4777,9 @@ async function enviar(painel) {
       method: 'POST',
       corpo: caminhos.length ? { texto, anexos: caminhos, id: idEnvio } : { texto, id: idEnvio },
     });
+    // Sucesso: os anexos não voltam para lugar nenhum — SÓ agora as `objectURL` são
+    // revogadas (`limparAnexos`, acima, deixou de fazer isso — card menu-da-tui-do-codex-na-tela).
+    for (const a of anexosDoEnvio) if (a.url) URL.revokeObjectURL(a.url);
   } catch (erro) {
     marcarOcupado(painel, jaRodava);
     // D-l: o servidor já desfez o registro dele (rollback do envio que falhou). Falta a
@@ -3410,6 +4789,18 @@ async function enviar(painel) {
     // desmarcá-lo seria escrever no vazio — o texto não se perde, `lembrar(texto)` (acima) já
     // o guardou no histórico da caixa.
     if (painel.pendentes.includes(ficha)) { ficha.soltou = true; desmarcarPendente(ficha.el); }
+    // Envio recuperável (card menu-da-tui-do-codex-na-tela, R11): 409 SEM `colado` é "nada
+    // saiu" — o par volta para a gaveta da aba e, se a composição ainda for a MESMA daquele
+    // envio (selo bate) e o painel continuar vivo, volta direto para a caixa. Qualquer outro
+    // erro (409 com `colado`, rede, 500) não guarda nada: o texto já pode ter chegado à TUI
+    // (colado) ou ao agente (rede/500), e reoferecer duplicaria (#21).
+    const vivo = paineis.get(painel.chave);
+    if (erro.status === 409 && !erro.colado) {
+      guardarRecusado(painel.chave, texto, anexosDoEnvio);
+      if (vivo === painel && painel.seloComposicao === seloDaComposicao) restaurarRecusado(painel);
+    } else {
+      for (const a of anexosDoEnvio) if (a.url) URL.revokeObjectURL(a.url);
+    }
     noPainel(painel, () => bolha('bolha-erro', erro.message));
   }
 }
@@ -3726,7 +5117,7 @@ async function ligarAvisos() {
     idiomaUI.bind($('avisos-rotulo'), 'textContent', () => tr('mandando...'));
     try {
       const r = await api('api/push/teste', { method: 'POST', corpo: {} });
-      idiomaUI.bind($('avisos-rotulo'), 'textContent', () => tr(r.enviados ? tr`enviado para ${r.enviados} aparelho(s)` : tr('nenhum aparelho inscrito')));
+      idiomaUI.bind($('avisos-rotulo'), 'textContent', () => rotuloDoTeste(r));
     } catch (erro) {
       idiomaUI.bind($('avisos-rotulo'), 'textContent', () => tr`falhou: ${erro.message}`);
     }
@@ -3747,6 +5138,8 @@ async function ligarAvisos() {
   // `subscribe()` no meio. Com um `catch` único a tela não dizia qual das duas falhou, e
   // sem isso o conserto vira chute; já se chutou demais neste recurso. `subscribe()` lança
   // DOMException, não TypeError, então distinguir os passos já separa rede de navegador.
+  // Declarado ANTES do `try`: o passo que usa a resposta mora depois dele (ver abaixo).
+  let inscrito = null;
   try {
     const chave = await passoDeAviso(tr('pegar a chave VAPID no cockpit'),
       async () => (await api('api/push/chave')).chave);
@@ -3772,10 +5165,10 @@ async function ligarAvisos() {
         return assinar();
       }
     });
-    await passoDeAviso(tr('registrar a inscrição no cockpit'),
+    inscrito = await passoDeAviso(tr('registrar a inscrição no cockpit'),
       () => api('api/push/inscricao', {
         method: 'POST',
-        corpo: { ...inscricao.toJSON(), aparelho: navigator.userAgent.slice(0, 80) },
+        corpo: { ...inscricao.toJSON(), aparelho: nomeSugerido() },
       }));
   } catch (erro) {
     // Mensagem de erro que some em quatro segundos é mensagem perdida — ainda mais no
@@ -3785,7 +5178,23 @@ async function ligarAvisos() {
     pintarBotaoAvisos();
     return;
   }
-  pintarBotaoAvisos();
+  // O `await` NÃO é estilo: `pintarBotaoAvisos` é async, escreve no MESMO `#avisos-rotulo` e
+  // só termina quando a rede responde. Sem ele, um `abrirAparelhos` que rejeitasse no
+  // primeiro microtask escreveria a mensagem e a pintura a sobrescreveria com "Notificações
+  // ligadas · testar" — o dono ficaria sem lista e sem aviso.
+  await pintarBotaoAvisos();
+  // Pedir o nome DEPOIS do 201, nunca antes: um campo de texto entre o clique e o
+  // `requestPermission()` é a forma clássica de perder o gesto do usuário. E FORA do `try`,
+  // porque o `catch` dele mostra "inscrição recusada" — um erro do DIÁLOGO apareceria como
+  // inscrição falhada, com a inscrição feita e gravada.
+  if (inscrito?.id) {
+    abrirAparelhos({ editar: inscrito.id }).catch((erro) => {
+      console.error('aparelhos:', erro.message);
+      // E na TELA, não só no console: num celular `console.error` é informação que não existe.
+      idiomaUI.bind($('avisos-rotulo'), 'textContent',
+        () => tr('avisos ligados — não consegui abrir a lista de aparelhos'));
+    });
+  }
 }
 
 /**
@@ -3857,6 +5266,319 @@ async function mostrarFalhaDeAviso(erro) {
   $('dialogo-diagnostico').showModal();
 }
 
+// ── Aparelhos que recebem aviso (spec 2026-09-12-nome-do-aparelho-no-push) ──────────────
+// O campo `aparelho` era gravado desde sempre e ninguém o lia. Daqui saem as duas coisas que
+// o dono vê: a lista com o nome editável, e o rótulo do botão "testar" nomeando quem recebeu.
+//
+// Tudo por `createElement` + `textContent`, nunca `innerHTML` (proibido no arquivo inteiro):
+// o nome vem do dono, passa pelo servidor e volta — `textContent` fecha essa porta por
+// construção. E tudo em escopo TOP-LEVEL: é o que faz o `vm` do gate-ui e o `page.evaluate`
+// do smoke alcançarem `nomeSugerido` e `rotuloDoTeste`.
+
+/**
+ * A sugestão de nome, derivada do user agent: plataforma + navegador.
+ *
+ * Notebook e desktop dão a MESMA sugestão, e isso não é defeito — é exatamente o fato que
+ * originou o card. Ela existe só para o campo não nascer vazio; quem desempata é o dono.
+ */
+function nomeSugerido() {
+  const ua = navigator.userAgent;
+  const plataforma = /Android/.test(ua) ? 'Android'
+    : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad'
+      : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows'
+        : /Linux/.test(ua) ? 'Linux' : 'Aparelho';
+  // A ordem importa: `Edg/` e `OPR/` contêm `Chrome/`; `Chrome/` contém `Safari/`.
+  const navegador = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera'
+    : /Firefox\//.test(ua) ? 'Firefox'
+      : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : null;
+  return navegador ? `${plataforma} · ${navegador}` : plataforma;
+}
+
+const TETO_NOME = 32;    // nome maior que isso é UA cru, não nome
+// 48 é ESTIMATIVA, não medição: ~360px de diálogo em 390, menos ícone e paddings, a 13px. O
+// `06-testar-celular-depois.png` existe para conferir esse número com o olho — se a frase
+// estourar no print, o número é que está errado. O modo de falha de um teto curto demais é
+// SILENCIOSO (cai na contagem e o dono acha que o recurso não funcionou).
+const TETO_FRASE = 48;
+
+/**
+ * O rótulo do botão depois de um teste — função PRÓPRIA e pura, por dois motivos: o `gate-ui`
+ * assere os quatro ramos sem navegador, e o roteiro do smoke a chama por `page.evaluate` para
+ * fotografar o texto sem precisar de push de verdade.
+ *
+ * A régua não é "tem nome?" — é "esse nome serve para DISTINGUIR?". Os 3 aparelhos de
+ * produção têm 80 caracteres de user agent idêntico no campo: uma guarda ingênua passaria, e
+ * a única superfície que já funcionava nasceria pior do que era.
+ */
+function rotuloDoTeste(r) {
+  if (!r.enviados) return tr('nenhum aparelho inscrito');
+  const quem = (r.nomes || []).filter(Boolean);
+  const contagem = tr`enviado para ${r.enviados} aparelho(s)`;
+  // Nomear só quando os nomes de fato DISTINGUEM os aparelhos. Qualquer "não" cai na contagem:
+  if (quem.length !== r.enviados) return contagem;              // algum sem nome
+  if (quem.some((n) => n.length > TETO_NOME)) return contagem;  // UA cru, mesmo escondido no "e mais N"
+  if (new Set(quem).size !== quem.length) return contagem;      // dois com o mesmo nome
+  const [a, b, ...resto] = quem;
+  const frase = !b ? tr`enviado para ${a}`
+    : !resto.length ? tr`enviado para ${a} e ${b}`
+      : tr`enviado para ${a}, ${b} e mais ${resto.length}`;
+  // Medido no texto JÁ TRADUZIDO: quem tem de caber no botão é o que o dono vê. "enviado
+  // para" tem 12 caracteres e "sent to" tem 7, então a fronteira cai em lugar diferente em
+  // cada idioma — de propósito.
+  return frase.length > TETO_FRASE ? contagem : frase;
+}
+
+// O estado da lista. Nenhum relógio: esta lista NUNCA se redesenha sozinha (ver
+// `salvarNomeDeAparelho`), e é por isso que a edição pode ser inline em vez de um 13º diálogo.
+const dadosDeAparelho = new Map();      // id → o último dado conhecido daquele aparelho
+const linhasDeAparelho = new Map();     // id → o <div> da linha, para redesenhar SÓ ela
+const edicaoDeAparelho = new Map();     // id → o objeto da edição ABERTA agora
+const aplicadoPorId = new Map();        // id → o número do envio mais novo já aplicado
+const enviandoDeAparelho = new Set();   // id com POST em voo: um salvamento por aparelho
+let enviosDeAparelho = 0;
+let idDesteAparelho = null;
+
+/**
+ * Qual das linhas é a DESTE aparelho. É um extra e falha sozinho: o caminho passa por
+ * `getSubscription()`, que não existe em todo lugar, e um TypeError dentro de um `onclick`
+ * morre calado. Dois `try/catch` separados, um por chamada — quando não responde, a lista
+ * abre sem a marca. A marca é conforto; a lista é o recurso.
+ */
+async function descobrirIdDesteAparelho() {
+  let endpoint = null;
+  try {
+    const registro = await navigator.serviceWorker.getRegistration();
+    const inscricao = await registro.pushManager.getSubscription();
+    endpoint = inscricao ? inscricao.endpoint : null;
+  } catch { return null; }
+  if (!endpoint) return null;
+  try {
+    const r = await api('api/push/inscricao/consulta', { method: 'POST', corpo: { endpoint } });
+    return r.id || null;
+  } catch { return null; }
+}
+
+/** O "Atualizar a lista" fica travado enquanto houver edição aberta — e a legenda diz por quê. */
+function atualizarBotaoDaLista() {
+  const botao = $('btn-atualizar-aparelhos');
+  const editando = edicaoDeAparelho.size > 0;
+  if (botao) botao.disabled = editando;
+  // "Desabilita quando não pode" é mais honesto que "some quando não pode": sem a trava, um
+  // 404 na linha A com rascunho aberto em B daria ao dono um botão que apaga o que ele digita.
+  idiomaUI.bind($('nota-aparelhos'), 'textContent',
+    () => (editando ? tr('salve o nome que está editando antes de atualizar') : tr('')));
+}
+
+/** A linha em modo leitura. `recado` aparece embaixo dela quando o servidor tem o que dizer. */
+function pintarLinhaDeAparelho(id, recado) {
+  const item = linhasDeAparelho.get(id);
+  const ap = dadosDeAparelho.get(id);
+  if (!item || !ap) return;
+  edicaoDeAparelho.delete(id);
+  item.textContent = '';
+
+  const linha = document.createElement('div');
+  linha.className = 'aparelho-linha';
+  item.append(linha);
+
+  const nome = document.createElement('span');
+  nome.className = ap.nome ? 'aparelho-nome' : 'aparelho-nome aparelho-vazio';
+  // NENHUM `title` carrega informação aqui: no celular `title` não existe. Quem quer ver o
+  // nome inteiro toca no ✎ — o campo mostra o valor completo e é rolável. Uma porta só.
+  if (ap.nome) nome.textContent = ap.nome;
+  else idiomaUI.bind(nome, 'textContent', () => tr('sem nome'));
+  linha.append(nome);
+
+  if (idDesteAparelho && id === idDesteAparelho) {
+    const marca = document.createElement('span');
+    marca.className = 'aparelho-marca';
+    idiomaUI.bind(marca, 'textContent', () => tr('(este aparelho)'));
+    linha.append(marca);
+  }
+
+  // `criadoEm` ausente NÃO vira data: `new Date(null)` é 01/01/1970, mentira com cara de dado.
+  // E a data é formatada no APARELHO, nunca no servidor, que viaja.
+  if (ap.criadoEm) {
+    const data = document.createElement('span');
+    data.className = 'aparelho-data';
+    data.textContent = new Date(ap.criadoEm).toLocaleDateString();
+    linha.append(data);
+  }
+
+  // Os 8 primeiros hex: os MESMOS que o journal imprime (`aparelho 9f8e7d6c`). Não é enfeite —
+  // é o que liga a linha da tela à linha do log, e sem eles esse ganho só existe no papel.
+  const marcaId = document.createElement('span');
+  marcaId.className = 'aparelho-id';
+  marcaId.textContent = String(id).slice(0, 8);
+  linha.append(marcaId);
+
+  const editar = document.createElement('button');
+  editar.className = 'aparelho-editar';
+  editar.type = 'button';
+  editar.textContent = '✎';
+  editar.onclick = () => editarAparelho(id);
+  linha.append(editar);
+
+  if (recado) {
+    const nota = document.createElement('small');
+    nota.className = 'config-nota';
+    idiomaUI.bind(nota, 'textContent', recado);
+    item.append(nota);
+  }
+  atualizarBotaoDaLista();
+}
+
+/** O ✎: a linha vira campo + Cancelar + Salvar. Objeto NOVO de edição a cada abertura. */
+function editarAparelho(id) {
+  const item = linhasDeAparelho.get(id);
+  const ap = dadosDeAparelho.get(id);
+  if (!item || !ap) return;
+  const edicao = { id };
+  edicaoDeAparelho.set(id, edicao);
+  item.textContent = '';
+
+  const linha = document.createElement('div');
+  linha.className = 'aparelho-linha aparelho-editando';
+  item.append(linha);
+
+  const campo = document.createElement('input');
+  campo.className = 'aparelho-campo';
+  campo.type = 'text';
+  campo.autocomplete = 'off';
+  campo.spellcheck = false;
+  // SEM `maxlength`: o teto de 80 é do SERVIDOR, e uma terceira cópia da regra aqui se
+  // separaria dele calada. O corte aparece quando a linha redesenha com o que ele gravou.
+  campo.value = ap.nome || '';
+  edicao.campo = campo;
+  linha.append(campo);
+
+  const nota = document.createElement('small');
+  nota.className = 'config-nota';
+  edicao.nota = nota;
+  linha.append(nota);
+
+  const acoes = document.createElement('div');
+  acoes.className = 'aparelho-acoes';
+  const cancelar = document.createElement('button');
+  cancelar.className = 'btn';
+  cancelar.type = 'button';
+  idiomaUI.bind(cancelar, 'textContent', () => tr('Cancelar'));
+  cancelar.onclick = () => pintarLinhaDeAparelho(id);
+  const salvar = document.createElement('button');
+  salvar.className = 'btn btn-principal';
+  salvar.type = 'button';
+  idiomaUI.bind(salvar, 'textContent', () => tr('Salvar'));
+  salvar.onclick = () => salvarNomeDeAparelho(id);
+  acoes.append(cancelar, salvar);
+  linha.append(acoes);
+
+  atualizarBotaoDaLista();
+  // O campo NASCE de `createElement`, então toda chamada além de `.value` vai com guarda: o
+  // DOM de mentira do gate não tem `focus` nem `setSelectionRange`, e um TypeError dentro de
+  // handler morre calado.
+  campo.focus?.();
+  campo.setSelectionRange?.(0, campo.value.length);
+  // E de volta ao COMEÇO: selecionar tudo rola o campo para o fim do texto, e com 80
+  // caracteres de user agent o dono veria "…Gecko) Chrome/14" — que não diz qual aparelho
+  // ele está prestes a renomear. Medido no print de 390px; `'backward'` no
+  // `setSelectionRange` não resolve no Chromium.
+  campo.scrollLeft = 0;
+}
+
+/**
+ * Manda o nome novo. Três guardas, e nenhuma substitui as outras — ver o corpo.
+ *
+ * A lista INTEIRA nunca se redesenha aqui, nem no sucesso nem no erro: um `carregarAparelhos()`
+ * disparado por uma resposta apagaria, calado, o rascunho de quem estivesse digitando em outra
+ * linha. Quem redesenha a lista é abrir o diálogo ou o "Atualizar a lista".
+ */
+async function salvarNomeDeAparelho(id) {
+  const edicao = edicaoDeAparelho.get(id);
+  if (!edicao) return;
+  // GUARDA 1 — um salvamento por aparelho de cada vez. O contador sozinho NÃO basta: o
+  // servidor serializa pela ordem de CHEGADA, então dois pedidos em voo podem persistir
+  // trocados e o disco ficar com o nome velho enquanto a tela mostra o novo.
+  if (enviandoDeAparelho.has(id)) return;
+  enviandoDeAparelho.add(id);
+  enviosDeAparelho += 1;
+  const envio = enviosDeAparelho;
+  const nome = edicao.campo.value;
+  idiomaUI.bind(edicao.nota, 'textContent', () => tr(''));
+  try {
+    const r = await api('api/push/inscricao/nome', { method: 'POST', corpo: { id, nome } });
+    // GUARDA 2 — resposta velha nunca vence resposta nova.
+    if (envio <= (aplicadoPorId.get(id) || 0)) return;
+    aplicadoPorId.set(id, envio);
+    dadosDeAparelho.set(id, { ...dadosDeAparelho.get(id), nome: r.nome || null });
+    // GUARDA 3 — não pisar em edição aberta. Salvar, cancelar e REABRIR a mesma linha é outra
+    // edição com o MESMO id: as guardas 1 e 2 não pegam esse caso, e sem esta a resposta do
+    // primeiro salvamento apagaria o rascunho novo.
+    if (edicaoDeAparelho.get(id) === edicao) pintarLinhaDeAparelho(id);
+  } catch (erro) {
+    if (edicaoDeAparelho.get(id) !== edicao) return;
+    // O aparelho se descadastrou no meio: a LINHA diz, a lista fica como está.
+    if (erro.status === 404) pintarLinhaDeAparelho(id, () => tr('este aparelho não está mais inscrito'));
+    // Erro de rede: a mensagem na própria linha e a edição CONTINUA aberta, com o que ele digitou.
+    else idiomaUI.bind(edicao.nota, 'textContent', () => tr(erro.message));
+  } finally {
+    enviandoDeAparelho.delete(id);
+  }
+}
+
+/** Monta a lista do zero. Só é chamada ao ABRIR o diálogo e no "Atualizar a lista". */
+async function carregarAparelhos() {
+  const caixa = $('aparelho-lista');
+  dadosDeAparelho.clear();
+  linhasDeAparelho.clear();
+  edicaoDeAparelho.clear();
+  caixa.textContent = '';
+  atualizarBotaoDaLista();
+
+  let r;
+  try {
+    r = await api('api/push/inscricoes');
+  } catch (erro) {
+    const aviso = document.createElement('p');
+    aviso.className = 'config-nota';
+    idiomaUI.bind(aviso, 'textContent', () => tr(erro.message));
+    const denovo = document.createElement('button');
+    denovo.className = 'btn';
+    denovo.type = 'button';
+    idiomaUI.bind(denovo, 'textContent', () => tr('Tentar de novo'));
+    denovo.onclick = () => carregarAparelhos();
+    caixa.append(aviso, denovo);
+    return;
+  }
+
+  idDesteAparelho = await descobrirIdDesteAparelho();
+
+  if (!r.aparelhos.length) {
+    const vazio = document.createElement('p');
+    vazio.className = 'config-nota';
+    // A chave que o botão "testar" já usa — uma segunda quase-igual no mesmo catálogo seria
+    // a duplicação que as frases inteiras existem para evitar.
+    idiomaUI.bind(vazio, 'textContent', () => tr('nenhum aparelho inscrito'));
+    caixa.append(vazio);
+    return;
+  }
+
+  for (const ap of r.aparelhos) {
+    dadosDeAparelho.set(ap.id, ap);
+    const item = document.createElement('div');
+    item.className = 'aparelho-item';
+    linhasDeAparelho.set(ap.id, item);
+    caixa.append(item);
+    pintarLinhaDeAparelho(ap.id);
+  }
+}
+
+/** Abre o diálogo; com `editar`, já entra na linha daquele id (é o pós-inscrição). */
+async function abrirAparelhos({ editar } = {}) {
+  $('dialogo-aparelhos').showModal();
+  await carregarAparelhos();
+  if (editar && dadosDeAparelho.has(editar)) editarAparelho(editar);
+}
+
 // ── Anexos ──────────────────────────────────────────────────────────────
 // A TUI do terminal não recebe binário por `send-keys`. O que o CLI faz é abrir arquivo com
 // o Read, e o Read enxerga imagem. Então o caminho é: sobe o arquivo para o servidor, ele
@@ -3899,8 +5621,11 @@ function desenharAnexos(painel) {
     tira.textContent = '×';
     idiomaUI.attr(tira, 'aria-label', () => tr`Tirar ${anexo.nome}`);
     tira.onclick = () => {
+      anexo.soltar?.();   // desistir de esperar: libera um `enviar()` que esteja aguardando esta subida
+      painel.tocouDeNovo = false;   // o × é a ação mais nova: um Enviar de antes dele não vale mais
       if (anexo.url) URL.revokeObjectURL(anexo.url);
       painel.anexos.splice(i, 1);
+      painel.seloComposicao += 1;
       desenharAnexos(painel);
     };
     item.append(tira);
@@ -3909,8 +5634,12 @@ function desenharAnexos(painel) {
 }
 
 function limparAnexos(painel) {
-  for (const anexo of painel.anexos) if (anexo.url) URL.revokeObjectURL(anexo.url);
+  // NÃO revoga `objectURL` aqui (card menu-da-tui-do-codex-na-tela, R11): no caminho de
+  // envio, quem chama isto ainda pode precisar mostrar os MESMOS anexos de volta (a caixa
+  // recuperando o par recusado) — revogar cedo deixaria a miniatura quebrada. A lista some da
+  // tela do mesmo jeito; a revogação passa para depois do POST bem-sucedido, em `enviar()`.
   painel.anexos = [];
+  painel.seloComposicao += 1;
   desenharAnexos(painel);
 }
 
@@ -3926,7 +5655,18 @@ async function subirArquivo(painel, arquivo) {
     estado: 'subindo',
     url: arquivo.type.startsWith('image/') ? URL.createObjectURL(arquivo) : null,
   };
+  // A promessa da subida (card foto-some-entre-upload-e-envio): é nela que o `enviar()` espera
+  // quando o toque chega com o anexo ainda subindo. Resolve em QUALQUER saída — o `finally`
+  // abaixo envolve o fetch e o desenho — e nunca rejeita; o `×` também solta (desistência).
+  let soltar;
+  anexo.subida = new Promise((r) => { soltar = r; });
+  anexo.soltar = soltar;
   painel.anexos.push(anexo);
+  // O selo sobe ao ADICIONAR também, não só ao remover (card menu-da-tui-do-codex-na-tela,
+  // R11): anexar durante um request é mudança da composição, e sem este incremento o
+  // invariante do selo ficava com um buraco — a guarda de "composição vazia" salvava o caso,
+  // mas por acidente, não por desenho.
+  painel.seloComposicao += 1;
   desenharAnexos(painel);
 
   try {
@@ -3944,7 +5684,12 @@ async function subirArquivo(painel, arquivo) {
     anexo.estado = 'erro';
     anexo.erro = erro.message;
   }
-  desenharAnexos(painel);
+  // O `catch` acima não deixa nada escapar; a única saída por exceção que sobrava era o desenho.
+  try {
+    desenharAnexos(painel);
+  } finally {
+    anexo.soltar();
+  }
 }
 
 // ── Arquivos: mandar e receber pelo Taildrop ────────────────────────
@@ -4112,56 +5857,115 @@ function desenharListaEnvio(itens) {
 }
 
 /**
- * O upload. Recusa local ANTES de abrir o XHR (R36): acima do teto ou vazio nem sai daqui.
- * O botão trava por `data-recarregando` (o mesmo de `criarAba`) e destrava no `finally`.
- * Fechar o painel durante o envio NÃO cancela (R49): não existe `abort()` em lugar nenhum —
- * o <dialog> só some da tela, o DOM persiste, e ao reabrir a barra está onde parou. Cancelar
- * é fechar o app, como no clipe.
+ * UM upload: abre o XHR, informa o andamento pelo `aoProgredir` e resolve com o que o
+ * servidor devolveu. Não toca na tela — quem decide o que a nota e a barra dizem é o
+ * chamador. Fechar o painel durante o envio NÃO cancela (R49): não existe `abort()` aqui.
+ */
+function subirUmArquivo(arquivo, pasta, aoProgredir) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    // A pasta também é codificada: `clientes & vendas` ou um `#` no nome chegariam partidos.
+    xhr.open('POST', `api/arquivos?${new URLSearchParams({ pasta, nome: arquivo.name })}`);
+    if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    xhr.upload.onprogress = (evento) => {
+      if (!evento.lengthComputable) return;
+      aoProgredir(evento.loaded, evento.total);
+    };
+    xhr.onload = () => {
+      let resposta = {};
+      try { resposta = JSON.parse(xhr.responseText || '{}'); } catch { resposta = {}; }
+      if (xhr.status === 401) { pedirToken(); reject(new Error(tr('token ausente ou inválido'))); return; }
+      if (xhr.status >= 400) { reject(new Error(resposta.erro || tr`falha ${xhr.status}`)); return; }
+      resolve(resposta);
+    };
+    xhr.onerror = () => reject(new Error(tr('a conexão caiu — tente de novo')));
+    xhr.send(arquivo);
+  });
+}
+
+/**
+ * O upload de N arquivos. Recusa local ANTES de abrir o XHR (R36): acima do teto ou vazio
+ * nem sai daqui — mas a recusa é POR ARQUIVO, e o ruim do meio não derruba o lote: os bons
+ * sobem e o resumo diz quais ficaram de fora e por quê.
+ *
+ * Um de cada vez, de propósito: o servidor RECUSA o 4º upload simultâneo com 429
+ * ("já tem 3 arquivos subindo", `lib/arquivos.js:209`) — ele não enfileira. Medido em
+ * 2026-09-18 com quatro POSTs sobrepostos: 3× 201 e 1× 429. Mandar em paralelo perderia
+ * arquivo em silêncio a partir do quarto.
+ *
+ * UMA barra e UMA nota é o que existe na tela (`prog-arquivo-servidor`/`nota-arquivo-servidor`),
+ * e no celular não cabe mais: a barra é do LOTE, medida em BYTES, e a nota ganha o prefixo
+ * "2 de 5". Em bytes, e não em "arquivo 2 de 5", porque a barra anda sozinha do começo ao fim
+ * em vez de voltar a zero a cada arquivo. Com UM arquivo o prefixo some — "1 de 1" é ruído.
+ *
+ * O botão trava por `data-recarregando` (o mesmo de `criarAba`) e destrava no `finally`, ou
+ * seja, só no fim de TODOS. Fechar o painel durante o envio NÃO cancela (R49): não existe
+ * `abort()` em lugar nenhum — o <dialog> só some da tela, o DOM persiste, e ao reabrir a
+ * barra está onde parou. Cancelar é fechar o app, como no clipe.
  */
 async function mandarParaOServidor(botao) {
   if (botao && botao.dataset.recarregando === '1') return;
   const nota = $('nota-arquivo-servidor');
   const barra = $('prog-arquivo-servidor');
-  const arquivo = ($('inp-arquivo-servidor').files || [])[0];
-  if (!arquivo) { idiomaUI.bind(nota, 'textContent', () => tr('escolha um arquivo primeiro')); return; }
-  if (arquivo.size === 0) { idiomaUI.bind(nota, 'textContent', () => tr('arquivo vazio')); return; }
-  if (tetoDoUpload && arquivo.size > tetoDoUpload) {
-    idiomaUI.bind(nota, 'textContent', () => tr`passa do teto de ${formatarBytes(tetoDoUpload)}`);
-    return;
-  }
+  const escolhidos = Array.from($('inp-arquivo-servidor').files || []);
+  if (!escolhidos.length) { idiomaUI.bind(nota, 'textContent', () => tr('escolha um arquivo primeiro')); return; }
   const pasta = $('sel-pasta-inbox').value;
   if (!pasta) { idiomaUI.bind(nota, 'textContent', () => tr('escolha uma pasta da lista')); return; }
+  // A triagem é síncrona e vem ANTES do primeiro XHR: assim o total do lote já é o número
+  // de arquivos que de fato vão subir, e o "2 de 3" não conta quem nunca teve chance.
+  const bons = [];
+  const falhas = [];
+  for (const candidato of escolhidos) {
+    if (candidato.size === 0) { falhas.push(`${candidato.name} (${tr('arquivo vazio')})`); continue; }
+    if (tetoDoUpload && candidato.size > tetoDoUpload) {
+      falhas.push(`${candidato.name} (${tr`passa do teto de ${formatarBytes(tetoDoUpload)}`})`);
+      continue;
+    }
+    bons.push(candidato);
+  }
   if (botao) botao.dataset.recarregando = '1';
   barra.hidden = false;
   barra.value = 0;
-  idiomaUI.bind(nota, 'textContent', () => tr`subindo 0 B de ${formatarBytes(arquivo.size)}… pode fechar o painel, o envio continua`);
+  const totalDoLote = bons.length;
+  const bytesDoLote = bons.reduce((soma, a) => soma + (a.size || 0), 0);
+  // O prefixo só existe em lote de verdade; com um arquivo a frase é a mesma de sempre.
+  const doLote = (posicao, texto) => (totalDoLote > 1 ? tr`${posicao} de ${totalDoLote} · ${texto}` : texto);
+  let bytesJaEnviados = 0;
+  let ultimo = null;
+  let prontos = 0;
   try {
-    const dados = await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      // A pasta também é codificada: `clientes & vendas` ou um `#` no nome chegariam partidos.
-      xhr.open('POST', `api/arquivos?${new URLSearchParams({ pasta, nome: arquivo.name })}`);
-      if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
-      xhr.setRequestHeader('content-type', 'application/octet-stream');
-      xhr.upload.onprogress = (evento) => {
-        if (!evento.lengthComputable) return;
-        barra.value = Math.round((evento.loaded / evento.total) * 100);
-        idiomaUI.bind(nota, 'textContent', () => tr`subindo ${formatarBytes(evento.loaded)} de ${formatarBytes(evento.total)}… pode fechar o painel, o envio continua`);
-      };
-      xhr.onload = () => {
-        let resposta = {};
-        try { resposta = JSON.parse(xhr.responseText || '{}'); } catch { resposta = {}; }
-        if (xhr.status === 401) { pedirToken(); reject(new Error(tr('token ausente ou inválido'))); return; }
-        if (xhr.status >= 400) { reject(new Error(resposta.erro || tr`falha ${xhr.status}`)); return; }
-        resolve(resposta);
-      };
-      xhr.onerror = () => reject(new Error(tr('a conexão caiu — tente de novo')));
-      xhr.send(arquivo);
-    });
-    barra.value = 100;
-    idiomaUI.bind(nota, 'textContent', () => tr`chegou: ${dados.nome} em ${dados.pasta}`);
-    if (raizEnvio === 'inbox') carregarListaEnvio(raizEnvio, caminhoEnvio);
-  } catch (erro) {
-    idiomaUI.bind(nota, 'textContent', () => tr(erro.message));
+    for (let i = 0; i < totalDoLote; i += 1) {
+      const arquivo = bons[i];
+      const posicao = i + 1;
+      const enviadosAntes = bytesJaEnviados;
+      idiomaUI.bind(nota, 'textContent', () => doLote(posicao, tr`subindo 0 B de ${formatarBytes(arquivo.size)}… pode fechar o painel, o envio continua`));
+      try {
+        const dados = await subirUmArquivo(arquivo, pasta, (carregado, total) => {
+          barra.value = Math.round(((enviadosAntes + carregado) / (bytesDoLote || total)) * 100);
+          idiomaUI.bind(nota, 'textContent', () => doLote(posicao, tr`subindo ${formatarBytes(carregado)} de ${formatarBytes(total)}… pode fechar o painel, o envio continua`));
+        });
+        prontos += 1;
+        ultimo = dados;
+      } catch (erro) {
+        falhas.push(`${arquivo.name} (${erro.message})`);
+      }
+      bytesJaEnviados += arquivo.size || 0;
+      barra.value = bytesDoLote ? Math.round((bytesJaEnviados / bytesDoLote) * 100) : 100;
+    }
+    if (prontos) barra.value = 100;
+    const recusados = falhas.join('; ');
+    // Uma nota só, no fim, dizendo o que aconteceu com o lote inteiro.
+    if (!falhas.length && prontos === 1 && ultimo) {
+      idiomaUI.bind(nota, 'textContent', () => tr`chegou: ${ultimo.nome} em ${ultimo.pasta}`);
+    } else if (!falhas.length) {
+      idiomaUI.bind(nota, 'textContent', () => tr`chegaram ${prontos} arquivos em ${pasta}`);
+    } else if (!prontos) {
+      idiomaUI.bind(nota, 'textContent', () => tr`nenhum arquivo subiu — ${recusados}`);
+    } else {
+      idiomaUI.bind(nota, 'textContent', () => tr`chegaram ${prontos} de ${escolhidos.length} em ${pasta} — falharam: ${recusados}`);
+    }
+    if (prontos && raizEnvio === 'inbox') carregarListaEnvio(raizEnvio, caminhoEnvio);
   } finally {
     if (botao) botao.dataset.recarregando = '';
   }
@@ -4555,8 +6359,14 @@ async function carregarLimite(forcar) {
  * planos distintos é exatamente o tipo de número com cara de certo que a #10 proíbe — quem
  * olhasse a tela leria "82%" sem saber de qual plano.
  *
- * `codex: null` ⇒ o bloco inteiro não é desenhado. É AUSÊNCIA, não `0%`: não há aba de Codex
- * viva, então não há o que dizer sobre a assinatura.
+ * `codex: null` ⇒ o bloco inteiro não é desenhado — é AUSÊNCIA, nunca `0%`. Desde o card
+ * `codex-no-relatorio-de-tokens` isso já não significa "sem aba de Codex viva": o servidor
+ * também tenta o disco (D6), e só devolve `null` quando NEM aba, NEM rollout algum respondem.
+ *
+ * `fonte` diz de onde veio o número: `'aba'` desenha como sempre (com `titulo`, se houver mais
+ * de uma aba viva); `'disco'` não tem `.aba` — o rótulo vira "do último uso" e a IDADE
+ * (`medidoEm`) entra, pelo mesmo motivo que o medidor de graça do Claude já mostra a idade do
+ * número (`DECISOES.md`).
  *
  * As barras são as MESMAS do bloco de cima, e é por isso que o servidor devolve o formato de
  * `lib/limite.js` — a tela não ganha um segundo jeito de desenhar a mesma coisa.
@@ -4567,10 +6377,16 @@ function desenharConsumoDoCodex(lista, codex) {
   const titulo = document.createElement('div');
   titulo.className = 'plano-nota';
   titulo.dataset.consumo = 'codex';
-  // Com mais de uma aba de Codex viva, o cabeçalho diz de QUAL delas o número saiu.
-  titulo.textContent = codex.varias && codex.titulo
-    ? `Codex (OpenAI) · ${codex.titulo}`
-    : 'Codex (OpenAI)';
+  if (codex.fonte === 'disco') {
+    // Sem aba viva, o número vem do disco — a idade dele é o que falta dizer (#10).
+    const idade = codex.medidoEm ? ` · ${idadeCurta(codex.medidoEm)}` : '';
+    idiomaUI.bind(titulo, 'textContent', () => `${tr('Codex (OpenAI)')} · ${tr('do último uso')}${idade}`);
+  } else if (codex.varias && codex.titulo) {
+    // Com mais de uma aba de Codex viva, o cabeçalho diz de QUAL delas o número saiu.
+    idiomaUI.bind(titulo, 'textContent', () => tr`Codex (OpenAI) · ${codex.titulo}`);
+  } else {
+    idiomaUI.bind(titulo, 'textContent', () => tr('Codex (OpenAI)'));
+  }
   lista.append(titulo);
 
   for (const item of codex.limites) lista.append(nodeJanela(item));
@@ -4860,8 +6676,25 @@ pintarDica();
 // O `←`, o ↻, o ✕ e o Enviar de CADA conversa moram no closure de `criarPainel` (a "regra
 // do dono", D42): não há mais `#btn-voltar`/`#btn-recarregar-conversa`/`#btn-matar-aba`/
 // `#btn-enviar` únicos.
+/** O que o ↻ e o puxar recarregam: a lista que está À VISTA. Uma função, senão os dois
+ *  caminhos divergem no dia em que alguém mexer só num deles (achado da /audita). */
+function recarregarAVista() {
+  if (vistaDaLateral === 'leituras') return carregarLeituras();
+  return vistaDaLateral === 'agentes' ? atualizarFaixaJobs() : carregarAbas();
+}
+
 // O recarregar da LISTA continua aqui — o da conversa está em `criarPainel`.
-$('btn-recarregar').onclick = (evento) => recarregar(evento.currentTarget, carregarAbas);
+$('btn-recarregar').onclick = (evento) => recarregar(evento.currentTarget, recarregarAVista);
+
+// A barra dos agentes vive DENTRO da lateral, então só é clicável com ela já aberta — no
+// desktop e no celular. Sem `aplicarLateral(false)`/`pedirLista()` (o que o antigo
+// `verOsJobsNaLista` fazia): guarda para estado inalcançável é a armadilha #30.
+$('barra-agentes').onclick = () =>
+  trocarVistaDaLateral(vistaDaLateral === 'agentes' ? 'conversas' : 'agentes');
+
+// A 3ª vista (D59). Mesmo desenho do alternador acima: o rótulo diz o destino.
+$('barra-leituras').onclick = () =>
+  trocarVistaDaLateral(vistaDaLateral === 'leituras' ? 'conversas' : 'leituras');
 
 // Tocar em QUALQUER lugar de um painel o foca — é assim que o usuário troca de agente com N
 // painéis lado a lado sem precisar mirar num botão específico. UM ouvinte delegado na
@@ -4989,7 +6822,7 @@ listaRolavel.addEventListener('touchend', () => {
   // falha também precisa parar de girar (#10).
   seloLista.dataset.girando = '1';
   seloLista.dataset.armado = '';
-  recarregar($('btn-recarregar'), carregarAbas).finally(() => {
+  recarregar($('btn-recarregar'), recarregarAVista).finally(() => {
     seloLista.dataset.girando = '';
     apagarSelo(seloLista);
   });
@@ -5153,11 +6986,58 @@ $('btn-fechar-config').onclick = () => $('dialogo-config').close();
 $('btn-nova-aba').onclick = () => { $('dialogo-nova-aba').showModal(); carregarProjetos(); };
 $('btn-fechar-nova-aba').onclick = () => $('dialogo-nova-aba').close();
 $('btn-criar-aba').onclick = (evento) => criarAba(evento && evento.currentTarget ? evento.currentTarget : $('btn-criar-aba'));
+// O campo Projeto — ligado UMA vez: é estático no HTML, não nasce por abertura do diálogo. Os
+// ouvintes globais de tecla saem com o diálogo aberto (`DIALOGOS`), então seta/Enter/Esc daqui
+// nunca chegam à pane.
+// O fechar pendente do `blur`: o foco que VOLTA antes dos 120 ms o cancela — senão Tab para fora
+// e de volta reabre a lista e ela fecha sozinha logo depois (achado do painel de execução).
+let fechaProjetoNoBlur = null;
+$('sel-projeto-novo').addEventListener('focus', () => { clearTimeout(fechaProjetoNoBlur); abrirListaProjetos(); });
+// Campo JÁ focado não recebe `focus` de novo: sem o clique, a lista escolhida não reabre (S8).
+$('sel-projeto-novo').addEventListener('click', () => { if ($('lista-projeto-novo').hidden) abrirListaProjetos(); });
+$('sel-projeto-novo').addEventListener('input', filtrarProjetos);
+// O mesmo atraso da paleta: dá tempo do `mousedown` de uma opção escolher antes de fechar.
+$('sel-projeto-novo').addEventListener('blur', () => { fechaProjetoNoBlur = setTimeout(fecharListaProjetos, 120); });
+$('sel-projeto-novo').addEventListener('keydown', (e) => {
+  if (e.isComposing) return;                      // Enter de IME não escolhe
+  const aberta = !$('lista-projeto-novo').hidden;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    navegarProjetos(e.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  // Enter escolhe o nome destacado, ou cria a pasta quando o destacado é o item de criar (S6). Sem nada
+  // destacado (zero nomes, S5), não faz nada.
+  if (e.key === 'Enter' && aberta && indiceProjeto >= 0) {
+    e.preventDefault();
+    if (indiceProjeto < escolhidosProjeto.length) escolherProjeto(indiceProjeto);
+    else criarPasta();
+    return;
+  }
+  // Esc em dois tempos: com a lista aberta, o `preventDefault` segura o CloseWatcher do <dialog>
+  // (#39) e só a lista fecha; com ela fechada, o Esc segue e o diálogo fecha sozinho.
+  if (e.key === 'Escape' && aberta) {
+    e.preventDefault();
+    fecharListaProjetos();
+    return;
+  }
+  if (e.key === 'Tab') fecharListaProjetos();     // sem preventDefault: Tab continua navegando
+});
 // O `✕` de CADA painel abre este <dialog> compartilhado e grava `painelPedindoMorte` — não
 // há mais um único `#btn-matar-aba` para ligar aqui (a "regra do dono", em `criarPainel`).
 $('btn-fechar-matar-aba').onclick = () => $('dialogo-matar-aba').close();
 $('btn-confirma-matar-aba').onclick = (evento) => matarAba(painelPedindoMorte,
   evento && evento.currentTarget ? evento.currentTarget : $('btn-confirma-matar-aba'));
+// Renomear a aba — o 11º <dialog>, aberto pelo ✎ de CADA linha (a chave vem de `edicaoDoNome`,
+// nunca de `atual`). Sem pushState (#39): o voltar do Android fecha o diálogo sozinho.
+$('btn-fechar-renomear-aba').onclick = () => $('dialogo-renomear-aba').close();
+$('btn-confirma-renomear-aba').onclick = (evento) => renomearAba(
+  evento && evento.currentTarget ? evento.currentTarget : $('btn-confirma-renomear-aba'));
+$('nome-aba').onkeydown = (evento) => {
+  if (evento.key !== 'Enter' || evento.isComposing) return;
+  evento.preventDefault();
+  renomearAba($('btn-confirma-renomear-aba'));
+};
 // Arquivos — o nono <dialog>, aberto como os outros: sem pushState (#39).
 $('btn-arquivos').onclick = abrirArquivos;
 $('btn-fechar-arquivos').onclick = () => $('dialogo-arquivos').close();
@@ -5174,11 +7054,20 @@ $('sel-raiz-envio').value = 'inbox';
 $('sel-raiz-envio').onchange = () => carregarListaEnvio($('sel-raiz-envio').value, '');
 $('btn-fechar-contexto').onclick = () => $('dialogo-contexto').close();
 $('inp-arquivo-servidor').onchange = () => {
-  const arquivo = ($('inp-arquivo-servidor').files || [])[0];
-  $('arquivo-servidor-selecionado').textContent = arquivo
-    ? `${arquivo.name} · ${formatarBytes(arquivo.size)}` : tr('Nenhum arquivo escolhido');
+  const escolhidos = Array.from($('inp-arquivo-servidor').files || []);
+  // Um arquivo continua mostrando nome e tamanho; vários viram contagem e soma, que é o que
+  // cabe na linha do celular — cinco nomes empilhados empurrariam o botão para fora da tela.
+  const soma = escolhidos.reduce((t, a) => t + (a.size || 0), 0);
+  $('arquivo-servidor-selecionado').textContent = escolhidos.length > 1
+    ? tr`${escolhidos.length} arquivos · ${formatarBytes(soma)}`
+    : (escolhidos.length === 1
+      ? `${escolhidos[0].name} · ${formatarBytes(escolhidos[0].size)}`
+      : tr('Nenhum arquivo escolhido'));
 };
 $('btn-plano').onclick = () => { $('dialogo-plano').showModal(); carregarLimite(false); };
+$('btn-aparelhos').onclick = () => abrirAparelhos();
+$('btn-atualizar-aparelhos').onclick = () => carregarAparelhos();
+$('btn-fechar-aparelhos').onclick = () => $('dialogo-aparelhos').close();
 // URL relativa CRUA — window.open já resolve contra o <base> do documento (o /cockpit do
 // tailscale serve). `new URL(..., document.baseURI)` está PROIBIDO aqui: document.baseURI
 // não existe no DOM de mentira do gate-ui.js, e essa troca seria uma bomba armada para o
@@ -5242,6 +7131,17 @@ const DIALOGOS = [
   // aba POR BAIXO da tela de tokens aberta — o vazamento que a guarda 3 existe para impedir
   // nos outros nove.
   'dialogo-uso',
+  // O 11º (card `renomear-a-aba`): sem ele aqui, as letras digitadas no nome não disparam atalho
+  // (tecla nua já é ignorada), mas Alt+J/Alt+K trocariam de aba POR BAIXO do diálogo aberto.
+  'dialogo-renomear-aba',
+  // O 12º (card `nome-do-aparelho-no-push`): a lista tem um <input> por linha em edição, e
+  // sem ele aqui o Alt+J/Alt+K trocaria de aba por baixo do diálogo aberto.
+  'dialogo-aparelhos',
+  // O 13º (plano 2026-10-04, tela "Pra revisar"): sem ele aqui, Alt+J/Alt+K trocariam de aba
+  // por baixo do diálogo aberto, igual aos doze anteriores.
+  'dialogo-revisar',
+  // O 14º (card do monitor, D64): mesmo motivo dos treze anteriores.
+  'dialogo-monitor',
 ];
 
 // Combinações que o navegador já usa (§3.5): recusadas por igualdade exata. Existe para dar
@@ -5410,26 +7310,15 @@ function pularAba(passo) {
     paineis.get(atual).entrada.focus();
     return;
   }
-  // O menu já reúne e ordena os projetos. A ordem crua da API pode ser diferente.
-  // Mantém a posição da aba atual mesmo se seu projeto acabou de ser recolhido.
-  // `[data-cwd]` (R1): sem ele, `#grupo-jobs` (que também é `.conversa-grupo`, sem
-  // `data-cwd` de propósito — §4.4) entraria na navegação. O atalho de trocar aba visitaria
-  // a linha de job (sem `dataset.chave`) e chamaria `abrirAba(undefined)`.
-  const linhas = [...$('abas').querySelectorAll('.conversa-grupo[data-cwd]')].flatMap(grupo => {
-    const conteudo = grupo.querySelector('.projeto-conteudo');
-    return [...conteudo.querySelectorAll('.conversa')].map(botao => ({
-      chave: botao.dataset.chave, visivel: !conteudo.hidden,
-    }));
-  });
-  const indice = linhas.findIndex(linha => linha.chave === atual);
-  if (indice === -1) {
-    const primeira = linhas.find(linha => linha.visivel);
-    if (primeira) abrirAba(primeira.chave);
-    return;
-  }
-  for (let i = indice + passo; i >= 0 && i < linhas.length; i += passo) {
-    if (linhas[i].visivel) { abrirAba(linhas[i].chave); return; }
-  }
+  // A ordem que o atalho percorre é a DA TELA (D69: a hora em que o último turno terminou) — é o
+  // que o usuário vê. `#lista-conversas` é a âncora de LUGAR (#52): na vista de agentes/leituras
+  // ela não existe, e o atalho é no-op (BA-5); uma seção estranha dentro de #abas não entra (G16).
+  const lista = $('abas').querySelector('#lista-conversas');
+  const chaves = lista ? [...lista.querySelectorAll('.conversa')].map((b) => b.dataset.chave) : [];
+  const indice = chaves.indexOf(atual);
+  if (indice === -1) { if (chaves[0]) abrirAba(chaves[0]); return; }
+  const destino = indice + passo;
+  if (destino >= 0 && destino < chaves.length) abrirAba(chaves[destino]);
 }
 
 // id da ação em captura na tela de config, ou `null`. Zerado no `close`/`cancel` do
@@ -5455,6 +7344,71 @@ document.addEventListener('keydown', (e) => {
   const acao = ACOES.find((a) => a.id === id);
   e.preventDefault();
   acao.rodar();
+});
+
+// As seis teclas físicas do menu da TUI (card responder-a-pergunta-pelo-teclado). Mapa
+// FECHADO de propósito (D-A/D4/D6): tecla livre daqui viraria teclado remoto, o que o
+// projeto já recusou. Os mesmos seis valores de `lib/abas.js:1658`.
+const TECLAS_FISICAS = {
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Enter: 'Enter', Escape: 'Escape',
+};
+
+/** `tagName`/`isContentEditable` — nunca `document.activeElement` (§3.2 da spec: as duas
+ * leituras coincidem no navegador, mas são independentes no DOM de mentira do gate). */
+function ehCampoDeEscrita(alvo) {
+  return alvo?.tagName === 'INPUT' || alvo?.tagName === 'TEXTAREA' || alvo?.isContentEditable === true;
+}
+
+/** Enter com o foco num destes ativa por `click` nativo — o ouvinte tem que ceder a vez
+ * (R1), senão o Enter vira DUAS teclas: a do clique nativo e a deste ouvinte. */
+function ehAtivavelPorEnter(alvo) {
+  return alvo?.tagName === 'BUTTON' || (alvo?.tagName === 'A' && !!alvo.href) || alvo?.tagName === 'SUMMARY';
+}
+
+// Ouvinte IRMÃO do de atalhos acima — não uma alteração dele: aquele trata combinação com
+// modificador, este trata tecla NUA (a resposta ao menu da TUI). `e.target`, nunca
+// `document.activeElement`, nas guardas de campo-de-escrita/ativável-por-Enter/pergunta —
+// no navegador as duas leituras coincidem, mas o DOM de mentira do gate as separa (R2).
+document.addEventListener('keydown', (e) => {
+  if (e.repeat) return;                                    // guarda 1 — autorepeat não é resposta (R4)
+  if (e.altKey || e.ctrlKey || e.metaKey) return;           // guarda 2 — combinação é atalho, não menu
+  const valor = TECLAS_FISICAS[e.key];
+  if (!valor) return;                                       // guarda 3 — fora do mapa fechado
+  if (e.isComposing) return;                                // guarda 4 — Enter de IME não é menu (R6)
+  // guarda 5 — não rouba a tecla de quem escreve (D-C), MAS a caixa só é dona do teclado
+  // enquanto ela é utilizável. Esta linha NÃO mudou no card escrever-texto-na-pergunta-aberta,
+  // e a justificativa dela sim: desde a D58 o envio com `motivo: 'menu'` NÃO é mais recusado e
+  // o Enviar NÃO está mais travado. O que mantém esta guarda correta é outra coisa — a caixa
+  // VAZIA continua sem ter o que fazer com a tecla, e é ela que cede. Com texto, quem decide
+  // é o `keydown` do próprio `<textarea>` (`:1462`), que corta a propagação antes de chegar
+  // aqui. Ou seja: esta guarda nunca vê a tecla de uma caixa que tem texto.
+  //
+  // Isto NÃO é teoria: com a guarda simples ("é campo de escrita → sai"), o gate ficou verde
+  // e o teclado não respondia NADA no navegador — `abrirAba()` põe o cursor na `.entrada`
+  // (`:1806`), então TODA seta morria aqui. Medido no smoke (`focoTag: "TEXTAREA"`), não
+  // deduzido. É por painel: escrever em A enquanto B tem menu aberto continua protegido.
+  if (ehCampoDeEscrita(e.target) && !painelDoAlvo(e.target)?.perguntando) return;
+  // guarda 5b (D74/R4, card pergunta-do-agente-em-cartao) — campo e botões do CARTÃO nunca
+  // mandam tecla à pane: a seta/Enter ali é do formulário, e mexeria no cursor da TUI.
+  if (e.target?.dataset?.cartao) return;
+  if (e.key === 'Enter' && ehAtivavelPorEnter(e.target)) return; // guarda 6 — clique nativo já responde (R1)
+  if (DIALOGOS.some((id) => $(id).open)) return;            // guarda 7 — painel aberto manda no teclado (R3)
+  // guarda 8 — a conversa não está na tela (R7): as DUAS condições, porque só juntas o
+  // `.chat` some (só no celular a lista some o menu; no desktop `vista='lista'` continua
+  // mostrando o `.chat`).
+  if (app.dataset.vista !== 'chat' && matchMedia('(max-width: 760px)').matches) return;
+  // guarda 9 — quem responde é o painel do CURSOR, e na falta dele o SELECIONADO (D-B): o
+  // mesmo resolvedor do `paste` (`:6547`), para não inventar uma terceira regra de "dono
+  // do teclado" numa tela que já tem duas.
+  const painel = painelDoAlvo(e.target) || painelAtual();
+  if (!painel || !painel.perguntando) return;
+  // Com o cartão à vista e o "ver terminal" fechado, a seta nua mexeria no cursor da TUI e a
+  // conferência do estado inicial deixaria de casar (D74/R4). Sem cartão a D57 é a de sempre
+  // (#77), e com o terminal aberto também.
+  if (painel.cartao && !painel.terminalPergunta.open) return;
+  e.preventDefault();
+  apertarTecla(painel, valor);
 });
 
 // ── A tela de configuração dos atalhos (§3.5) ──────────────────────────────
@@ -5604,16 +7558,19 @@ const chat = $('chat');
 // estava com o teclado. Delegado em `.chat` porque `.painel` nasce e morre em tempo de
 // execução; sem painel nenhum debaixo do cursor, o gesto é ignorado.
 chat.addEventListener('dragover', (evento) => {
+  if (ehArrastoDeAba(evento)) return;   // arrasto de ABA (D73) — tem ouvinte próprio, abaixo
   const raiz = evento.target.closest?.('.painel');
   if (!raiz) return;
   evento.preventDefault();
   raiz.dataset.arrasto = '1';
 });
 chat.addEventListener('dragleave', (evento) => {
+  if (ehArrastoDeAba(evento)) return;   // arrasto de ABA (D73) — tem ouvinte próprio, abaixo
   const raiz = evento.target.closest?.('.painel');
   if (raiz) delete raiz.dataset.arrasto;
 });
 chat.addEventListener('drop', (evento) => {
+  if (ehArrastoDeAba(evento)) return;   // arrasto de ABA (D73) — tem ouvinte próprio, abaixo
   const raiz = evento.target.closest?.('.painel');
   if (raiz) delete raiz.dataset.arrasto;
   if (!raiz) return;   // sem painel debaixo do cursor (R7) — ignora, não cai no foco
@@ -5628,6 +7585,55 @@ chat.addEventListener('drop', (evento) => {
   for (const arquivo of evento.dataTransfer?.files || []) subirArquivo(painel, arquivo);
 });
 
+// Arrasto de ABA (D73) — irmão do de arquivo logo acima, separado pelo tipo no `dataTransfer`. Só
+// age com `arrastoAba` preenchido: o mesmo tipo vindo de OUTRA janela do cockpit chega sem a chave
+// (no `dragover` o `getData` volta vazio — modo protegido, #91) e é ignorado. O alvo sai da
+// COORDENADA, nunca do `evento.target` nem de `atual` (#51).
+chat.addEventListener('dragover', (evento) => {
+  if (!ehArrastoDeAba(evento) || !arrastoAba) return;
+  if (matchMedia('(max-width: 760px)').matches) { limparPreview(); return; }
+  evento.preventDefault();
+  if (evento.dataTransfer) evento.dataTransfer.dropEffect = 'move';
+  // Histerese: a coluna fantasma ocupa justamente a posição que anuncia. Sem isto, inseri-la
+  // empurra os painéis, o cursor cai noutra zona e o preview pisca.
+  const coluna = $('paineis').querySelector('.fantasma-painel');
+  if (coluna) {
+    const r = coluna.getBoundingClientRect();
+    if (evento.clientX >= r.left && evento.clientX < r.right) return;
+  }
+  mostrarPreview(alvoDoSolto(evento.clientX, faixasDosPaineis(), arrastoAba.chave));
+});
+chat.addEventListener('dragleave', (evento) => {
+  if (!ehArrastoDeAba(evento) || !arrastoAba) return;
+  // `dragleave` dispara a cada passagem de um filho para outro; a régua é a geometria, não o
+  // `relatedTarget` (que o Chromium nem sempre preenche). Saiu da área: só o PREVIEW some — a
+  // pessoa pode voltar com o mesmo gesto.
+  const r = chat.getBoundingClientRect();
+  const dentro = evento.clientX > r.left && evento.clientX < r.right
+    && evento.clientY > r.top && evento.clientY < r.bottom;
+  if (!dentro) limparPreview();
+});
+chat.addEventListener('drop', (evento) => {
+  if (!ehArrastoDeAba(evento) || !arrastoAba) return;
+  evento.preventDefault();
+  const { chave } = arrastoAba;
+  const alvo = alvoDoArrasto;   // o que a pessoa VIU é o que acontece
+  encerrarArrasto();
+  if (matchMedia('(max-width: 760px)').matches) return;
+  if (!alvo) {
+    // S4: solta onde ela já está — só ganha o foco (sem marcar lida: já estava aberta).
+    if (paineis.has(chave)) focar(paineis.get(chave));
+    return;
+  }
+  if (alvo.tipo === 'vazio') { abrirAba(chave); return; }
+  const ancora = alvo.tipo === 'trocar' ? alvo.chave : alvo.antesDe;
+  if (ancora && !paineis.has(ancora)) return;   // o tmux fechou a âncora no meio do gesto
+  abrirAba(chave, { soltoEm: alvo });
+});
+// Rede do `dragend` perdido (#91): durante um arrasto nativo não existe `pointerdown`, então o
+// primeiro clique com `arrastoAba` ainda preenchido prova que o gesto acabou sem avisar.
+document.addEventListener('pointerdown', () => { if (arrastoAba) encerrarArrasto(); }, true);
+
 // Os ouvintes de `input`/`blur`/`keydown`/`focus` da caixa e o `#btn-anexar`/`#inp-arquivo`
 // únicos saíram — moraram para o closure de `criarPainel` (D42): cada painel tem a PRÓPRIA
 // caixa, os PRÓPRIOS anexos e a PRÓPRIA paleta.
@@ -5640,12 +7646,6 @@ chat.addEventListener('drop', (evento) => {
 //
 // Pega carona no ciclo de 15s da lista de conversas. Um relógio próprio só para isto seria
 // um segundo jeito da tela discordar de si mesma.
-
-const MS_TERMINOU = 30000;
-// Map(id → {titulo, abas}) da leitura anterior; null = ainda não li nada. Guarda TODOS os
-// jobs, não só os desta aba: quem terminou some da lista do painel, então é aqui que fica
-// registrado de quem ele era.
-let rodandoAntes = null;
 
 // ── O grupo de jobs na lista lateral (desenho C, spec 2026-09-08) ────────
 //
@@ -5660,37 +7660,501 @@ let painelDosJobs = null;
 // boot, tique de 15s, `visibilitychange`), e uma leitura lenta que aterrissa depois de uma
 // mais nova não pode repintar a tela com o passado.
 let sequenciaJobs = 0;
-// Bandeira consumida por `desenharAbas()` (§5.2): o clique da faixa marca "quero ver o grupo
-// de jobs", e quem decide QUANDO rolar é a próxima pintura — nunca uma sequência de chamadas
-// que dependeria de quando o navegador processa o `history.back()`.
-let rolarAteJobs = false;
-// A <section> que `grupoDeJobs()` acabou de montar e pendurar em `#abas` — NUNCA
-// `getElementById` (que no gate cria um nó solto). Reatribuída a CADA pintura, inclusive
-// para `null`: guardar a de ontem faria a guarda do §5.2 rolar um nó já removido do DOM.
-let secaoDeJobs = null;
-// Chave própria do `localStorage` para o recolhimento do grupo (R7). Nenhum `cwd`
-// normalizado pode produzir isto: todo `cwd` vira `'/' + partes.join('/')` ou
-// `'sem-cwd:' + aba.chave` (`app.js:610-614`) — nunca `'jobs:'`.
-const CHAVE_GRUPO_JOBS = 'jobs:';
 
-/** `painel.timerTerminou` — limpo em `fecharPainel` (R36 da spec: era global, e um término
- * cancelava o aviso de OUTRO painel; a fase 3 é quem tem mais de um painel para sentir isso). */
+// A vista da lateral: 'conversas' (as abas do terminal), 'agentes' (os jobs) ou 'leituras' (D59,
+// card leituras-trilhas). MOMENTÂNEA — NÃO vai para o localStorage, ao contrário de CHAVE_TEMA
+// (:4857) e CHAVE_LATERAL (:4840), que são PREFERÊNCIA. Recarregar a página nasce em conversas,
+// sempre.
+let vistaDaLateral = 'conversas';
 
-function esconderFaixa(painel) {
-  painel.faixa.el.hidden = true;
-  idiomaUI.bind(painel.faixa.conta, 'textContent', () => tr(''));
-  painel.faixa.titulos.textContent = '';
-  painel.faixa.etapa.textContent = '';
+// Uma rolagem POR VISTA. Zerar nos dois sentidos (o que este plano propunha antes) joga fora
+// justamente o que interessa na volta: quem rolou até a décima conversa, entrou em agentes e
+// voltou, esperaria estar onde estava. O código atual já gasta duas variáveis para nunca
+// perder scroll (`rolagem` e `rolagemJobs` em desenharAbas) — isto é a mesma disciplina, com
+// as duas rolagens agora compartilhando um scroller só.
+const rolagemPorVista = { conversas: 0, agentes: 0, leituras: 0 };
+
+// O último `GET /api/leituras` (ou `{ erro }` se a rede falhou). `null` = ainda não buscou
+// nenhuma vez — distingue "carregando" de "veio vazio" na pintura (molde `painelDosJobs`).
+let leituras = null;
+// Contador de sequência (molde `sequenciaJobs`, :6805): uma resposta que aterrissa depois de
+// uma mais nova não pode repintar a tela com o passado (R4 da spec).
+let sequenciaLeituras = 0;
+// id → valor PRETENDIDO enquanto o POST está em voo. O tique de 5s repinta `#abas` do cache
+// (desenharAbas), e sem isto a caixa reabilitaria — ou pior, desmarcaria sozinha — no meio do
+// salvamento (R4).
+const livrosSalvando = new Map();
+// id → valor PRETENDIDO de "lendo" enquanto o POST está em voo — mesmo papel de `livrosSalvando`.
+const livrosLendoSalvando = new Map();
+// A mensagem CRUA (do servidor ou da rede) do último POST que falhou — o prefixo traduzido
+// "não salvou:" é montado na pintura, por `bind`, para acompanhar a troca de idioma. Sobrevive
+// ao GET que o próprio POST dispara (senão piscaria e sumiria na mesma hora); some na próxima
+// carga bem-sucedida.
+let erroLeituras = '';
+
+// O filtro da vista de leituras (D61): PREFERÊNCIA do aparelho, como CHAVE_TEMA — não é dado,
+// não vai para o servidor. A VISTA continua momentânea (LT-8); o filtro é o que fica.
+const CHAVE_FILTRO_LEITURAS = 'cockpit-leituras-filtro';
+const STATUS_DE_LEITURA = ['todos', 'lendo', 'a-ler', 'lidos'];
+let filtroLeituras = (() => {
+  const padrao = { status: 'todos', trilha: '', texto: '' };
+  try {
+    const v = JSON.parse(localStorage.getItem(CHAVE_FILTRO_LEITURAS) || '{}');
+    return {
+      status: STATUS_DE_LEITURA.includes(v?.status) ? v.status : 'todos',
+      trilha: typeof v?.trilha === 'string' ? v.trilha : '',
+      texto: typeof v?.texto === 'string' ? v.texto.slice(0, 100) : '',
+    };
+  } catch { return padrao; }
+})();
+function salvarFiltroLeituras() {
+  try { localStorage.setItem(CHAVE_FILTRO_LEITURAS, JSON.stringify(filtroLeituras)); } catch { /* modo privado */ }
+}
+// A assinatura das trilhas cujas opções do seletor estão desenhadas — recriar só quando o
+// CATÁLOGO muda (recriar com o seletor aberto o fecharia na mão do usuário).
+let assinaturaDasOpcoes = null;
+
+// Trilhas recolhidas (ajuste 05/10 da D61): preferência SÓ do aparelho, chave própria, como o
+// filtro. Padrão: todas abertas. Guarda os ids; id que sumiu do catálogo só não casa com nada.
+const CHAVE_TRILHAS_RECOLHIDAS = 'cockpit-leituras-recolhidas';
+const trilhasRecolhidas = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(CHAVE_TRILHAS_RECOLHIDAS) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((id) => typeof id === 'string') : []);
+  } catch { return new Set(); }
+})();
+function salvarTrilhasRecolhidas() {
+  try { localStorage.setItem(CHAVE_TRILHAS_RECOLHIDAS, JSON.stringify([...trilhasRecolhidas])); } catch { /* modo privado */ }
+}
+// Com texto na busca, toda trilha com resultado aparece ABERTA — sem gravar isso como
+// preferência. O toque no cabeçalho durante a busca recolhe só AQUI, em memória; mudar ou
+// limpar a busca esquece, e a tela volta ao recolhido salvo.
+const recolhidasNaBusca = new Set();
+function alternarTrilha(id) {
+  const alvo = normalizarBusca(filtroLeituras.texto) !== '' ? recolhidasNaBusca : trilhasRecolhidas;
+  if (alvo.has(id)) alvo.delete(id);
+  else alvo.add(id);
+  if (alvo === trilhasRecolhidas) salvarTrilhasRecolhidas();
+  desenharAbas();
 }
 
-function mostrarFaixa(painel, estado, conta, titulos, etapa = '') {
-  const faixa = painel.faixa.el;
-  faixa.dataset.estado = estado;
-  painel.faixa.pino.textContent = estado === 'rodando' ? '●' : '✓';
-  idiomaUI.bind(painel.faixa.conta, 'textContent', () => tr(conta));
-  painel.faixa.titulos.textContent = titulos;
-  painel.faixa.etapa.textContent = etapa;
-  faixa.hidden = false;
+// A busca (D61) nasce no HTML e só recebe o valor salvo aqui, uma vez. `oninput` repinta a lista
+// — o campo em si nunca é recriado (ver o comentário do index.html). Tem de vir AQUI, depois da
+// declaração de `filtroLeituras` acima — ligar perto do `$('barra-leituras').onclick` (:6018)
+// leria a variável na zona morta (`ReferenceError` que derruba o boot inteiro).
+$('filtro-texto').value = filtroLeituras.texto;
+idiomaUI.attr($('filtro-texto'), 'placeholder', () => tr('buscar livro'));
+idiomaUI.attr($('filtro-texto'), 'aria-label', () => tr('buscar livro'));
+$('filtro-texto').oninput = (e) => {
+  filtroLeituras.texto = String((e?.currentTarget || $('filtro-texto')).value).slice(0, 100);
+  recolhidasNaBusca.clear();
+  salvarFiltroLeituras();
+  desenharAbas();
+};
+// O seletor de trilha (ajuste 05/10): `<select>` nativo — no celular abre o seletor do sistema.
+// Nasce no HTML, fora do `#abas`, pelo mesmo motivo da busca: repintado a cada 5 s, ele
+// fecharia aberto na mão do usuário. Mesmo estado e mesma chave do filtro de antes.
+idiomaUI.attr($('filtro-trilha'), 'aria-label', () => tr('filtrar por trilha'));
+$('filtro-trilha').onchange = (e) => {
+  filtroLeituras.trilha = String((e?.currentTarget || $('filtro-trilha')).value);
+  salvarFiltroLeituras();
+  desenharAbas();
+};
+
+function trocarVistaDaLateral(vista) {
+  if (!['agentes', 'conversas', 'leituras'].includes(vista)) return;
+  if (vistaDaLateral === vista) return;
+  const alvo = $('abas');
+  rolagemPorVista[vistaDaLateral] = alvo.scrollTop;   // guarda a que SAI
+  vistaDaLateral = vista;
+  desenharAbas();                                     // repinta (e preserva o scrollTop atual)
+  alvo.scrollTop = rolagemPorVista[vista];            // e SÓ ENTÃO restaura a que ENTRA
+  // O catálogo pode ter mudado desde a última vez (decisão 4 da spec) — busca de novo toda
+  // vez que a vista é aberta, não só na primeira.
+  if (vista === 'leituras') carregarLeituras();
+}
+
+/**
+ * Busca `/api/leituras` e repinta. `manterErro` existe só para o `finally` de `marcarLivro`:
+ * o erro de um POST tem de sobreviver ao GET que o próprio POST dispara.
+ */
+async function carregarLeituras({ manterErro = false } = {}) {
+  const minha = ++sequenciaLeituras;
+  let dados;
+  try { dados = await api('api/leituras'); }
+  catch (e) { dados = { erro: e.message }; }
+  if (minha !== sequenciaLeituras) return;   // uma resposta mais nova já pintou
+  leituras = dados;
+  if (!dados.erro && !manterErro) erroLeituras = '';
+  desenharAbas();
+}
+
+/** O handler do checkbox: `terminado` é o valor que o navegador ACABOU de alternar. */
+async function marcarLivro(livroId, terminado) {
+  livrosSalvando.set(livroId, terminado);
+  desenharAbas();
+  let falhou = false;
+  try {
+    await api('api/leituras', { method: 'POST', corpo: { livroId, terminado } });
+  } catch (e) {
+    falhou = true;
+    erroLeituras = e.message;
+  } finally {
+    livrosSalvando.delete(livroId);
+    await carregarLeituras({ manterErro: falhou });
+  }
+}
+
+/** O handler do botão "lendo" (D61): `lendo` é o valor NOVO pretendido. */
+async function marcarLendo(livroId, lendo) {
+  livrosLendoSalvando.set(livroId, lendo);
+  desenharAbas();
+  let falhou = false;
+  try {
+    await api('api/leituras', { method: 'POST', corpo: { livroId, lendo } });
+  } catch (e) {
+    falhou = true;
+    erroLeituras = e.message;
+  } finally {
+    livrosLendoSalvando.delete(livroId);
+    await carregarLeituras({ manterErro: falhou });
+  }
+}
+
+/** Busca sem diferenciar maiúscula nem acento: "Rápido" e "rapido" são a mesma coisa. */
+function normalizarBusca(s) {
+  return String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
+}
+/** S7: os três status são disjuntos — terminado ganha de lendo. */
+function statusDoLivro(l) {
+  if (l.terminado_em) return 'lidos';
+  if (l.lendo_desde) return 'lendo';
+  return 'a-ler';
+}
+function livroPassaNoFiltro(l, filtro) {
+  if (filtro.status !== 'todos' && statusDoLivro(l) !== filtro.status) return false;
+  const busca = normalizarBusca(filtro.texto);
+  if (!busca) return true;
+  return [l.titulo, l.original, l.autor].some((campo) => campo && normalizarBusca(campo).includes(busca));
+}
+/** S14: trilha salva que sumiu do catálogo vale "todas" na TELA — o valor salvo não muda. */
+function trilhaEfetiva(trilhas) {
+  return trilhas.some((t) => t.id === filtroLeituras.trilha) ? filtroLeituras.trilha : '';
+}
+
+/**
+ * A vista "leituras" (D59): um grupo por trilha, livro na ordem do catálogo, checkbox,
+ * próximo destacado. Tudo por `createElement`/`textContent` — regra do arquivo inteiro (:9):
+ * o catálogo é arquivo de OUTRO projeto, texto dele é dado, nunca marcação.
+ */
+function grupoDeLeituras() {
+  const frag = document.createDocumentFragment();
+
+  if (erroLeituras) {
+    const p = document.createElement('p');
+    p.className = 'leituras-aviso';
+    const mensagem = erroLeituras;
+    idiomaUI.bind(p, 'textContent', () => tr`não salvou: ${mensagem}`);
+    frag.append(p);
+  }
+
+  if (leituras === null) {
+    const p = document.createElement('p');
+    p.className = 'lista-vazia';
+    idiomaUI.bind(p, 'textContent', () => tr('carregando…'));
+    frag.append(p);
+    return frag;
+  }
+  if (leituras.erro) {
+    const p = document.createElement('p');
+    p.className = 'leituras-aviso';
+    p.textContent = leituras.erro;
+    frag.append(p);
+    return frag;
+  }
+
+  if (!leituras.catalogo.ok) {
+    const p = document.createElement('p');
+    p.className = 'lista-vazia';
+    idiomaUI.bind(p, 'textContent', () => tr(leituras.catalogo.motivo === 'invalido' ? 'catálogo inválido' : 'catálogo não encontrado'));
+    frag.append(p);
+    const caminho = document.createElement('p');
+    caminho.className = 'leituras-caminho';
+    caminho.textContent = leituras.catalogo.caminho;
+    frag.append(caminho);
+    if (leituras.catalogo.motivo === 'invalido') {
+      const detalhe = document.createElement('p');
+      detalhe.className = 'leituras-caminho';
+      detalhe.textContent = leituras.catalogo.detalhe;
+      frag.append(detalhe);
+    }
+    return frag;
+  }
+
+  let bloqueado = false;
+  if (leituras.progresso && !leituras.progresso.ok) {
+    const p = document.createElement('p');
+    p.className = 'leituras-aviso';
+    const detalhe = leituras.progresso.detalhe;
+    idiomaUI.bind(p, 'textContent', () => tr`progresso ilegível: ${detalhe}`);
+    frag.append(p);
+    bloqueado = true;
+  }
+
+  if (leituras.trilhas.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'lista-vazia';
+    idiomaUI.bind(p, 'textContent', () => tr('nenhuma trilha no catálogo'));
+    frag.append(p);
+    return frag;
+  }
+
+  const trilhaDoFiltro = trilhaEfetiva(leituras.trilhas);
+  const buscaAtiva = normalizarBusca(filtroLeituras.texto) !== '';
+  const filtroAtivo = filtroLeituras.status !== 'todos' || trilhaDoFiltro !== '' || buscaAtiva;
+
+  // "Lendo agora" (D61, S10 + ajuste 06/10): atalho no topo da lista, ordem do catálogo, e passa
+  // pelo MESMO predicado das linhas das trilhas (trilha + `livroPassaNoFiltro`) — a S9 ("não é
+  // filtrado") foi revogada: com Economia escolhida, um livro de IA no topo parecia filtro quebrado.
+  // Em voo vale o valor PRETENDIDO (aparece/some na hora do toque, como o `checked` do R4).
+  const lendoAgora = leituras.trilhas
+    .filter((t) => !trilhaDoFiltro || t.id === trilhaDoFiltro)
+    .flatMap((t) => t.livros
+      .filter((l) => !l.terminado_em
+        && (livrosLendoSalvando.has(l.id) ? livrosLendoSalvando.get(l.id) : Boolean(l.lendo_desde))
+        && livroPassaNoFiltro(l, filtroLeituras))
+      .map((l) => [l, t]));
+  if (lendoAgora.length) {
+    const secao = document.createElement('section');
+    secao.className = 'leituras-lendo-agora';
+    const cabecalho = document.createElement('h2');
+    cabecalho.className = 'conversa-grupo-titulo leituras-cabecalho';
+    idiomaUI.bind(cabecalho, 'textContent', () => tr('Lendo agora'));
+    secao.append(cabecalho);
+    for (const [livro, trilha] of lendoAgora) secao.append(linhaDeLivro(livro, trilha, { bloqueado, lendoAgora: true }));
+    frag.append(secao);
+  }
+
+  let desenhadas = 0;
+  for (const trilha of leituras.trilhas) {
+    if (trilhaDoFiltro && trilha.id !== trilhaDoFiltro) continue;
+    const livros = trilha.livros.filter((l) => livroPassaNoFiltro(l, filtroLeituras));
+    if (filtroAtivo && livros.length === 0) continue;   // trilha sem livro casado some
+    desenhadas += 1;
+
+    const secao = document.createElement('section');
+    secao.className = 'leituras-trilha';
+    secao.dataset.trilha = trilha.id;
+    // Recolhida (ajuste 05/10): com busca, vale o que o toque fez DURANTE a busca (padrão aberta);
+    // sem busca, a preferência salva. Status e trilha do seletor não abrem nada sozinhos.
+    const aberta = buscaAtiva ? !recolhidasNaBusca.has(trilha.id) : !trilhasRecolhidas.has(trilha.id);
+    if (!aberta) secao.dataset.recolhida = '1';
+
+    const cabecalho = document.createElement('h2');
+    cabecalho.className = 'conversa-grupo-titulo leituras-cabecalho';
+    // O cabeçalho É o botão (botão dentro do h2, não o contrário): o leitor de tela lê o título
+    // e o "expandido/recolhido" juntos, e o contador k/N continua à vista com a trilha fechada.
+    const alternar = document.createElement('button');
+    alternar.type = 'button';
+    alternar.className = 'leituras-alternar';
+    alternar.setAttribute('aria-expanded', String(aberta));
+    alternar.onclick = () => alternarTrilha(trilha.id);
+    const seta = document.createElement('span');
+    seta.className = 'leituras-seta';
+    seta.setAttribute('aria-hidden', 'true');
+    seta.textContent = aberta ? '▾' : '▸';
+    const tituloSpan = document.createElement('span');
+    tituloSpan.className = 'leituras-trilha-titulo';
+    tituloSpan.textContent = trilha.titulo;
+    const contadorSpan = document.createElement('span');
+    contadorSpan.className = 'leituras-contador';
+    // O contador é o TOTAL do servidor — nunca recontado pelo filtro.
+    contadorSpan.textContent = `${trilha.feitos}/${trilha.total}`;
+    alternar.append(seta, tituloSpan, contadorSpan);
+    cabecalho.append(alternar);
+    secao.append(cabecalho);
+
+    if (aberta) {
+      for (const livro of livros) {
+        secao.append(linhaDeLivro(livro, trilha, { bloqueado }));
+      }
+    }
+
+    frag.append(secao);
+  }
+
+  // "nenhum livro" só quando NADA passou em lugar nenhum — nunca ao lado de um "Lendo agora".
+  if (filtroAtivo && desenhadas === 0 && lendoAgora.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'lista-vazia';
+    idiomaUI.bind(p, 'textContent', () => tr('nenhum livro'));
+    frag.append(p);
+  }
+
+  return frag;
+}
+
+/**
+ * Uma linha de livro da vista "leituras" (D61). `lendoAgora` diz se esta linha é a cópia na
+ * seção "Lendo agora" — o mesmo livro aparece também na trilha, então o `data-*` de papel troca
+ * (`data-lendo-agora` em vez de `data-livro`, #52) e o `próximo` não é mostrado ali (em voo, o
+ * livro clicado nasceria ali com o destaque de próximo, duplicando `[data-proximo]`).
+ */
+function linhaDeLivro(livro, trilha, { bloqueado, lendoAgora = false }) {
+  const lendo = livrosLendoSalvando.has(livro.id) ? livrosLendoSalvando.get(livro.id) : Boolean(livro.lendo_desde);
+
+  const linha = document.createElement('div');
+  linha.className = 'livro';
+  if (lendoAgora) linha.dataset.lendoAgora = livro.id;
+  else linha.dataset.livro = livro.id;
+  if (livro.terminado_em) linha.dataset.terminado = '1';
+  if (!lendoAgora && livro.id === trilha.proximo) linha.dataset.proximo = '1';
+  if (lendo && !livro.terminado_em) linha.dataset.lendo = '1';
+
+  const label = document.createElement('label');
+  label.className = 'livro-corpo';
+
+  const caixa = document.createElement('input');
+  caixa.type = 'checkbox';
+  caixa.checked = livrosSalvando.has(livro.id) ? livrosSalvando.get(livro.id) : Boolean(livro.terminado_em);
+  caixa.disabled = bloqueado || livrosSalvando.has(livro.id);
+  caixa.onchange = (e) => marcarLivro(livro.id, (e?.currentTarget || caixa).checked);
+  label.append(caixa);
+
+  if (livro.n) {
+    const n = document.createElement('span');
+    n.className = 'livro-n';
+    n.textContent = livro.n;
+    label.append(n);
+  }
+
+  const texto = document.createElement('span');
+  texto.className = 'livro-texto';
+  const tituloLivro = document.createElement('span');
+  tituloLivro.className = 'livro-titulo';
+  tituloLivro.textContent = livro.titulo;
+  texto.append(tituloLivro);
+  if (livro.autor) {
+    const autor = document.createElement('span');
+    autor.className = 'livro-autor';
+    autor.textContent = ` — ${livro.autor}`;
+    texto.append(autor);
+  }
+  label.append(texto);
+
+  // As etiquetas moram numa linha PRÓPRIA, sob o título: soltas na linha do livro elas
+  // disputavam largura com ele e, na lateral de 320px, "na estante" quebrava em duas
+  // linhas dentro da pílula (visto no PNG do smoke, 02/10).
+  const etiquetas = document.createElement('span');
+  etiquetas.className = 'livro-etiquetas';
+  if (livro.opcional) {
+    const etiqueta = document.createElement('span');
+    etiqueta.className = 'etiqueta etiqueta-opcional';
+    idiomaUI.bind(etiqueta, 'textContent', () => tr('opcional'));
+    etiquetas.append(etiqueta);
+  }
+  if (livro.gratis) {
+    const etiqueta = document.createElement('span');
+    etiqueta.className = 'etiqueta etiqueta-gratis';
+    idiomaUI.bind(etiqueta, 'textContent', () => tr('grátis'));
+    etiquetas.append(etiqueta);
+  }
+  if (livro.na_estante) {
+    const etiqueta = document.createElement('span');
+    etiqueta.className = 'etiqueta etiqueta-estante';
+    idiomaUI.bind(etiqueta, 'textContent', () => tr('na estante'));
+    etiquetas.append(etiqueta);
+  }
+  // Sem etiqueta "lendo" (ajuste 05/10): o botão "● lendo" da própria linha já diz isso — com
+  // ela, o dono via "lendo" três vezes no mesmo livro.
+  if (!lendoAgora && livro.id === trilha.proximo) {
+    const etiqueta = document.createElement('span');
+    etiqueta.className = 'etiqueta etiqueta-proximo';
+    idiomaUI.bind(etiqueta, 'textContent', () => tr('próximo'));
+    etiquetas.append(etiqueta);
+  }
+  if (lendoAgora) {
+    const etiqueta = document.createElement('span');
+    etiqueta.className = 'etiqueta etiqueta-trilha';
+    etiqueta.textContent = trilha.titulo;   // dado do catálogo — textContent, nunca marcação
+    etiquetas.append(etiqueta);
+  }
+  texto.append(etiquetas);   // vazia some pelo CSS (`.livro-etiquetas:empty`)
+
+  if (livro.terminado_em) {
+    const data = document.createElement('span');
+    data.className = 'livro-data';
+    data.textContent = new Date(livro.terminado_em).toLocaleDateString(idiomaUI.idioma, { day: '2-digit', month: '2-digit' });
+    label.append(data);
+  }
+
+  linha.append(label);
+
+  if (!livro.terminado_em) {
+    const botao = document.createElement('button');
+    botao.type = 'button';
+    botao.className = 'livro-lendo';
+    botao.setAttribute('aria-pressed', String(lendo));
+    botao.disabled = bloqueado || livrosLendoSalvando.has(livro.id);
+    idiomaUI.bind(botao, 'textContent', () => tr('lendo'));
+    // `attr`, não `bind`: aria-label é ATRIBUTO — `bind` gravaria propriedade JS solta.
+    idiomaUI.attr(botao, 'aria-label', () => (lendo ? tr`deixar de ler ${livro.titulo}` : tr`marcar ${livro.titulo} como lendo`));
+    botao.onclick = () => marcarLendo(livro.id, !lendo);
+    linha.append(botao);
+  }
+
+  return linha;
+}
+
+/**
+ * A barra de filtro (D61). Vive FORA do `#abas` e nasce uma vez: aqui só se mostra/esconde e se
+ * acertam os `aria-pressed`. O `value` da busca NUNCA é escrito na pintura — escrever durante a
+ * digitação jogaria o cursor para o fim.
+ */
+function pintarFiltroDeLeituras() {
+  const barra = $('leituras-filtro');
+  const visivel = vistaDaLateral === 'leituras' && Boolean(leituras?.catalogo?.ok) && leituras.trilhas.length > 0;
+  barra.hidden = !visivel;
+  if (!visivel) return;
+
+  const status = $('filtro-status');
+  if (status.children.length === 0) {   // `children`/`remove` existem no navegador E no DOM falso
+    idiomaUI.attr(status, 'aria-label', () => tr('filtrar por status'));
+    const rotulos = { todos: 'todos', lendo: 'lendo', 'a-ler': 'a ler', lidos: 'lidos' };
+    for (const s of STATUS_DE_LEITURA) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.dataset.filtroStatus = s;
+      idiomaUI.bind(chip, 'textContent', () => tr(rotulos[s]));
+      chip.onclick = () => { filtroLeituras.status = s; salvarFiltroLeituras(); desenharAbas(); };
+      status.append(chip);
+    }
+  }
+  for (const chip of status.children) chip.setAttribute('aria-pressed', String(chip.dataset.filtroStatus === filtroLeituras.status));
+
+  // Sai do catálogo CRU (`leituras.trilhas`), nunca da lista filtrada: escolher "IA" não pode
+  // colapsar o seletor numa opção só (painel da spec, Claude).
+  const trilhaEl = $('filtro-trilha');
+  const assinatura = leituras.trilhas.map((t) => `${t.id}\u0000${t.titulo}`).join('\u0001');
+  if (assinatura !== assinaturaDasOpcoes) {
+    assinaturaDasOpcoes = assinatura;
+    while (trilhaEl.children.length) trilhaEl.children[0].remove();
+    const todas = document.createElement('option');
+    todas.value = '';
+    idiomaUI.bind(todas, 'textContent', () => tr('todas as trilhas'));
+    trilhaEl.append(todas);
+    for (const t of leituras.trilhas) {
+      const opcao = document.createElement('option');
+      opcao.value = t.id;
+      opcao.textContent = t.titulo;   // dado do catálogo — textContent, nunca marcação
+      trilhaEl.append(opcao);
+    }
+  }
+  // S14: trilha salva que sumiu do catálogo mostra "todas". Só escreve quando muda — a batida
+  // de 5 s não mexe num seletor que já está certo.
+  const efetiva = trilhaEfetiva(leituras.trilhas);
+  if (trilhaEl.value !== efetiva) trilhaEl.value = efetiva;
 }
 
 /**
@@ -5712,15 +8176,88 @@ function haQuantoTempo(iso) {
   return tr`há ${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
 }
 
+/** O nome de um job na tela: título, senão o projeto, senão o id. Subiu de dentro de
+ *  `atualizarFaixaJobs` (era `nomeDo` local) quando ganhou o segundo e o terceiro dono
+ *  — `mostrarFaixa` e `linhaDaEtapa`, que vivem fora daquela função. */
+function nomeDoJob(j) {
+  return j.titulo || j.projeto || j.id;
+}
+
+/** Os TRÊS nós pelo MESMO caminho (`pintarRotulo`), e não um `idiomaUI.bind` na conta com
+ *  `textContent` cru nos irmãos, como o `bbf90c0^` fazia. Os dois motores funcionam — o
+ *  `bind` com valor vazio desregistra (`i18n.js:76`) e o `refresh` descarta registro cujo
+ *  texto trocou de dono —, mas inconsistência entre irmãos é dívida sem contrapartida.
+ *  `pintarRotulo` ainda evita reescrever nó que já está vazio. */
+function esconderFaixa(painel) {
+  painel.faixa.el.hidden = true;
+  pintarRotulo(painel.faixa.conta, () => '');
+  pintarRotulo(painel.faixa.titulos, () => '');
+  pintarRotulo(painel.faixa.etapa, () => '');
+}
+
+/**
+ * `meus` são os JOBS, não o texto pronto — achado da `/audita` (risco 🟡 "a faixa não
+ * retraduz no ar"). O `bbf90c0^` passava `` `${n} ${tr('job rodando')}` `` já montado, e o
+ * `idiomaUI.bind` reexecutava uma closure que devolvia a string CONGELADA no idioma de
+ * quando a faixa foi pintada. É o mesmo cuidado que o comentário de `pintarRotulo`
+ * (`app.js:1005`) descreve: o `calcular` tem de ler DADO, nunca uma local já traduzida.
+ *
+ * E os TRÊS nós vão por `pintarRotulo`, não só a conta (achado do painel, rodada 1): os
+ * títulos e a etapa também carregam texto traduzido (`tr('sem sinal ainda')`, `tr('sem
+ * sinal')`, e o `tr('agora mesmo')` de dentro do `haQuantoTempo`). Escrever `textContent`
+ * cru neles deixaria a linha de baixo no idioma antigo até o tique seguinte — o §8 diz que
+ * este defeito foi corrigido, e "corrigido pela metade" seria o §8 mentindo. `pintarRotulo`
+ * ainda dá de graça o "só escreve quando o texto MUDA", que é o que segura o `aria-live`
+ * da conta.
+ *
+ * As closures capturam a local `meus`, e o contrato de `pintarRotulo` diz "lê o estado de
+ * módulo (não locais)" — o painel (rodada 2) apontou que isto ESTREITA o contrato original, e
+ * é verdade. A diferença que importa: o que aquele contrato proíbe é capturar TEXTO já
+ * traduzido, que congela o idioma para sempre. `meus` é DADO, e a closure refaz o texto a
+ * cada `refresh()` do i18n — o pior caso é um retrato de ≤15 s (o tique), não uma string
+ * eterna. Amarrar ao módulo exigiria um segundo dono do "quais são os meus jobs" por painel,
+ * que é justamente o que o §4.3 evita.
+ */
+function mostrarFaixa(painel, meus) {
+  // 🔴 `hidden = false` PRIMEIRO (achado do painel, rodada 2). Região `aria-live` dentro de
+  // subárvore `hidden` não anuncia, e torná-la visível também não — pintar antes de revelar
+  // deixaria MUDO justamente o caso que o `aria-live` existe para dar: nasceu job onde não
+  // havia nenhum. Revelar primeiro e escrever depois é o que faz a escrita virar notícia.
+  painel.faixa.el.hidden = false;
+  pintarRotulo(painel.faixa.conta,
+    () => `${meus.length} ${meus.length === 1 ? tr('job rodando') : tr('jobs rodando')}`);
+  pintarRotulo(painel.faixa.titulos, () => meus.map(nomeDoJob).join(', '));
+  pintarRotulo(painel.faixa.etapa, () => linhaDaEtapa(meus));
+}
+
 /** A linha de baixo da faixa. Com vários jobs, cada etapa precisa dizer de quem é. */
 function linhaDaEtapa(vivos) {
   if (vivos.length === 1) {
     const [j] = vivos;
-    // "sem sinal ainda" e não vazio: o job recém-nascido ainda não agiu, e sumir com a
-    // linha faria a faixa pular de altura a cada leitura.
     return [j.etapa || tr('sem sinal ainda'), haQuantoTempo(j.desde)].filter(Boolean).join(' · ');
   }
-  return vivos.map((j) => `${j.titulo || j.projeto || j.id}: ${j.etapa || tr('sem sinal')}`).join(' · ');
+  return vivos.map((j) => `${nomeDoJob(j)}: ${j.etapa || tr('sem sinal')}`).join(' · ');
+}
+
+/**
+ * A faixa DESTE painel, pintada a partir da última leitura de jobs. Lê `jobsRodando` (estado
+ * de módulo) em vez de receber a lista: assim `criarPainel` a chama sem pedir rede, e os três
+ * caminhos de abrir painel (`abrirAba`, `trocarConjunto`, `abrirJob`) ficam cobertos por um
+ * dono só. Dois donos do desenho seriam duas verdades sobre a mesma tela.
+ *
+ * R9/P4: a faixa é do PAINEL, não da conversa focada — com N painéis, cada um mostra os jobs
+ * do PRÓPRIO projeto. Quem casou job com aba foi o SERVIDOR (`abas.abasDoProjeto`), então
+ * aqui só se compara CHAVE com CHAVE: nunca `projeto` cru (o meta.json diz "Loja Exemplo", a
+ * pasta diz "loja-exemplo" — a nota do card).
+ *
+ * Painel de JOB (`tipo: 'job'`, chave `job-<id>`) nunca casa: `j.abas` só traz `aba-N`. É por
+ * construção, e é por isso que NÃO há guarda `tipo === 'job'` aqui — uma condição que outra
+ * regra já torna inalcançável é a armadilha #30.
+ */
+function pintarFaixaDe(painel) {
+  const meus = jobsRodando.filter((j) => (j.abas || []).includes(painel.chave));
+  if (!meus.length) return esconderFaixa(painel);
+  return mostrarFaixa(painel, meus);
 }
 
 /**
@@ -5729,13 +8266,6 @@ function linhaDaEtapa(vivos) {
  * tratar os dois igual faria a rede caindo anunciar um término que nunca houve.
  */
 function semNoticiaDosJobs() {
-  // R9 da spec (split view, fase 3): a faixa é do PAINEL, não da conversa focada — sem
-  // notícia, ela some em TODOS os painéis abertos, não só no que está com o foco.
-  for (const painel of paineis.values()) {
-    clearTimeout(painel.timerTerminou);
-    painel.timerTerminou = null;
-    esconderFaixa(painel);
-  }
   // A bolinha na lista some junto: sem notícia, ela seria uma afirmação sem fonte. O mesmo
   // vale pro terceiro pedaço do resumo (M3/P4) — sem notícia é ignorância, não "zero jobs".
   jobsPorAba = new Map();
@@ -5745,6 +8275,7 @@ function semNoticiaDosJobs() {
   // mentira, ele diria a mesma coisa que "não há nada rodando".
   jobsDaLista = [];
   painelDosJobs = false;
+  for (const painel of paineis.values()) esconderFaixa(painel);
   desenharAbas();
 }
 
@@ -5773,7 +8304,13 @@ async function atualizarFaixaJobs() {
   painelDosJobs = dados.painel !== false;
   // A faixa continua igual: só os `running`, e é o que ela sempre mostrou.
   const jobs = (dados.jobs || []).filter((j) => j.estado === 'running');
-  const nomeDo = (j) => j.titulo || j.projeto || j.id;
+  // D76: um id que estava `running` na última leitura boa e não está nesta terminou — ou sumiu
+  // da janela do fim feliz enquanto a página não lia (o celular que volta do bolso). Quem
+  // decide se ele entra no Pra revisar é o servidor; aqui só se avisa que vale reler.
+  const idsAgora = new Set(jobs.map((j) => j.id));
+  const algumTerminou = idsRodandoNaUltimaLeitura !== null
+    && [...idsRodandoNaUltimaLeitura].some((id) => !idsAgora.has(id));
+  idsRodandoNaUltimaLeitura = idsAgora;
 
   // A LISTA usa isto: a bolinha na linha de cada aba cujo projeto tem job rodando. Quem
   // casou job com aba foi o servidor — daqui só vem a chave, nunca o caminho da worktree.
@@ -5783,46 +8320,16 @@ async function atualizarFaixaJobs() {
   for (const j of jobs) {
     for (const chave of j.abas || []) {
       if (!jobsPorAba.has(chave)) jobsPorAba.set(chave, []);
-      jobsPorAba.get(chave).push(nomeDo(j));
+      jobsPorAba.get(chave).push(nomeDoJob(j));
     }
   }
   desenharAbas();
   pintarResumoVazio();
-
-  // Quem estava rodando na leitura anterior e não está mais acabou de terminar. Na PRIMEIRA
-  // leitura não existe "anterior": um job que já rodava quando o app abriu não pode
-  // aparecer como recém-terminado só porque nunca o vimos rodando.
-  const rodando = new Map(jobs.map((j) => [j.id, { titulo: nomeDo(j), abas: j.abas || [] }]));
-  const terminado = rodandoAntes && [...rodandoAntes].find(([id]) => !rodando.has(id));
-  rodandoAntes = rodando;
-
-  // Sem painel nenhum na tela (a lista no celular) não há a quem mostrar nada.
-  for (const painel of paineis.values()) {
-    // Só os jobs DESTE projeto. Job que não casa com aba nenhuma não aparece em lugar
-    // nenhum daqui: ele vive no painel /jobs, e inventar tela para ele seria ruído.
-    const meus = jobs.filter((j) => (j.abas || []).includes(painel.chave));
-
-    if (meus.length) {
-      // Trabalho vivo ganha do aviso de término: o que importa é o que está acontecendo.
-      clearTimeout(painel.timerTerminou);
-      painel.timerTerminou = null;
-      mostrarFaixa(painel, 'rodando',
-        `${meus.length} ${meus.length === 1 ? tr('job rodando') : tr('jobs rodando')}`,
-        meus.map(nomeDo).join(', '),
-        linhaDaEtapa(meus));
-      continue;
-    }
-
-    if (terminado && (terminado[1].abas || []).includes(painel.chave)) {
-      clearTimeout(painel.timerTerminou);
-      painel.timerTerminou = setTimeout(() => { painel.timerTerminou = null; esconderFaixa(painel); }, MS_TERMINOU);
-      mostrarFaixa(painel, 'terminou', '', tr`${terminado[1].titulo} terminou`);
-      continue;
-    }
-
-    // Nada rodando: só some se não houver um "terminou" ainda no ar.
-    if (!painel.timerTerminou) esconderFaixa(painel);
-  }
+  for (const painel of paineis.values()) pintarFaixaDe(painel);
+  // Por último: nada do que o tique já desenhava depende disto. O `revisar.js` carrega depois
+  // e pode não existir (página sem o dialog, gate que só carrega o app.js) — por isso a checagem.
+  const revisar = globalThis.cockpitRevisar;
+  if (algumTerminou && revisar && typeof revisar.aoTerminarJob === 'function') revisar.aoTerminarJob();
 }
 
 // Pino, `data-estado` e rótulo por estado do job (spec §4.3/§4.4). Estado fora dos sete não
@@ -5858,32 +8365,30 @@ function tempoDoJob(j) {
  * que dá alvo ao negrito do bloqueado no CSS (§4.4); montar sem ele deixaria o negrito sem
  * onde pintar, sem nenhum assert pegar.
  *
- * "Viva" é conferida AQUI, na hora de desenhar — não na hora de ler (§4.5). Jobs chegam a
- * cada 15s e abas a cada 5s (D21): nessa defasagem o usuário pode fechar a aba no terminal e
- * `j.abas` continuar apontando para uma chave morta. `abrirAba()` não se defende disso.
+ * O clique abre o PRÓPRIO job (`abrirJob`, card `ver-a-conversa-do-job`) — não mais a aba do
+ * projeto no terminal. Isso tira a dependência de `j.abas`/`vivas` que existia aqui: o job
+ * sempre tem destino, com aba viva ou sem (§6.3 da spec — melhoria real, sem custo de decisão).
  */
 function linhaDeJob(j) {
   const linha = document.createElement('div');
   linha.className = 'conversa-linha';
   linha.dataset.estado = DATA_ESTADO_DE_JOB[j.estado] || 'desconhecido';
+  // O mesmo feedback que a lista de conversas já dá — uma linha (§4.3 do plano).
+  if (paineis.has(`job-${j.id}`)) linha.dataset.aberta = '';
 
-  const vivas = (j.abas || []).filter((c) => abasDoTerminal.some((a) => a.chave === c));
-  const clicavel = vivas.length > 0;
-  const alvo = document.createElement(clicavel ? 'button' : 'div');
+  // Clicável SEMPRE: o job agora tem destino PRÓPRIO (abrirJob), e não depende mais de haver
+  // uma aba viva do mesmo projeto no terminal. Cai a dependência de `vivas` (§6.3 da spec).
+  const alvo = document.createElement('button');
   alvo.className = 'conversa';
-  if (clicavel) {
-    // O tipo saiu do lugar de destaque e vem para cá: no desktop ele continua alcançável, e
-    // no celular ninguém sente falta — "ataca" ou "ship" nunca foi o que diferencia um job.
-    alvo.title = [j.tipo, j.titulo].filter(Boolean).join(' · ');
-    alvo.onclick = () => {
-      // O clique FANTASMA (§4.5): mesmo container (`#abas`), mesmo gesto de puxar para
-      // atualizar, mesma guarda das linhas de conversa.
-      if (Date.now() < toqueBloqueadoAte) return;
-      abrirAba(vivas[0]);
-    };
-  } else {
-    idiomaUI.bind(alvo, 'title', () => tr('não há aba deste projeto aberta no terminal'));
-  }
+  // O tipo saiu do lugar de destaque e vem para cá: no desktop ele continua alcançável, e
+  // no celular ninguém sente falta — "ataca" ou "ship" nunca foi o que diferencia um job.
+  alvo.title = [j.tipo, j.titulo].filter(Boolean).join(' · ');
+  alvo.onclick = () => {
+    // O clique FANTASMA (§4.5): mesmo container (`#abas`), mesmo gesto de puxar para
+    // atualizar, mesma guarda das linhas de conversa.
+    if (Date.now() < toqueBloqueadoAte) return;
+    abrirJob(j.id);
+  };
 
   const titulo = document.createElement('div');
   titulo.className = 'conversa-titulo';
@@ -5932,6 +8437,26 @@ function linhaDeJob(j) {
 }
 
 /**
+ * O clique da faixa leva à VISTA DE AGENTES — o mesmo destino do clique na `#barra-agentes`
+ * (`:5485`). O destino de ontem (rolar até o grupo dentro da lista de conversas) morreu com
+ * a D51: `#abas` mostra uma vista OU a outra.
+ *
+ * As duas guardas são ALCANÇÁVEIS daqui, ao contrário do que vale para a barra (que só é
+ * clicável com a lateral já à vista — ver o comentário em `:5482`): a faixa vive no
+ * CABEÇALHO do painel, e dali o usuário alcança o clique com a lateral fechada pelo ☰ (o
+ * desktop) e com a lista fora da tela (o celular). Não é guarda para estado inalcançável
+ * (armadilha #30) — é o caso normal deste botão.
+ */
+function verOsAgentes() {
+  if (vistaDaLateral !== 'agentes') trocarVistaDaLateral('agentes');
+  if (app.dataset.lateral === 'fechada') aplicarLateral(false);   // desktop: lateral escondida pelo ☰
+  // Sem `if (app.dataset.vista === 'chat')` em volta: `pedirLista()` JÁ faz esse teste
+  // (`app.js:5445-5447`). O `bbf90c0^` duplicava a guarda; repeti-la num documento que
+  // recusa guarda inalcançável pela #30 seria incoerente. `pedirLista()` na lista é no-op.
+  pedirLista();                                                   // celular: history.back() → popstate
+}
+
+/**
  * O grupo JOBS da lista lateral (desenho C, spec 2026-09-08). Devolve `null` quando não há
  * nada a mostrar: `painelDosJobs === null` é ignorância (ainda não li) e `jobsDaLista` vazio
  * com painel vivo é "nada na janela" — os dois casos em que o grupo simplesmente não existe
@@ -5947,52 +8472,9 @@ function grupoDeJobs() {
   secao.id = 'grupo-jobs';
   secao.className = 'conversa-grupo';   // SEM data-cwd — a âncora do R1
 
-  const cabecalho = document.createElement('h2');
-  cabecalho.className = 'conversa-grupo-titulo';
-  const topo = document.createElement('div');
-  topo.className = 'projeto-topo';
-  const alternar = document.createElement('button');
-  alternar.className = 'projeto-alternar';
-  alternar.type = 'button';
-  const rotulos = document.createElement('span');
-  rotulos.className = 'projeto-rotulos';
-  const nome = document.createElement('span');
-  nome.textContent = semContato ? 'JOBS' : `JOBS · ${jobsDaLista.length}`;
-  const aviso = document.createElement('span');
-  aviso.className = 'projeto-aviso';
-  const trabalho = document.createElement('span');
-  trabalho.className = 'projeto-trabalhando';
-
-  // Travado = blocked + orfao (§4.8): os dois estados que exigem AÇÃO. Contar só o blocked
-  // deixaria uma lista feita de órfãos recolher em silêncio — o mesmo defeito, outro nome.
-  const travados = jobsDaLista.filter((j) => j.estado === 'blocked' || j.estado === 'orfao').length;
-  const rodando = jobsDaLista.filter((j) => j.estado === 'running').length;
-  idiomaUI.bind(aviso, 'textContent', () => tr(semContato
-    ? tr('sem contato com o painel')
-    : (travados ? `${travados} ${travados === 1 ? tr('travado') : tr('travados')}` : '')));
-  idiomaUI.bind(trabalho, 'textContent', () => tr((!semContato && !travados && rodando)
-    ? tr`${rodando} rodando` : ''));
-
-  rotulos.append(nome, aviso, trabalho);
-  alternar.append(rotulos);
   const conteudo = document.createElement('div');
   conteudo.className = 'projeto-conteudo';
-  conteudo.hidden = projetosSalvos.fechados.includes(CHAVE_GRUPO_JOBS);
-  alternar.setAttribute('aria-expanded', String(!conteudo.hidden));
-  aviso.hidden = !conteudo.hidden || !aviso.textContent;
-  trabalho.hidden = !conteudo.hidden || !trabalho.textContent;
-  alternar.onclick = () => {
-    conteudo.hidden = !conteudo.hidden;
-    alternar.setAttribute('aria-expanded', String(!conteudo.hidden));
-    aviso.hidden = !conteudo.hidden || !aviso.textContent;
-    trabalho.hidden = !conteudo.hidden || !trabalho.textContent;
-    projetosSalvos.fechados = projetosSalvos.fechados.filter((x) => x !== CHAVE_GRUPO_JOBS);
-    if (conteudo.hidden) projetosSalvos.fechados.push(CHAVE_GRUPO_JOBS);
-    salvarProjetos();
-  };
-  cabecalho.append(alternar);
-  topo.append(cabecalho);
-  secao.append(topo, conteudo);
+  secao.append(conteudo);
 
   if (semContato) {
     const p = document.createElement('p');
@@ -6011,28 +8493,14 @@ function grupoDeJobs() {
   return secao;
 }
 
-/** Recolhido → aberto (o clique da faixa abre o grupo, nunca o contrário). */
-function abrirGrupoDeJobs() {
-  projetosSalvos.fechados = projetosSalvos.fechados.filter((x) => x !== CHAVE_GRUPO_JOBS);
-  salvarProjetos();
-}
-
-/**
- * O clique da faixa: leva ao grupo de jobs na LISTA (desenho C), em vez de abrir o painel
- * externo numa aba nova. Virou funcao nomeada no merge com o split view: a faixa deixou de
- * ser um `#faixa-jobs` unico do `index.html` e passou a nascer em `criarPainel`, uma por
- * painel — buscar o id no documento aqui devolveria `null` e derrubaria o boot.
- */
-function verOsJobsNaLista() {
-  abrirGrupoDeJobs();
-  rolarAteJobs = true;   // consumida em desenharAbas() — nunca por sequência de chamadas
-  // Terceiro estado de "não dá para ver a lista" (além do celular e do grupo recolhido): a
-  // lateral do desktop, escondida pelo ☰. Sem isto o grupo abriria e rolaria dentro de uma
-  // coluna de largura ZERO — o clique pareceria quebrado.
-  if (app.dataset.lateral === 'fechada') aplicarLateral(false);
-  if (app.dataset.vista === 'chat') pedirLista();   // celular: history.back() → popstate
-  desenharAbas();   // desktop: resolve já, sem esperar navegador nenhum
-}
+// A leitura mora no servidor desde 14/09 (D53). A chave velha fica no aparelho para sempre se
+// ninguém a remover — e um dia alguém a lê achando que vale. Some no primeiro boot depois do
+// deploy; o `try` é o modo privado do Safari, onde `localStorage` LANÇA em vez de falhar.
+// Não é migração (P2): remove sem ler.
+try { localStorage.removeItem('cockpit-lidas'); } catch { /* sem armazenamento: nada a apagar */ }
+// D63: ordem e recolhimento por projeto deixaram de existir. A chave fica no aparelho para sempre
+// se ninguém a remover. Mesmo tratamento da `cockpit-lidas`: remove sem ler, sem migrar.
+try { localStorage.removeItem('cockpit-projetos'); } catch { /* sem armazenamento: nada a apagar */ }
 
 carregarAbas().then(abrirPeloEndereco).catch(() => { /* pedirToken já avisou */ });
 atualizarFaixaJobs();

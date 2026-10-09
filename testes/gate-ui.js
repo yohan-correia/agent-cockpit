@@ -94,6 +94,11 @@ function criarElemento(tag, rolagens = null, dono = null) {
     // nunca casaria com nada.
     get id() { return el.atributos.id || ''; },
     set id(valor) { el.atributos.id = String(valor); },
+    // `tagName` — teclado responde a pergunta (18/09): as guardas do ouvinte de tecla nua
+    // leem `e.target.tagName` para distinguir campo de escrita/botão do resto da tela. Sem
+    // este getter o molde não tinha `tagName` nenhum (R2 da spec), e o assert que prova o
+    // molde (Fase 2) daria falso verde escondendo o buraco.
+    get tagName() { return String(tag).toUpperCase(); },
     // `setProperty`/`removeProperty` entraram com o selo do puxar-para-atualizar (03/09):
     // ele escreve a fração do curso numa CUSTOM PROPERTY (`--puxar`), e custom property não
     // existe como campo do `style` — só pela API. Guardadas no próprio objeto para o teste
@@ -134,6 +139,9 @@ function criarElemento(tag, rolagens = null, dono = null) {
     // Botão nasce habilitado, como no navegador. Sem isto o `disabled` só existia depois
     // de alguém escrevê-lo, e "não travado" era `undefined` em vez de `false`.
     disabled: false,
+    // Checkbox nasce desmarcado, como no navegador (#55 — aqui `checked` não alterna
+    // sozinho no clique; o teste escreve `el.checked = true` à mão e chama o `onchange`).
+    checked: false,
     // `<dialog>` fechado, como no navegador. Sem estado de verdade aqui, `showModal()` era
     // um no-op e não dava para provar que o painel de configuração ABRE — nem que o voltar
     // do aparelho fecha SÓ ele.
@@ -177,6 +185,61 @@ function criarElemento(tag, rolagens = null, dono = null) {
       if (cresce && cresce.crescePorFilho) cresce.scrollHeight += cresce.crescePorFilho * nos.length;
     },
     appendChild(no) { el.append(no); return no; },
+    // `insertBefore` entrou com o arrasto da aba para o split (D73): o painel passa a nascer e a
+    // MUDAR de lugar no meio da faixa, não só no fim. `ref` nulo = fim, como no navegador. E com o
+    // efeito colateral MEDIDO no Chromium (spec §5, R2): mover um nó zera a rolagem de tudo que
+    // está dentro dele e tira o cursor se ele estava lá dentro (#55 — meio-molde mente).
+    insertBefore(no, ref) {
+      if (dono) {
+        for (let n = dono.activeElement; n; n = n.pai) {
+          if (n === no) { dono.activeElement = null; break; }
+        }
+      }
+      const zerar = (n) => {
+        if (n.tag === '#texto') return;
+        n.scrollTop = 0;
+        n.scrollLeft = 0;
+        for (const f of n.filhos || []) zerar(f);
+      };
+      if (no.pai) zerar(no);
+      if (no.pai) no.pai.filhos = no.pai.filhos.filter((f) => f !== no);
+      no.pai = el;
+      const i = ref ? el.filhos.indexOf(ref) : -1;
+      if (i === -1) el.filhos.push(no);
+      else el.filhos.splice(i, 0, no);
+      return no;
+    },
+    // Geometria que este DOM não calcula: quem escreve `retangulo` é o TESTE ("este painel ocupa
+    // x de 400 a 800"). Sem valor, tudo mede zero — como um nó fora da tela.
+    retangulo: null,
+    getBoundingClientRect() {
+      return el.retangulo || { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+    },
+    // Espelho do `append`, para o `prepend` de `desenharLoteAntigo` (card
+    // `carregar-mais-historico`) — com `unshift` em vez de `push`, e SPLICANDO um
+    // `#fragmento`: no navegador de verdade, `Node.prepend(fragmento)` espalha os FILHOS do
+    // fragmento e ele nunca entra na árvore. Sem isto, o molde deixaria o `#fragmento`
+    // entrar como UM nó só (armadilha #55) e o `crescerJunto` contaria 1 filho para um lote
+    // de 45 — os dois estragos que o R4 descreve.
+    prepend(...nos) {
+      const achatados = [];
+      for (const no of nos) {
+        const filho = typeof no === 'string' ? { tag: '#texto', valor: no } : no;
+        if (filho.tag === '#fragmento') {
+          achatados.push(...filho.filhos);
+          filho.filhos = [];
+        } else {
+          achatados.push(filho);
+        }
+      }
+      for (const filho of achatados) {
+        if (filho.pai) filho.pai.filhos = filho.pai.filhos.filter(f => f !== filho);
+        filho.pai = el;
+      }
+      el.filhos.unshift(...achatados);
+      const cresce = el.crescerJunto;
+      if (cresce && cresce.crescePorFilho) cresce.scrollHeight += cresce.crescePorFilho * achatados.length;
+    },
     // `class` sincroniza com `.className` — como no navegador de verdade. Os ícones dos
     // painéis (split view, fase 2) nascem `<svg>` e usam `setAttribute('class', ...)`
     // porque `.className` em SVG é getter-only em modo estrito (`svg.className = x`
@@ -200,9 +263,26 @@ function criarElemento(tag, rolagens = null, dono = null) {
     removeEventListener(tipo, fn) {
       el.ouvintes.set(tipo, (el.ouvintes.get(tipo) || []).filter((f) => f !== fn));
     },
-    /** Dispara o evento no elemento e devolve o objeto do evento, já com o que foi mexido. */
+    /**
+     * Dispara o evento no elemento e devolve o objeto do evento, já com o que foi mexido.
+     *
+     * BORBULHA para o `document` (card escrever-texto-na-pergunta-aberta, achado do painel
+     * #77 metade 2): sem isto não existe caminho nenhum do elemento até o `document`, e o
+     * assert "o document não viu a tecla" passava por não haver caminho — não por a
+     * propagação ter sido de fato interrompida. `stopPropagation()` marca uma flag; o
+     * disparador só chama os ouvintes do `document` se ela não subiu. `dono` é sempre
+     * `contexto.document` (todo elemento nasce por `document.createElement`), e carrega
+     * `ouvintes` — o MESMO Map que `document.addEventListener` alimenta.
+     */
     disparar(tipo, evento = {}) {
+      let parada = false;
+      if (typeof evento.stopPropagation !== 'function') {
+        evento.stopPropagation = () => { parada = true; };
+      }
       for (const fn of el.ouvintes.get(tipo) || []) fn(evento);
+      if (!parada) {
+        for (const fn of dono?.ouvintes?.get(tipo) || []) fn(evento);
+      }
       return evento;
     },
     // `document.activeElement` de verdade. Até aqui `focus()` era no-op e ninguém notava: com
@@ -281,10 +361,14 @@ function memoria() {
 const IDS_DO_PAINEL = new Set([
   'chat-topo', 'chat-titulo', 'chat-caminho', 'chat-agente', 'aviso-agente', 'btn-voltar',
   'medidor', 'medidor-trilho', 'medidor-cheio', 'medidor-modelo', 'medidor-effort',
-  'medidor-pct', 'faixa-jobs', 'faixa-pino', 'faixa-conta', 'faixa-titulos', 'faixa-etapa',
+  'medidor-pct',
   'btn-parar', 'parar-rotulo', 'btn-recarregar-conversa', 'btn-matar-aba',
   'mensagens', 'puxar-selo', 'fita', 'pergunta', 'pergunta-tela', 'pergunta-teclas',
   'tecla-left', 'tecla-up', 'tecla-down', 'tecla-right', 'tecla-enter', 'tecla-esc',
+  // O aviso "Escrever aqui manda Esc antes do texto." (card escrever-texto-na-pergunta-aberta).
+  'aviso-escrita',
+  // O aviso de hook não instalado (card pergunta-sem-gancho-avisa).
+  'aviso-gancho',
   // Caixa de envio por painel (2026-09-09, fase 2 do plano): a caixa deixa de ser única e
   // vira DOM do painel do botão, por classe — na ordem em que aparecem na árvore (§3.1 da
   // spec). `envio-para` NÃO entra — deixa de existir (D42).
@@ -387,6 +471,9 @@ function carregarCliente({
         if (!ouvintes.has(tipo)) ouvintes.set(tipo, []);
         ouvintes.get(tipo).push(fn);
       },
+      // Exposto para o `disparar()` de `criarElemento` borbulhar até aqui (card
+      // escrever-texto-na-pergunta-aberta) — o MESMO Map que `addEventListener` alimenta.
+      ouvintes,
       hidden: false,
       // Onde `aplicarTema` escreve o `data-tema`. É o único jeito de provar que a escolha do
       // tema chega ao documento NA HORA, com o painel ainda aberto.
@@ -631,6 +718,18 @@ async function comEspiao(env, roteiro, corpo) {
   let i = 0;
   cp.execFile = (bin, args, opts, cb) => {
     chamadas.push([bin, args]);
+    // `capture-pane` NÃO consome uma posição do roteiro. `listar()` passa a capturar a tela
+    // de cada pane de Codex (card menu-da-tui-do-codex-na-tela), e o roteiro é POSICIONAL:
+    // sem esta saída, uma chamada a mais empurra todas as respostas seguintes uma casa e
+    // reprova 31 casos que não têm nada a ver com a mudança. `''` é o que o tmux leniente
+    // devolveria numa pane que não responde — e a régua classifica isso como `desconhecido`.
+    //
+    // O comando NÃO é `args[0]`: `comSocket()` (lib/abas.js:68) antepõe `['-L', <socket>]`
+    // quando COCKPIT_TMUX_SOCKET existe, e os dois gates setam essa env. Testar `args[0]`
+    // aqui seria um no-op silencioso — a captura continuaria consumindo o roteiro, e o
+    // fallback vazio esconderia o defeito.
+    const cmd = args && args[0] === '-L' ? args[2] : args && args[0];
+    if (cmd === 'capture-pane') return (cb || opts)(null, '', '');
     const r = roteiro[i++] || { saida: '' };
     const pronto = cb || opts;
     if (!r.erro) return pronto(null, r.saida ?? '', '');
@@ -920,6 +1019,173 @@ async function parteA() {
     && !fita.filhos.some((f) => String(f.className).includes('fala-nota')),
     'turno sem ferramenta nenhuma não recolhe nada');
 
+  // ── Painel de JOB (card `ver-a-conversa-do-job`, plano 12/09) — Fase 4 ──────────────────
+  //
+  // `cliente` (acima) tem SEMPRE o painel de partida `aba-7` (índice 0 de `#paineis`,
+  // `carregarCliente` sem `{ semPainel: true }`) — é ele que os testes de cima usam, e é
+  // dele que G-J8 tira a prova de NÃO-regressão. Os testes de job criam painéis PRÓPRIOS
+  // (`cliente.criarPainel('job-…', undefined)`) e leem os campos DIRETO do objeto que a
+  // função devolve — sem precisar de `porIdDe`/índice, que é por ISSO que os dois arquivos
+  // desta seção falam com o objeto, não com o DOM por id.
+  // Guardado para RESTAURAR o foco no fim do bloco — os testes de baixo (histórico
+  // cortado, hora, etc.) continuam usando `fita`/`cliente.aplicar` esperando que `atual`
+  // seja o painel de partida, e os `cliente.focar(pJ…)` daqui para baixo o trocam.
+  const painelDePartida = cliente.painelAtual();
+
+  console.log('\n  · G-J8/G-J8b: fala → ferramenta → fala — a aba recolhe, o job NÃO');
+
+  // G-J8 — a conversa de uma ABA não regrediu. O painel de partida (`aba-7`, tipo 'aba')
+  // já fez exatamente esta sequência acima (linhas 894-896) e produziu `fala-nota`; aqui
+  // fica registrado o PAR, com o `tipo` conferido explicitamente.
+  tudoOk &= ok(cliente.painelAtual().tipo === 'aba',
+    `G-J8: o painel de partida É tipo 'aba' (veio ${cliente.painelAtual().tipo}) — a prova de cima vale para ele`);
+
+  // G-J8b — o mesmo roteiro num painel de JOB: a fala fica ABERTA, sem `fala-nota`, e a
+  // ferramenta entra no MEIO das duas (G-J18 é este mesmo teste, olhando a ORDEM).
+  const pJ8b = cliente.criarPainel('job-g8b', undefined);
+  cliente.focar(pJ8b);
+  cliente.aplicar({ tipo: 'texto', texto: 'vou olhar o arquivo primeiro', sub: 'x', subNome: 'executor-plano' });
+  cliente.aplicar({ tipo: 'ferramenta', id: 'j8b-1', nome: 'Read', entrada: { file_path: '/x/y.js' }, sub: 'x' });
+  cliente.aplicar({ tipo: 'texto', texto: 'achei: o bug é a linha 12', sub: 'x', subNome: 'executor-plano' });
+  const filhosJ8b = pJ8b.fita.filhos;
+  const falasJ8b = filhosJ8b.filter((f) => f.tag === 'details' && /(^|\s)fala(\s|$)/.test(f.className));
+  tudoOk &= ok(falasJ8b.length === 2, `G-J8b: as duas falas continuam SEPARADAS, não uma parede (${falasJ8b.length})`);
+  tudoOk &= ok(!falasJ8b.some((f) => String(f.className).includes('fala-nota')),
+    'G-J8b: NENHUMA vira fala-nota — num job a fala entre ações é a única coisa que se quer ler');
+  tudoOk &= ok(falasJ8b.every((f) => f.open === true), 'G-J8b: e as duas ficam ABERTAS');
+  // G-J18 — a ORDEM: a ferramenta entra no MEIO, não em cima de uma das falas.
+  const ferramentaJ8b = filhosJ8b.find((f) => f.tag === 'details' && f.className === 'ferramenta');
+  const iFala1 = filhosJ8b.indexOf(falasJ8b[0]);
+  const iFerramenta = filhosJ8b.indexOf(ferramentaJ8b);
+  const iFala2 = filhosJ8b.indexOf(falasJ8b[1]);
+  tudoOk &= ok(iFala1 >= 0 && iFala1 < iFerramenta && iFerramenta < iFala2,
+    `G-J18: a ordem na fita é fala(${iFala1}) < ferramenta(${iFerramenta}) < fala(${iFala2})`);
+
+  console.log('\n  · G-J7: a concatenação de texto quebra na fronteira do subagente (sub)');
+  const cenarioJ7 = (a, b) => {
+    const p = cliente.criarPainel(`job-g7-${Math.random().toString(36).slice(2)}`, undefined);
+    cliente.focar(p);
+    cliente.aplicar({ tipo: 'texto', texto: 'um', ...a });
+    cliente.aplicar({ tipo: 'texto', texto: 'dois', ...b });
+    return p.fita.filhos.filter((f) => f.tag === 'details' && /(^|\s)fala(\s|$)/.test(f.className)).length;
+  };
+  tudoOk &= ok(cenarioJ7({}, { sub: 'a', subNome: 'executor-plano' }) === 2,
+    'G-J7: principal → sub = 2 bolhas (autores diferentes não colam)');
+  tudoOk &= ok(cenarioJ7({ sub: 'a', subNome: 'executor-plano' }, { sub: 'b', subNome: 'avalia-plano' }) === 2,
+    'G-J7: sub A → sub B = 2 bolhas (dois subagentes não colam)');
+  tudoOk &= ok(cenarioJ7({ sub: 'a', subNome: 'executor-plano' }, { sub: 'a', subNome: 'executor-plano' }) === 1,
+    'G-J7: sub A → sub A = 1 bolha (o MESMO subagente continua concatenando)');
+
+  console.log('\n  · G-J9: a marca "└ subNome" está no DOM da fala de subagente');
+  const pJ9 = cliente.criarPainel('job-g9', undefined);
+  cliente.focar(pJ9);
+  cliente.aplicar({ tipo: 'texto', texto: 'oi', sub: 'toolu-1', subNome: 'executor-plano' });
+  const falaJ9 = pJ9.fita.filhos.find((f) => f.tag === 'details' && /(^|\s)fala(\s|$)/.test(f.className));
+  const marcaJ9 = falaJ9?.filhos.find((f) => f.className === 'fala-sub');
+  tudoOk &= ok(Boolean(marcaJ9) && marcaJ9.textContent.includes('executor-plano'),
+    `G-J9: a marca "└ executor-plano" está no DOM (${marcaJ9?.textContent})`);
+  tudoOk &= ok(falaJ9?.dataset?.sub === 'toolu-1', 'G-J9: e o dataset.sub identifica o subagente');
+
+  console.log('\n  · G-J16: split misto job + aba — a caixa some só no job, o rascunho da aba sobrevive');
+  const pAba16 = cliente.criarPainel('aba-g16', {});
+  pAba16.entrada.value = 'rascunho da aba';
+  const pJob16 = cliente.criarPainel('job-g16', undefined);
+  tudoOk &= ok(pAba16.entrada.value === 'rascunho da aba',
+    'G-J16: abrir o job do lado não mexeu no rascunho da aba');
+  tudoOk &= ok(pAba16.envio.hidden === false, 'G-J16: a caixa da ABA continua visível');
+  tudoOk &= ok(pJob16.envio.hidden === true, 'G-J16: a caixa do JOB está escondida — não se fala com um job');
+  tudoOk &= ok(pJob16.btnMatarAba.hidden === true, 'G-J16: sem ✕ — não há aba para matar');
+  tudoOk &= ok(pJob16.btnParar.hidden === true, 'G-J16: sem Parar — não há turno');
+  tudoOk &= ok(pJob16.pergunta.hidden === true, 'G-J16: sem teclas de menu — não há TUI');
+
+  console.log('\n  · G-J17: job_estado não limpa a fita, e o texto do estado fica VISÍVEL');
+  const pJ17 = cliente.criarPainel('job-g17', undefined);
+  cliente.focar(pJ17);
+  cliente.aplicar({ tipo: 'texto', texto: 'fala 1' });
+  cliente.aplicar({ tipo: 'texto', texto: 'fala 2', sub: 'a', subNome: 'x' });
+  cliente.aplicar({ tipo: 'texto', texto: 'fala 3' });
+  const falasAntesJ17 = pJ17.fita.filhos.filter((f) => f.tag === 'details' && /(^|\s)fala(\s|$)/.test(f.className)).length;
+  tudoOk &= ok(falasAntesJ17 === 3, `G-J17: pré-condição — 3 bolhas na fita (${falasAntesJ17})`);
+  cliente.aplicar({ tipo: 'job_estado', job: { estado: 'blocked', desfecho: 'teardown recusado', desde: null, fim: null } });
+  const falasDepoisJ17 = pJ17.fita.filhos.filter((f) => f.tag === 'details' && /(^|\s)fala(\s|$)/.test(f.className)).length;
+  tudoOk &= ok(falasDepoisJ17 === 3, `G-J17: as 3 continuam lá depois do job_estado (${falasDepoisJ17})`);
+  tudoOk &= ok(pJ17.aviso.hidden === false, 'G-J17: o aviso fica VISÍVEL (hidden === false)');
+  tudoOk &= ok(pJ17.aviso.textContent.includes('teardown recusado'),
+    `G-J17: e o texto mostra o desfecho (${pJ17.aviso.textContent})`);
+
+  console.log('\n  · G-J19: criarPainel(\'job-x\', undefined) — o caminho REAL de trocarConjunto');
+  const pJ19 = cliente.criarPainel('job-g19', undefined);
+  tudoOk &= ok(pJ19.tipo === 'job', `G-J19: painel.tipo === 'job' (veio ${pJ19.tipo})`);
+  tudoOk &= ok(pJ19.raiz.dataset.tipo === 'job', `G-J19: raiz.dataset.tipo === 'job' (veio ${pJ19.raiz.dataset.tipo})`);
+
+  console.log('\n  · G-J20: marcarOcupado(painelDeJob, true) NÃO revela o btnParar');
+  const pJ20 = cliente.criarPainel('job-g20', undefined);
+  tudoOk &= ok(pJ20.btnParar.hidden === true, 'G-J20: pré-condição — nasce escondido');
+  cliente.marcarOcupado(pJ20, true);
+  tudoOk &= ok(pJ20.btnParar.hidden === true, 'G-J20: e continua escondido depois de marcarOcupado(true)');
+
+  console.log('\n  · G-J21: sessao com meta.cwd: null ⇒ cabeçalho vazio, nunca "null"');
+  const pJ21 = cliente.criarPainel('job-g21', undefined);
+  cliente.focar(pJ21);
+  cliente.aplicar({ tipo: 'sessao', meta: { titulo: 'um job', cwd: null, contexto: null, sessaoId: null, reiniciada: false } });
+  tudoOk &= ok(pJ21.caminho.textContent === '', `G-J21: textContent vazio, nunca a string "null" (veio "${pJ21.caminho.textContent}")`);
+  tudoOk &= ok(pJ21.caminho.title === '', `G-J21: title vazio também (veio "${pJ21.caminho.title}")`);
+
+  console.log('\n  · G-J22: o cartão de ferramenta de subagente carrega data-sub; o do principal, não');
+  const pJ22 = cliente.criarPainel('job-g22', undefined);
+  cliente.focar(pJ22);
+  cliente.aplicar({ tipo: 'ferramenta', id: 'f-sub', nome: 'Edit', entrada: {}, sub: 'toolu-2' });
+  cliente.aplicar({ tipo: 'resultado_ferramenta', id: 'f-sub', saida: 'ok', erro: false });
+  cliente.aplicar({ tipo: 'ferramenta', id: 'f-principal', nome: 'Read', entrada: {} });
+  // Busca recursiva, não `.filhos.find`: a segunda ferramenta promove a primeira para dentro
+  // de um `.grupo-ferramentas` (D2/D2b) — as duas deixam de ser filhas DIRETAS da fita.
+  const cartaoSub = pJ22.fita.querySelector('[data-ferramenta-id="f-sub"]');
+  const cartaoPrincipal = pJ22.fita.querySelector('[data-ferramenta-id="f-principal"]');
+  tudoOk &= ok(cartaoSub?.dataset?.sub === 'toolu-2', `G-J22: cartão do subagente carrega data-sub (${cartaoSub?.dataset?.sub})`);
+  tudoOk &= ok(!cartaoPrincipal?.dataset?.sub, 'G-J22: cartão do principal NÃO carrega data-sub');
+
+  // G-J22b — o NOME visível, não só o atributo. O atributo sozinho passaria com a tela
+  // mostrando `◇ Edit ·` e nada mais: a mitigação declarada no plano ("40 passos rotulados
+  // └ executor-plano contam a verdade") é sobre o que o OLHO lê. Achado do painel de execução.
+  const pJ22b = cliente.criarPainel('job-g22b', undefined);
+  cliente.focar(pJ22b);
+  cliente.aplicar({ tipo: 'ferramenta', id: 'f-sub-nome', nome: 'Edit', entrada: {}, sub: 'toolu-3', subNome: 'executor-plano' });
+  cliente.aplicar({ tipo: 'ferramenta', id: 'f-sub-anonimo', nome: 'Read', entrada: {}, sub: 'toolu-4' });
+  const textoDoCartao = (raiz, id) => {
+    const cartao = raiz.querySelector(`[data-ferramenta-id="${id}"]`);
+    const marca = cartao?.filhos?.[0]?.filhos?.find?.((f) => f.className === 'fer-sub');
+    return marca?.textContent ?? '';
+  };
+  tudoOk &= ok(textoDoCartao(pJ22b.fita, 'f-sub-nome') === '└ executor-plano',
+    `G-J22b: o cartão mostra o NOME do subagente (veio "${textoDoCartao(pJ22b.fita, 'f-sub-nome')}")`);
+  tudoOk &= ok(textoDoCartao(pJ22b.fita, 'f-sub-anonimo') === '└ subagente',
+    `G-J22b: sem subNome (o Agent ficou fora da cauda) o cartão diz "subagente", nunca um nome inventado (veio "${textoDoCartao(pJ22b.fita, 'f-sub-anonimo')}")`);
+
+  console.log('\n  · G-J23: running → blocked → running atualiza os dois sentidos, sem partir o grupo');
+  const pJ23 = cliente.criarPainel('job-g23', undefined);
+  cliente.focar(pJ23);
+  cliente.aplicar({ tipo: 'ferramenta', id: 'f23-1', nome: 'Read', entrada: {} });
+  cliente.aplicar({ tipo: 'job_estado', job: { estado: 'running', desfecho: null, desde: null, fim: null } });
+  cliente.aplicar({ tipo: 'ferramenta', id: 'f23-2', nome: 'Edit', entrada: {} });
+  const grupoJ23 = pJ23.fita.filhos.find((f) => f.className === 'grupo-ferramentas');
+  tudoOk &= ok(Boolean(grupoJ23), 'G-J23: job_estado no MEIO de ferramentas seguidas NÃO impede o agrupamento — o grupo se formou');
+  tudoOk &= ok(Boolean(grupoJ23?.querySelector('[data-ferramenta-id="f23-1"]'))
+    && Boolean(grupoJ23?.querySelector('[data-ferramenta-id="f23-2"]')),
+    'G-J23: as DUAS ferramentas (antes e depois do job_estado) caem no MESMO grupo');
+  tudoOk &= ok(pJ23.aviso.textContent.includes('rodando'), `G-J23: o cabeçalho diz "rodando" (${pJ23.aviso.textContent})`);
+  const trabalhandoRodando = pJ23.fita.filhos.some((f) => f.className === 'trabalhando');
+  tudoOk &= ok(trabalhandoRodando, 'G-J23: "trabalhando" aparece com running');
+  cliente.aplicar({ tipo: 'job_estado', job: { estado: 'blocked', desfecho: 'preciso de decisão', desde: null, fim: null } });
+  tudoOk &= ok(pJ23.aviso.textContent.includes('preciso de decisão'), `G-J23: e muda para "bloqueado" (${pJ23.aviso.textContent})`);
+  tudoOk &= ok(!pJ23.fita.filhos.some((f) => f.className === 'trabalhando'), 'G-J23: "trabalhando" some com blocked');
+  cliente.aplicar({ tipo: 'job_estado', job: { estado: 'running', desfecho: null, desde: null, fim: null } });
+  tudoOk &= ok(pJ23.aviso.textContent.includes('rodando'), 'G-J23: e volta com running de novo — os dois SENTIDOS funcionam');
+  tudoOk &= ok(pJ23.fita.filhos.some((f) => f.className === 'trabalhando'), 'G-J23: "trabalhando" volta também');
+
+  // Restaura o foco no painel de partida — os testes daqui para baixo (histórico cortado,
+  // hora da bolha etc.) usam `fita`/`cliente.aplicar` esperando que `atual` seja ELE.
+  cliente.focar(painelDePartida);
+
   // Rajada inicial: abrir uma aba despeja o histórico inteiro. Desenhar direto na página
   // fazia a conversa desfilar no celular antes de dar para digitar.
   const rajada = carregarCliente();
@@ -980,6 +1246,94 @@ async function parteA() {
   env.aplicar({ tipo: 'humano', texto: '/clear' });
   tudoOk &= ok(bolhasDe(fitaEnv).length === 0 && fitaEnv.filhos.some((f) => f.className === 'corte'),
     'enviar /clear do celular deixa só a régua de corte, sem bolha órfã');
+
+  // [F4] Colagem embrulhada com foto (card fila-presa-com-colagem-embrulhada, spec §2/§4.2):
+  // o disco perde a linha em branco do texto colado quando vem foto junto — a pendente tem
+  // que casar mesmo assim, sem virar bolha órfã.
+  fitaEnv.filhos = [];
+  env.marcarPendente(env.bolha('bolha-eu', 'Vendas ta quebrada\n\nExames tambem'), 'Vendas ta quebrada\n\nExames tambem');
+  env.aplicar({ tipo: 'humano', texto: '[Image #4]\n\n[anexo]\nOs arquivos acima foram enviados pelo usuário junto desta mensagem. Abra o que precisar.\nVendas ta quebrada\nExames tambem' });
+  tudoOk &= ok(bolhasDe(fitaEnv).length === 1 && !fitaEnv.filhos.some((f) => String(f.className).includes('bolha-pendente')),
+    '[F4] foto colapsou a linha em branco no disco, mas a pendente ainda casa (grau 3) — uma bolha só, sem bolha-pendente');
+
+  // [F4] Paridade servidor↔navegador da colisão de pendentes (spec §4.2): as duas cópias de
+  // `casaComEnviado` (lib/abas.js e public/app.js) têm que escolher a MESMA pendente na
+  // colisão — divergência aqui é bolha presa numa tela e solta na outra. `rodarGrupo`
+  // (não o `grupo()` puro) para o estouro de uma função ainda inexistente não engolir o
+  // resto do gate (achado do Codex, painel do plano).
+  await rodarGrupo('paridade-colagem', async () => {
+    const abasLib = require('../lib/abas');
+    if (typeof env.casaComEnviado !== 'function' || typeof abasLib.casaComEnviado !== 'function') {
+      ok(false, '[F4] paridade: casaComEnviado ainda não existe em algum dos dois lados');
+      return;
+    }
+    const tabela = [
+      ['a', 'a'], ['a\nb', 'a\n\nb'], ['x\na\nb', 'a\n\nb'], ['a', 'b'], ['', 'a'], ['a', ''],
+    ];
+    for (const [doDisco, enviadoTabela] of tabela) {
+      ok(env.casaComEnviado(doDisco, enviadoTabela) === abasLib.casaComEnviado(doDisco, enviadoTabela),
+        `[F4] paridade: casaComEnviado(${JSON.stringify(doDisco)}, ${JSON.stringify(enviadoTabela)}) igual nos dois lados`);
+    }
+
+    // Colisão SEM foto pelo caminho `env.aplicar`: exato primeiro (spec §4.2).
+    fitaEnv.filhos = [];
+    const p1 = env.marcarPendente(env.bolha('bolha-eu', 'alfa\n\nbeta'), 'alfa\n\nbeta');
+    const p2 = env.marcarPendente(env.bolha('bolha-eu', 'alfa\nbeta'), 'alfa\nbeta');
+    env.aplicar({ tipo: 'humano', texto: 'alfa\nbeta' });
+    ok(!String(p2.className).includes('bolha-pendente') && String(p1.className).includes('bolha-pendente'),
+      '[F4] colisão sem foto: P2 (idêntica ao disco) perde o selo, P1 continua pendente');
+
+    // Colisão COM foto pelo caminho `env.aplicar` — o par que diverge hoje (achado do Codex):
+    // comparado contra a escolha de VERDADE de `abasLib.consumirPendente` para o MESMO texto,
+    // não contra uma constante fixa. Par de palavras DIFERENTE do caso "sem foto" acima: aquele
+    // deixa a P1 (`alfa\n\nbeta`) sem consumir de propósito (grau 2, perdeu para o grau 1 da
+    // P2) — reusar o mesmo texto aqui contaminaria esta lista de pendentes com a sobra dele.
+    fitaEnv.filhos = [];
+    const p1b = env.marcarPendente(env.bolha('bolha-eu', 'gama\n\ndelta'), 'gama\n\ndelta');
+    const p2b = env.marcarPendente(env.bolha('bolha-eu', 'gama\ndelta'), 'gama\ndelta');
+    const discoComFoto = '[Image #1]\n\n[anexo]\nOs arquivos acima foram enviados pelo usuário junto desta mensagem. Abra o que precisar.\ngama\ndelta';
+    env.aplicar({ tipo: 'humano', texto: discoComFoto });
+    abasLib.esquecerPendentes('paridade-colagem-fixture');
+    abasLib.registrarPendente('paridade-colagem-fixture', { id: 'x', texto: 'gama\n\ndelta', mensagem: 'gama\n\ndelta' }, Date.now() - 300);
+    abasLib.registrarPendente('paridade-colagem-fixture', { id: 'y', texto: 'gama\ndelta', mensagem: 'gama\ndelta' }, Date.now() - 200);
+    const escolhaServidor = abasLib.consumirPendente('paridade-colagem-fixture', discoComFoto, new Date().toISOString());
+    abasLib.esquecerPendentes('paridade-colagem-fixture');
+    const servidorEscolheuP1 = Boolean(escolhaServidor) && escolhaServidor.texto === 'gama\n\ndelta';
+    const p1bConsumida = !String(p1b.className).includes('bolha-pendente');
+    const p2bConsumida = !String(p2b.className).includes('bolha-pendente');
+    ok(p1bConsumida !== p2bConsumida, '[F4] colisão com foto: exatamente uma das duas pendentes é consumida');
+    ok(p1bConsumida === servidorEscolheuP1,
+      '[F4] colisão com foto: navegador escolhe a MESMA pendente que abasLib.consumirPendente escolheria para esse texto');
+  });
+
+  // Card `fila-presa-com-comando-bash-da-fila`: "! cmd" que passou pela fila do CLI volta do
+  // disco SEM o espaço depois do "!" — a bolha pendente do navegador tem que soltar igual à do
+  // servidor, e a colisão com "!cmd" idêntico continua indo para o grau 1.
+  await rodarGrupo('bang-da-fila', async () => {
+    const abasLib = require('../lib/abas');
+    for (const [doDisco, enviadoTabela] of [['!ls', '! ls'], ['! ls', '!ls'], ['a !b', 'a ! b'], ['rascunho! ls', '!ls']]) {
+      tudoOk &= ok(env.casaComEnviado(doDisco, enviadoTabela) === abasLib.casaComEnviado(doDisco, enviadoTabela),
+        `paridade: casaComEnviado(${JSON.stringify(doDisco)}, ${JSON.stringify(enviadoTabela)}) igual nos dois lados`);
+    }
+    fitaEnv.filhos = [];
+    env.marcarPendente(env.bolha('bolha-eu', '! echo x'), '! echo x');
+    env.aplicar({ tipo: 'humano', texto: '!echo x' });
+    tudoOk &= ok(bolhasDe(fitaEnv).length === 1 && !fitaEnv.filhos.some((f) => String(f.className).includes('bolha-pendente')),
+      'eco "!echo x" aparado pela fila solta a pendente "! echo x" — uma bolha só, sem bolha-pendente');
+    fitaEnv.filhos = [];
+    const comEspaco = env.marcarPendente(env.bolha('bolha-eu', '! ls'), '! ls');
+    const colado = env.marcarPendente(env.bolha('bolha-eu', '!ls'), '!ls');
+    env.aplicar({ tipo: 'humano', texto: '!ls' });
+    tudoOk &= ok(!String(colado.className).includes('bolha-pendente') && String(comEspaco.className).includes('bolha-pendente'),
+      'colisão: "!ls" idêntico perde o selo, "! ls" continua pendente');
+    // Sequência real da fila (fixture), lida pelo mesmo leitor do SSE.
+    fitaEnv.filhos = [];
+    const { eventos } = await require('../lib/externo').lerConversa(path.join(__dirname, 'fixtures', 'eco-bash', 'fila.jsonl'), 0);
+    const daFila = env.marcarPendente(env.bolha('bolha-eu', '! echo x'), '! echo x');
+    for (const evento of eventos) if (evento.tipo === 'humano') env.aplicar(evento);
+    tudoOk &= ok(fitaEnv.filhos.includes(daFila) && !fitaEnv.filhos.some((f) => String(f.className).includes('bolha-pendente')),
+      'sequência real da fila: a bolha "! echo x" continua na fita e nenhuma fica bolha-pendente');
+  });
 
   // ── Hora das mensagens dentro da conversa ────────────────────────────────────
   //
@@ -1110,11 +1464,15 @@ async function parteA() {
   tudoOk &= ok(porIdDe(fila, 'fita').filhos.some((f) => f.className === 'trabalhando'),
     'e o "trabalhando" continua na tela — turno rodando não virou "nada acontecendo"');
 
-  // A trava que FICA: menu aberto na TUI. Não é concorrência, é a armadilha #6/#25 — cada
-  // letra vira tecla de menu e escolhe uma opção, provavelmente a errada.
-  fila.marcarPergunta(fila.painelAtual(), true);
+  // Menu aberto na TUI (card escrever-texto-na-pergunta-aberta): o Enviar DESTRAVA — o
+  // servidor faz o gesto (Escape → reconfere → cola → Enter) em vez do cliente recusar de
+  // cara. `pre-sessao` CONTINUA travado: ali o Esc FECHA o agente, não cancela pergunta.
+  fila.marcarPergunta(fila.painelAtual(), true, 'menu');
+  tudoOk &= ok(porIdDe(fila, 'btn-enviar').disabled === false,
+    'com pergunta aberta (menu) o Enviar DESTRAVA — o gesto cuida do Escape no servidor');
+  fila.marcarPergunta(fila.painelAtual(), true, 'pre-sessao');
   tudoOk &= ok(porIdDe(fila, 'btn-enviar').disabled === true,
-    'com pergunta aberta o Enviar CONTINUA travado (texto viraria tecla de menu)');
+    'e continua TRAVADO no pre-sessao — ali o Esc fecha o agente, não cancela pergunta');
   fila.marcarPergunta(fila.painelAtual(), false);
   tudoOk &= ok(porIdDe(fila, 'btn-enviar').disabled === false,
     'e destrava quando a pergunta fecha, mesmo com o turno ainda rodando');
@@ -1215,18 +1573,22 @@ async function parteA() {
 
   // ── Lida × te esperando ──────────────────────────────────────────────────────
   // A marca é por `sessaoId`, não pela chave da aba: `aba-7` muda ao fechar e reabrir a
-  // aba, a conversa não.
-  const guardaLidas = memoria();
+  // aba, a conversa não. Desde 14/09 (D53) o carimbo vem PRONTO em `aba.lidoEm`, dentro do
+  // GET /api/abas — não há mais mapa nem chave de localStorage para ler; o que dá para
+  // provar aqui é o CORPO do POST que `marcarLido` manda.
   let mtime = 1000;
   const umaAba = (extra = {}) => ({
     chave: 'aba-7', titulo: 'cockpit', cwd: '/home/y/projetos/cockpit-agentes',
     temClaude: true, rodando: false, sessaoId: 'sess-abc', atualizadoEm: mtime, ...extra,
   });
+  const listaDe = (cli) => porIdDe(cli, 'abas').querySelector('#lista-conversas');
+  const chavesDe = (cli) => (listaDe(cli)?.querySelectorAll('.conversa') || []).map((b) => b.dataset.chave);
+  const postsLeitura = [];
   const leitura = carregarCliente({
-    guardado: guardaLidas,
-    aoBuscar: (rota) => (rota.startsWith('api/abas')
-      ? { abas: [umaAba()] }
-      : { painel: true, jobs: [] }),
+    aoBuscar: (rota, opcoes) => {
+      if (rota.startsWith('api/lidas')) { postsLeitura.push(JSON.parse(opcoes.body)); return {}; }
+      return rota.startsWith('api/abas') ? { abas: [umaAba()] } : { painel: true, jobs: [] };
+    },
   });
   await leitura.carregarAbas();
   const listaLida = porIdDe(leitura, 'abas');
@@ -1237,14 +1599,16 @@ async function parteA() {
   const horaNaLinha = listaLida.querySelectorAll('.conversa-hora');
   tudoOk &= ok(horaNaLinha.length === 1 && /^(\d{2}:\d{2}|\d{2}\/\d{2})$/.test(horaNaLinha[0].textContent),
     `a linha da lista mostra quando a conversa mexeu (${horaNaLinha[0] && horaNaLinha[0].textContent})`);
-  // Prioridade: o estado vem antes da hora no rodapé — é o que ele olha primeiro.
-  const rodapeLinha = listaLida.querySelector('.conversa-rodape');
-  const ordemRodape = rodapeLinha.children.map((f) => String(f.className));
-  tudoOk &= ok(ordemRodape.indexOf('conversa-estado') < ordemRodape.indexOf('conversa-hora'),
-    'e ela vem DEPOIS do estado, que tem prioridade na linha');
+  // D63: a hora mora na 1ª linha, como ÚLTIMO item do título — a 2ª linha só nasce com aviso.
+  const tituloLinha = listaLida.querySelector('.conversa-titulo');
+  const filhosTitulo = tituloLinha.children.map((f) => String(f.className));
+  tudoOk &= ok(filhosTitulo[filhosTitulo.length - 1] === 'conversa-hora',
+    `LC-4: a hora é o último item da 1ª linha (${filhosTitulo.join(' > ')})`);
+  tudoOk &= ok(listaLida.querySelector('.conversa-rodape')?.querySelector('.conversa-estado')?.textContent === 'te esperando',
+    'LC-5: a ◆ tem 2ª linha "te esperando"');
   leitura.marcarLido('aba-7', 5000);
-  tudoOk &= ok(JSON.parse(guardaLidas.getItem('cockpit-lidas'))['sess-abc'] === 5000,
-    'marcarLido grava o instante por sessaoId, não pela chave da aba');
+  tudoOk &= ok(postsLeitura.length === 1 && postsLeitura[0].sessaoId === 'sess-abc' && postsLeitura[0].carimbo === 5000,
+    'marcarLido posta o instante por sessaoId, não pela chave da aba');
   tudoOk &= ok(textoDe(listaLida).includes('✓') && !textoDe(listaLida).includes('◆'),
     'e a aba passa a aparecer como lida');
   mtime = 9000;
@@ -1253,7 +1617,23 @@ async function parteA() {
   tudoOk &= ok(listaLida.querySelectorAll('.conversa-linha').some((f) => f.dataset && f.dataset.esperando === '1'),
     'e a linha ganha a marca que o CSS engrossa');
   leitura.marcarLido('aba-nao-existe', 1);
-  tudoOk &= ok(true, 'marcar lido numa aba que sumiu não explode');
+  tudoOk &= ok(postsLeitura.length === 1, 'marcar lido numa aba que sumiu não posta nada nem explode');
+
+  // P5: /api/lidas fora do ar DEGRADA, não quebra. A marca é otimista (aba.lidoEm muda ANTES
+  // do POST sair) e o `.catch()` de `marcarLido` engole a recusa — a linha fica ✓ mesmo com
+  // o servidor respondendo 503.
+  const p5 = carregarCliente({
+    aoBuscar: (rota) => {
+      if (rota.startsWith('api/lidas')) return { __status: 503 };
+      return rota.startsWith('api/abas') ? { abas: [umaAba({ atualizadoEm: 3000 })] } : { painel: true, jobs: [] };
+    },
+  });
+  await p5.carregarAbas();
+  p5.marcarLido('aba-7', 3000);
+  await new Promise((r) => setImmediate(r));   // deixa a promessa do POST (rejeitada) assentar no .catch
+  const listaP5 = porIdDe(p5, 'abas');
+  tudoOk &= ok(textoDe(listaP5).includes('✓') && !textoDe(listaP5).includes('◆'),
+    'P5: servidor de /api/lidas fora do ar (503) não impede a marca otimista — a linha fica ✓ mesmo assim');
 
   // ── A hora é da última MENSAGEM, não do mtime do arquivo (23/08) ─────────────
   //
@@ -1324,17 +1704,27 @@ async function parteA() {
   // aba voltava a te esperar na batida seguinte; adiantado, nunca mais te esperava. Quem usa
   // pode estar viajando, então "os dois relógios batem" não é suposição que se possa fazer.
   console.log('\n  · lido: relógio do servidor contra relógio do servidor');
-  const guardaCarimbo = memoria();
+  // Mock COM memória: sem lembrar o último carimbo POSTADO por sessaoId, a marca otimista
+  // morreria no PRÓXIMO carregarAbas() (§4.1 da spec — a lista troca `abasDoTerminal`
+  // INTEIRA a cada 5s), e o assert de baixo ("não reacende sozinho") ficaria vermelho sem
+  // bug nenhum no produto. Não apagar: ele guarda uma regressão real de 23/08.
+  const lidosNoServidor = Object.create(null);
   const carimbo = carregarCliente({
-    guardado: guardaCarimbo,
-    aoBuscar: (rota) => (rota.startsWith('api/abas')
-      ? { abas: [umaAba({ atualizadoEm: 9000 })] }
-      : { painel: true, jobs: [] }),
+    aoBuscar: (rota, opcoes) => {
+      if (rota.startsWith('api/lidas')) {
+        const posto = JSON.parse(opcoes.body);
+        lidosNoServidor[posto.sessaoId] = posto.carimbo;
+        return { sessaoId: posto.sessaoId, lidoEm: posto.carimbo };
+      }
+      return rota.startsWith('api/abas')
+        ? { abas: [umaAba({ atualizadoEm: 9000, lidoEm: lidosNoServidor['sess-abc'] ?? null })] }
+        : { painel: true, jobs: [] };
+    },
   });
   await carimbo.carregarAbas();
   carimbo.marcarLido('aba-7');
-  tudoOk &= ok(JSON.parse(guardaCarimbo.getItem('cockpit-lidas'))['sess-abc'] === 9000,
-    'marcarLido grava o `atualizadoEm` que o servidor mandou, não a hora do aparelho');
+  tudoOk &= ok(lidosNoServidor['sess-abc'] === 9000,
+    'marcarLido posta o `atualizadoEm` que o servidor mandou, não a hora do aparelho');
   await carimbo.carregarAbas();
   const listaCarimbo = porIdDe(carimbo, 'abas');
   tudoOk &= ok(textoDe(listaCarimbo).includes('✓') && !textoDe(listaCarimbo).includes('◆'),
@@ -1342,38 +1732,38 @@ async function parteA() {
 
   // Aba sem `atualizadoEm`: não há o que comparar. Gravar 0 carimbaria "lida" numa conversa
   // que ninguém abriu, e o ◆ sumiria de uma aba que talvez estivesse esperando de verdade.
-  const guardaSemHora = memoria();
+  const postsSemHora = [];
   const semHora = carregarCliente({
-    guardado: guardaSemHora,
-    aoBuscar: (rota) => (rota.startsWith('api/abas')
-      ? { abas: [umaAba({ atualizadoEm: null })] }
-      : { painel: true, jobs: [] }),
+    aoBuscar: (rota, opcoes) => {
+      if (rota.startsWith('api/lidas')) { postsSemHora.push(JSON.parse(opcoes.body)); return {}; }
+      return rota.startsWith('api/abas') ? { abas: [umaAba({ atualizadoEm: null })] } : { painel: true, jobs: [] };
+    },
   });
   await semHora.carregarAbas();
   semHora.marcarLido('aba-7');
-  tudoOk &= ok(guardaSemHora.getItem('cockpit-lidas') === null,
-    'sem `atualizadoEm` não há carimbo: a marca fica como estava, em vez de virar 0');
+  tudoOk &= ok(postsSemHora.length === 0,
+    'sem `atualizadoEm` não há carimbo: nenhum POST sai, em vez de mandar 0');
 
   // `turno_fim` marcava com `Date.now()`. O valor certo é o `atualizadoEm` MAIS RECENTE que
   // a lista conhece — e ele só existe depois de a lista voltar, porque a resposta que
   // acabou de chegar é justamente o que mudou o número no servidor.
-  const guardaFim = memoria();
   let atualizadoAgora = 1000;
+  const postsFim = [];
   const fimCarimbo = carregarCliente({
-    guardado: guardaFim,
-    aoBuscar: (rota) => (rota.startsWith('api/abas')
-      ? { abas: [umaAba({ atualizadoEm: atualizadoAgora })] }
-      : { painel: true, jobs: [] }),
+    aoBuscar: (rota, opcoes) => {
+      if (rota.startsWith('api/lidas')) { postsFim.push(JSON.parse(opcoes.body)); return {}; }
+      return rota.startsWith('api/abas') ? { abas: [umaAba({ atualizadoEm: atualizadoAgora })] } : { painel: true, jobs: [] };
+    },
   });
   await fimCarimbo.carregarAbas();
   await fimCarimbo.abrirAba('aba-7');
-  tudoOk &= ok(JSON.parse(guardaFim.getItem('cockpit-lidas'))['sess-abc'] === 1000,
-    'abrir a aba carimba com o `atualizadoEm` que ela tinha na hora da abertura');
+  tudoOk &= ok(postsFim.length === 1 && postsFim[0].carimbo === 1000,
+    'abrir a aba posta o `atualizadoEm` que ela tinha na hora da abertura');
   atualizadoAgora = 7000;                       // o turno respondeu: o servidor já sabe da fala nova
   fimCarimbo.aplicar({ tipo: 'turno_fim', aba: 'aba-7' });
   await new Promise((r) => setImmediate(r));    // deixa o `carregarAbas().then(...)` andar
   await new Promise((r) => setImmediate(r));
-  tudoOk &= ok(JSON.parse(guardaFim.getItem('cockpit-lidas'))['sess-abc'] === 7000,
+  tudoOk &= ok(postsFim.length === 2 && postsFim[1].carimbo === 7000,
     'e `turno_fim` recarrega a lista ANTES de carimbar, senão a aba que você está lendo reacende');
 
   // ── Botão de recarregar (23/08) ──────────────────────────────────────────────
@@ -1449,6 +1839,10 @@ async function parteA() {
     'aba sem claude continua com o ○ de sempre');
   tudoOk &= ok(listaSem.querySelectorAll('.conversa-hora').length === 0,
     'e sem arquivo de conversa (`atualizadoEm` null) a linha não ganha hora nenhuma');
+  tudoOk &= ok(listaSem.querySelector('.conversa-rodape') === null,
+    'LC-4: aba sem agente (○) não ganha 2ª linha — "agente fechado" saiu, o sinal já diz');
+  tudoOk &= ok(!/agente fechado|no terminal/.test(textoDe(listaSem)),
+    'LC-5: e os textos "agente fechado"/"no terminal" não existem mais na lista');
 
   // ── UI-1 a UI-5: a aba de CODEX na lista ────────────────────────────────────
   //
@@ -1500,49 +1894,31 @@ async function parteA() {
     tudoOk &= ok(textoDe(porIdDe(duasNaMesmaJanela, 'abas')).includes('codex'),
       'UI-4: o chip é TEXTO na tela, não tooltip — a #31 diz que title não existe no dedo');
 
-    const preferenciasProjetos = memoria();
+    // LC-1/2/3 — a lista CHATA (D69): sem grupo e sem bloco de pendentes; a ordem é `terminouEm`
+    // (a hora em que o último turno terminou), nula no fim na ordem do tmux.
     const agrupadas = carregarCliente({
-      guardado: preferenciasProjetos,
+      guardado: memoria(),
       aoBuscar: rota => String(rota).startsWith('api/abas') ? { abas: [
-        umaAba({ chave: 'a1', cwd: '/home/y/a/projeto', agente: 'claude' }),
-        umaAba({ chave: 'b1', cwd: '/home/y/b/projeto', agente: 'codex' }),
-        umaAba({ chave: 'a2', cwd: '/home/y/a/projeto', agente: 'codex' }),
+        umaAba({ chave: 'a1', cwd: '/home/y/a/projeto', agente: 'claude', atualizadoEm: 50, lidoEm: 50, terminouEm: 50 }),
+        umaAba({ chave: 'b1', cwd: '/home/y/b/projeto', agente: 'codex', atualizadoEm: 10, lidoEm: null, terminouEm: 10 }),   // ◆ velha
+        umaAba({ chave: 'a2', cwd: '/home/y/a/projeto', agente: 'codex', atualizadoEm: 70, lidoEm: 70, terminouEm: 70 }),
+        umaAba({ chave: 'q1', cwd: '/home/y/q', esperando: true, atualizadoEm: 20, lidoEm: 20, terminouEm: 20 }),           // ? pergunta
+        umaAba({ chave: 'p0', cwd: '/home/y/p', preSessao: true, sessaoId: null, atualizadoEm: null, terminouEm: null }),      // ? nula
+        umaAba({ chave: 'n0', cwd: '/home/y/n', temClaude: false, sessaoId: null, atualizadoEm: null, terminouEm: null }),      // ○ nula
+        umaAba({ chave: 'c1', cwd: '/home/y/c', agente: 'claude', atualizadoEm: 60, lidoEm: 60, terminouEm: 60 }),
       ] } : { painel: true, jobs: [] },
     });
     await agrupadas.carregarAbas();
-    const grupos = porIdDe(agrupadas, 'abas').querySelectorAll('.conversa-grupo[data-cwd]');
-    tudoOk &= ok(grupos.length === 2 && grupos[0].querySelectorAll('.conversa').length === 2
-      && grupos[1].querySelectorAll('.conversa').length === 1,
-      'A/B/A junta as conversas de A e distingue projetos com o mesmo basename');
-    grupos[0].querySelector('.projeto-alternar').onclick();
-    tudoOk &= ok(grupos[0].querySelector('.projeto-conteudo').hidden,
-      'recolher projeto esconde suas conversas sem removê-las');
-    await agrupadas.carregarAbas();
-    let projetos = porIdDe(agrupadas, 'abas').querySelectorAll('.conversa-grupo[data-cwd]');
-    tudoOk &= ok(projetos[0].querySelector('.projeto-conteudo').hidden,
-      'a atualização periódica não reabre o projeto recolhido');
-    projetos[1].querySelectorAll('.projeto-mover')[0].onclick();
-    projetos = porIdDe(agrupadas, 'abas').querySelectorAll('.conversa-grupo[data-cwd]');
-    tudoOk &= ok(projetos[0].dataset.cwd === '/home/y/b/projeto'
-      && projetos[1].querySelector('.projeto-conteudo').hidden,
-      'subir troca a ordem e mantém o recolhimento vinculado ao projeto correto');
-    tudoOk &= ok(projetos[0].querySelectorAll('.projeto-mover')[0].disabled
-      && projetos[1].querySelectorAll('.projeto-mover')[1].disabled,
-      'primeiro não sobe e último não desce');
-    const reaberto = carregarCliente({ guardado: preferenciasProjetos,
-      aoBuscar: rota => String(rota).startsWith('api/abas') ? { abas: [
-        umaAba({ chave: 'a1', cwd: '/home/y/a/projeto' }),
-        umaAba({ chave: 'b1', cwd: '/home/y/b/projeto' }),
-        umaAba({ chave: 'c1', cwd: '/home/y/c/novo' }),
-      ] } : { painel: true, jobs: [] } });
-    await reaberto.carregarAbas();
-    projetos = porIdDe(reaberto, 'abas').querySelectorAll('.conversa-grupo[data-cwd]');
-    tudoOk &= ok(projetos.map(g => g.dataset.cwd).join('|') === '/home/y/b/projeto|/home/y/a/projeto|/home/y/c/novo'
-      && projetos[1].querySelector('.projeto-conteudo').hidden,
-      'reabrir o app restaura ordem e recolhimento; projeto novo entra no fim');
-    projetos[1].querySelector('.projeto-alternar').onclick();
-    tudoOk &= ok(!projetos[1].querySelector('.projeto-conteudo').hidden,
-      'o projeto pode ser expandido novamente');
+    tudoOk &= ok(chavesDe(agrupadas).join(',') === 'a2,c1,a1,q1,b1,p0,n0',
+      `LC-1: só terminouEm, sem bloco de pendentes (a2 70, c1 60, a1 50, q1 20, b1 10), nulas no fim na ordem do tmux (${chavesDe(agrupadas).join(',')})`);
+    const abasEl = porIdDe(agrupadas, 'abas');
+    tudoOk &= ok(abasEl.querySelectorAll('.conversa-grupo').length === 0 && abasEl.querySelectorAll('[data-cwd]').length === 0
+      && abasEl.querySelectorAll('.projeto-alternar').length === 0 && abasEl.querySelectorAll('.projeto-mover').length === 0,
+      'LC-2: nenhum .conversa-grupo, [data-cwd], .projeto-alternar ou .projeto-mover na vista de conversas');
+    tudoOk &= ok(!/projeto/.test(textoDe(abasEl)),
+      'LC-2: o nome do projeto (basename do cwd) não aparece em linha nenhuma');
+    tudoOk &= ok(porIdDe(agrupadas, 'titulo-lista').textContent === 'conversas · 7',
+      `LC-3: o título conta as abas: "conversas · 7" (${porIdDe(agrupadas, 'titulo-lista').textContent})`);
     await agrupadas.abrirAba('a2');
     tudoOk &= ok(porIdDe(agrupadas, 'chat-agente').textContent === 'codex'
       && !porIdDe(agrupadas, 'chat-agente').hidden, 'a conversa aberta mantém a identidade do agente no cabeçalho');
@@ -1550,39 +1926,132 @@ async function parteA() {
     tudoOk &= ok(porIdDe(agrupadas, 'chat-agente').textContent === 'claude',
       'trocar de conversa troca também o chip do cabeçalho');
 
-    const memoriaAvisos = memoria();
-    memoriaAvisos.setItem('cockpit-projetos', JSON.stringify({ fechados: ['/tmp/avisos'] }));
+    // LC-5/6 — a 2ª linha só nasce com aviso, e ler uma ◆ tira o aviso SEM mover a linha (D69).
     let perguntaPendente = true;
-    let agenteTrabalhando = true;
-    const avisosProjeto = carregarCliente({ guardado: memoriaAvisos,
-      aoBuscar: rota => String(rota).startsWith('api/abas') ? { abas: [
-        umaAba({ chave: 'aviso-1', cwd: '/tmp/avisos', sessaoId: 'nova', atualizadoEm: 5000, rodando: false }),
-        umaAba({ chave: 'aviso-2', cwd: '/tmp/avisos', sessaoId: 'pergunta', atualizadoEm: 5000, rodando: false, esperando: perguntaPendente }),
-        umaAba({ chave: 'aviso-3', cwd: '/tmp/avisos', sessaoId: 'ocupada', atualizadoEm: 5000, rodando: agenteTrabalhando }),
-      ] } : { painel: true, jobs: [] } });
-    await avisosProjeto.carregarAbas();
-    const avisoDoProjeto = () => porIdDe(avisosProjeto, 'abas').querySelector('.projeto-aviso');
-    const trabalhoDoProjeto = () => porIdDe(avisosProjeto, 'abas').querySelector('.projeto-trabalhando');
-    tudoOk &= ok(!trabalhoDoProjeto().hidden && trabalhoDoProjeto().textContent === '1 trabalhando',
-      'projeto recolhido mostra agentes trabalhando junto das pendências');
-    tudoOk &= ok(!avisoDoProjeto().hidden && avisoDoProjeto().textContent === '2 te esperando',
-      'projeto recolhido conta conversas pendentes, sem duplicar pergunta nem contar agente trabalhando');
-    porIdDe(avisosProjeto, 'abas').querySelector('.projeto-alternar').onclick();
-    tudoOk &= ok(avisoDoProjeto().hidden, 'expandir devolve os indicadores às conversas individuais');
-    tudoOk &= ok(trabalhoDoProjeto().hidden, 'expandir também devolve o estado trabalhando às conversas');
-    porIdDe(avisosProjeto, 'abas').querySelector('.projeto-alternar').onclick();
-    avisosProjeto.marcarLido('aviso-1', 5000);
-    avisosProjeto.marcarLido('aviso-2', 5000);
-    tudoOk &= ok(!avisoDoProjeto().hidden && avisoDoProjeto().textContent === '1 te esperando',
-      'ler as respostas limpa seus avisos, mas uma pergunta ainda aberta permanece pendente');
+    const lidosAvisos = Object.create(null);
+    const avisos = carregarCliente({ guardado: memoria(),
+      aoBuscar: (rota, opcoes) => {
+        if (String(rota).startsWith('api/lidas')) {
+          const posto = JSON.parse(opcoes.body);
+          lidosAvisos[posto.sessaoId] = posto.carimbo;
+          return { sessaoId: posto.sessaoId, lidoEm: posto.carimbo };
+        }
+        return String(rota).startsWith('api/abas') ? { abas: [
+          umaAba({ chave: 'av-lida', sessaoId: 'lida', atualizadoEm: 9000, lidoEm: 9000, terminouEm: 9000 }),
+          umaAba({ chave: 'av-nova', sessaoId: 'nova', atualizadoEm: 5000, lidoEm: lidosAvisos.nova ?? null, terminouEm: 5000 }),
+          umaAba({ chave: 'av-pergunta', sessaoId: 'pergunta', atualizadoEm: 4000, esperando: perguntaPendente, lidoEm: 4000, terminouEm: 4000 }),
+          umaAba({ chave: 'av-ocupada', sessaoId: 'ocupada', atualizadoEm: 8000, rodando: true, lidoEm: 8000, terminouEm: 7000 }),   // o fim do turno ANTERIOR
+          umaAba({ chave: 'av-nascendo', temClaude: false, sessaoId: null, atualizadoEm: null, nascendo: true, terminouEm: null }),
+          umaAba({ chave: 'av-falhou', temClaude: false, sessaoId: null, atualizadoEm: null, falhou: true, terminouEm: null }),
+        ] } : { painel: true, jobs: [] };
+      } });
+    await avisos.carregarAbas();
+    const avisoDe = (chave) => {
+      const botao = (listaDe(avisos)?.querySelectorAll('.conversa') || []).find((b) => b.dataset.chave === chave);
+      const rodape = botao && botao.querySelector('.conversa-rodape');
+      // Três respostas DIFERENTES: `undefined` = a linha nem existe (lista velha, sem #lista-conversas —
+      // é o que faz "✓ não tem 2ª linha" ficar VERMELHO na Fase 1 em vez de passar por ausência);
+      // `null` = linha existe e não tem rodapé; string = o aviso.
+      if (!botao) return undefined;
+      return rodape ? (rodape.querySelector('.conversa-estado')?.textContent ?? '') : null;
+    };
+    tudoOk &= ok(avisoDe('av-nova') === 'te esperando', `LC-5: ◆ → "te esperando" (${avisoDe('av-nova')})`);
+    tudoOk &= ok(avisoDe('av-pergunta') === 'esperando você escolher', `LC-5: ? → "esperando você escolher" (${avisoDe('av-pergunta')})`);
+    tudoOk &= ok(avisoDe('av-ocupada') === 'trabalhando', `LC-5: ● → "trabalhando" (${avisoDe('av-ocupada')})`);
+    tudoOk &= ok(avisoDe('av-nascendo') === 'abrindo o agente…', `LC-5: ⋯ → "abrindo o agente…" (${avisoDe('av-nascendo')})`);
+    tudoOk &= ok(avisoDe('av-falhou') === 'o agente não subiu', `LC-5: falhou → "o agente não subiu" (${avisoDe('av-falhou')})`);
+    tudoOk &= ok(avisoDe('av-lida') === null, 'LC-5: ✓ lida NÃO tem 2ª linha');
+    tudoOk &= ok(chavesDe(avisos).join(',') === 'av-lida,av-ocupada,av-nova,av-pergunta,av-nascendo,av-falhou',
+      `LC-1: por terminouEm (lida 9000, ocupada 7000, nova 5000, pergunta 4000), nulas no fim (${chavesDe(avisos).join(',')})`);
+    avisos.marcarLido('av-nova', 5000);
+    tudoOk &= ok(avisoDe('av-nova') === null && chavesDe(avisos).indexOf('av-nova') === 2,
+      `LC-6: ler a ◆ tira a 2ª linha e ela FICA no índice 2 (índice ${chavesDe(avisos).indexOf('av-nova')})`);
     perguntaPendente = false;
-    await avisosProjeto.carregarAbas();
-    tudoOk &= ok(avisoDoProjeto().hidden, 'resolvida a última pendência, o projeto recolhido perde o aviso');
-    tudoOk &= ok(!trabalhoDoProjeto().hidden, 'resolver pendências não apaga o agente ainda trabalhando');
-    agenteTrabalhando = false;
-    await avisosProjeto.carregarAbas();
-    tudoOk &= ok(trabalhoDoProjeto().hidden && !avisoDoProjeto().hidden,
-      'ao terminar, trabalhando desaparece e a resposta ainda não lida vira pendência');
+    await avisos.carregarAbas();
+    tudoOk &= ok(avisoDe('av-pergunta') === null
+      && chavesDe(avisos).join(',') === 'av-lida,av-ocupada,av-nova,av-pergunta,av-nascendo,av-falhou',
+      'LC-6: resolvida a pergunta, a linha perde o aviso e a ordem inteira continua a mesma');
+
+    // LC-8 — D69: só o fim do turno move. Servidor de mentira devolvendo `terminouEm` como o de
+    // verdade devolveria. `a` = atualizadoEm, `l` = lidoEm, `t` = terminouEm, `r` = rodando. A ordem
+    // do array é a do tmux.
+    const estado8 = {
+      r1: { a: 300, l: 300, t: 300, r: false },
+      w: { a: 250, l: 200, t: 200, r: true },     // ● trabalhando; o fim do turno anterior é 200
+      r2: { a: 100, l: 100, t: 100, r: false },
+      q: { a: 50, l: null, t: 50, r: false },     // ◆ antiga
+      p: { a: 400, l: 400, t: 40, r: false, esperando: true },   // ? pergunta
+      z: { a: 60, l: 60, t: null, r: true },      // ● nunca terminou um turno — fica no fim
+    };
+    const posts8 = [];
+    const lc8 = carregarCliente({ guardado: memoria(), aoBuscar: async (rota, opcoes) => {
+      if (opcoes && opcoes.method && opcoes.method !== 'GET') posts8.push(String(rota).split('?')[0]);
+      if (String(rota).startsWith('api/lidas')) {
+        const c = JSON.parse(opcoes.body); estado8[c.sessaoId].l = c.carimbo;
+        return { sessaoId: c.sessaoId, lidoEm: c.carimbo };
+      }
+      if (String(rota).startsWith('api/abas/') && String(rota).endsWith('/turnos')) return { enviado: true };
+      if (String(rota).startsWith('api/abas')) {
+        return { abas: Object.entries(estado8).map(([id, e]) => umaAba({
+          chave: id, sessaoId: id, titulo: id, temClaude: true, rodando: e.r, atualizadoEm: e.a, lidoEm: e.l,
+          terminouEm: e.t, esperando: Boolean(e.esperando) })) };
+      }
+      return { painel: true, jobs: [] };
+    } });
+    const ordem8 = () => chavesDe(lc8).join(',');
+    const tique8 = () => new Promise((r) => setTimeout(r, 0));
+    const clicar8 = (chave) => (listaDe(lc8).querySelectorAll('.conversa').find((b) => b.dataset.chave === chave)).onclick();
+    const segunda8 = (chave) => {
+      const botao = listaDe(lc8).querySelectorAll('.conversa').find((b) => b.dataset.chave === chave);
+      const rodape = botao && botao.querySelector('.conversa-rodape');
+      return rodape ? (rodape.querySelector('.conversa-estado')?.textContent ?? '') : null;
+    };
+    // 1. ordem inicial: a ◆ q (50) abaixo da ✓ r2 (100); a ? p (40) abaixo de q
+    await lc8.carregarAbas();
+    tudoOk &= ok(ordem8() === 'r1,w,r2,q,p,z', `LC-8 passo 1: ordem inicial r1,w,r2,q,p,z (${ordem8()})`);
+    // 2. (a) o agente escreveu: só o atualizadoEm da ● muda — a linha NÃO se mexe; marcarLido na ● também não
+    estado8.w.a = 900;
+    await lc8.carregarAbas();
+    tudoOk &= ok(ordem8() === 'r1,w,r2,q,p,z', `LC-8 passo 2a: a ● escreveu (atualizadoEm 900) e ficou no lugar (${ordem8()})`);
+    lc8.marcarLido('w');
+    await lc8.carregarAbas();
+    tudoOk &= ok(ordem8() === 'r1,w,r2,q,p,z', `LC-8 passo 2b: marcarLido na ● trabalhando não a move (${ordem8()})`);
+    // 3. (b) o turno acaba: terminouEm novo → topo, e vira ◆ com a 2ª linha
+    estado8.w.r = false; estado8.w.a = 950; estado8.w.t = 950;
+    await lc8.carregarAbas();
+    tudoOk &= ok(ordem8() === 'w,r1,r2,q,p,z', `LC-8 passo 3: o turno de w acabou e ela foi pro topo (${ordem8()})`);
+    tudoOk &= ok(segunda8('w') === 'te esperando', `LC-8 passo 3: w virou ◆ com a 2ª linha "te esperando" (${segunda8('w')})`);
+    // 4. (c) abrir uma ◆ não muda a posição de ninguém, e o único POST é api/lidas
+    const n = posts8.length;
+    clicar8('q');
+    await tique8();
+    tudoOk &= ok(ordem8() === 'w,r1,r2,q,p,z', `LC-8 passo 4: abrir a ◆ q não muda a ordem (${ordem8()})`);
+    tudoOk &= ok(segunda8('q') === null, `LC-8 passo 4: q perdeu a 2ª linha (${segunda8('q')})`);
+    tudoOk &= ok(JSON.stringify(posts8.slice(n)) === JSON.stringify(['api/lidas']),
+      `LC-8 passo 4: o único POST do clique é api/lidas (${JSON.stringify(posts8.slice(n))})`);
+    const m0 = posts8.length;
+    clicar8('r2');
+    await tique8();
+    tudoOk &= ok(ordem8() === 'w,r1,r2,q,p,z' && posts8.length === m0,
+      `LC-8 passo 4: abrir r2 (já lida) não muda a ordem e não posta nada (${ordem8()}, +${posts8.length - m0} POST)`);
+    clicar8('w');
+    await tique8();
+    tudoOk &= ok(chavesDe(lc8)[0] === 'w', `LC-8 passo 4: abrir w continua com ela em 1º (${ordem8()})`);
+    // 5. (d) enviar() não muda a posição e não posta nada além do /turnos; a ● congelada fica no fim do turno anterior
+    await lc8.abrirAba('r2');
+    await tique8();
+    const m = posts8.length;
+    porIdDe(lc8, 'entrada').value = 'bora';
+    await lc8.enviar(lc8.painelAtual());
+    await tique8();
+    tudoOk &= ok(ordem8() === 'w,r1,r2,q,p,z', `LC-8 passo 5: enviar() em r2 não muda a ordem (${ordem8()})`);
+    tudoOk &= ok(JSON.stringify(posts8.slice(m)) === JSON.stringify(['api/abas/r2/turnos']),
+      `LC-8 passo 5: enviar() só posta o /turnos de r2 (${JSON.stringify(posts8.slice(m))})`);
+    estado8.r2.r = true; estado8.r2.a = 1000;
+    await lc8.carregarAbas();
+    tudoOk &= ok(ordem8() === 'w,r1,r2,q,p,z', `LC-8 passo 5: r2 virou ● e continua congelada em 100 (${ordem8()})`);
+    // 6. nenhuma rota de "mexida" existe mais
+    tudoOk &= ok(posts8.every((rota) => !/mexid/.test(rota)), 'LC-8 passo 6: nenhum POST para rota com "mexid" no nome');
 
     // UI-5 — a janela sem agente nenhum não ganha chip. "null" escrito na tela seria pior
     // que chip nenhum.
@@ -1744,13 +2213,22 @@ async function parteA() {
   telaPane.clientHeight = 300;
   telaPane.scrollTop = 100;
   telaPane.scrollLeft = 420;
-  tudoOk &= ok(porIdDe(comPergunta, 'btn-enviar').disabled === true,
-    'o Enviar trava: texto com menu aberto vira tecla do menu');
+  // Card escrever-texto-na-pergunta-aberta: com `menu` o Enviar DESTRAVA — o servidor faz
+  // o gesto (Escape → reconfere → cola → Enter) em vez do cliente recusar de cara.
+  tudoOk &= ok(porIdDe(comPergunta, 'btn-enviar').disabled === false,
+    'o Enviar destrava com menu aberto — o gesto cuida do Escape no servidor');
   // P7: quem escreve o rótulo agora é o `#parar-rotulo` (o botão ganhou um SVG — escrever
   // direto no `#btn-parar` apagaria o ícone junto).
   tudoOk &= ok(porIdDe(comPergunta, 'btn-parar').hidden === false
-    && porIdDe(comPergunta, 'parar-rotulo').textContent === 'Cancelar pergunta',
-    'e o Parar continua de pé, rotulado como cancelar a pergunta');
+    // 'Parar' genérico, não 'Cancelar pergunta' (passo 6b): no prompt de update do Codex o
+    // Esc não fecha nada, e o rótulo não pode prometer o que ele às vezes não faz.
+    && porIdDe(comPergunta, 'parar-rotulo').textContent === 'Parar',
+    'e o Parar continua de pé, sem prometer que o Esc cancela');
+  // O botão Esc dos controles (que aparece JUNTO do menu) é o quarto recado que prometia o
+  // Esc (achado 4 do Codex, rodada 21) — com motivo 'menu' o título dele não pode conter
+  // "Cancelar"/"Cancel" em nenhum dos dois idiomas.
+  tudoOk &= ok(!/Cancelar|Cancel/i.test(porIdDe(comPergunta, 'tecla-esc').title),
+    `o botão Esc dos controles não promete "cancelar" (title="${porIdDe(comPergunta, 'tecla-esc').title}")`);
 
   // ── Responder o menu pelas TECLAS, do celular ────────────────────────────────
   // Seta e Enter funcionam em qualquer menu sem o cockpit parsear a tela (a alternativa —
@@ -1783,13 +2261,15 @@ async function parteA() {
   comPergunta.aplicar({ tipo: 'esperando', valor: true });
   await new Promise((pronto) => { setImmediate(pronto); });
 
-  // O envio nem sai do navegador: o servidor recusa igual (409), isto é só o recado rápido.
+  // Card escrever-texto-na-pergunta-aberta: com `menu` a guarda do cliente SAIU — o envio
+  // CHEGA ao POST, e é o servidor (o gesto em `digitarNaAba`) quem decide.
   porIdDe(comPergunta, 'entrada').value = 'pode seguir';
   const antesDoEnvio = chamadas.length;
   await comPergunta.enviar(comPergunta.painelAtual());
-  tudoOk &= ok(chamadas.length === antesDoEnvio, 'com pergunta aberta, o texto não vira send-keys');
-  tudoOk &= ok(/pergunta aberta/.test(textoDe(porIdDe(comPergunta, 'fita'))),
-    'e a tela explica como destravar (Esc)');
+  tudoOk &= ok(chamadas.length === antesDoEnvio + 1 && /\/turnos$/.test(chamadas.at(-1)),
+    `com pergunta aberta (menu) o envio CHEGA ao POST de /turnos (achei ${JSON.stringify(chamadas.slice(antesDoEnvio))})`);
+  tudoOk &= ok(!/pergunta aberta/.test(textoDe(porIdDe(comPergunta, 'fita'))),
+    'e nenhuma bolha de recusa nasce no cliente — a guarda saiu daqui');
 
   comPergunta.aplicar({ tipo: 'esperando', valor: false });
   tudoOk &= ok(porIdDe(comPergunta, 'pergunta').hidden === true
@@ -1798,6 +2278,8 @@ async function parteA() {
   tudoOk &= ok(porIdDe(comPergunta, 'btn-enviar').disabled === false
     && porIdDe(comPergunta, 'parar-rotulo').textContent === 'Parar',
     'e a caixa volta a aceitar texto');
+  tudoOk &= ok(porIdDe(comPergunta, 'aviso-escrita').hidden === true,
+    'e o aviso "Escrever aqui manda Esc" some junto — pergunta fechada');
 
   // ── O mesmo bloco, com o motivo `pre-sessao` (09/09) ─────────────────────────
   //
@@ -1812,6 +2294,8 @@ async function parteA() {
     'no pre-sessao o bloco da pane abre e o Enviar trava igual');
   tudoOk &= ok(porIdDe(comPergunta, 'parar-rotulo').textContent === 'Fechar o agente',
     'e o botão diz o que ele REALMENTE faz ali — nunca "Cancelar pergunta"');
+  tudoOk &= ok(porIdDe(comPergunta, 'aviso-escrita').hidden === true,
+    'e SEM a linha "Escrever aqui manda Esc" — no pre-sessao o Esc fecha o agente, o Enviar continua travado');
 
   porIdDe(comPergunta, 'entrada').value = 'oi';
   const antesDoPre = chamadas.length;
@@ -1826,11 +2310,435 @@ async function parteA() {
   // comparar o motivo, o rótulo ficaria preso em "Fechar o agente" numa pergunta de permissão.
   comPergunta.aplicar({ tipo: 'esperando', valor: true, motivo: 'menu' });
   await new Promise((pronto) => { setImmediate(pronto); });
-  tudoOk &= ok(porIdDe(comPergunta, 'parar-rotulo').textContent === 'Cancelar pergunta',
+  tudoOk &= ok(porIdDe(comPergunta, 'parar-rotulo').textContent === 'Parar',
     'pre-sessao → waiting sem passar por false troca o rótulo mesmo assim');
+  const avisoEscritaEl = porIdDe(comPergunta, 'aviso-escrita');
+  tudoOk &= ok(avisoEscritaEl.hidden === false
+    && avisoEscritaEl.textContent === 'Escrever aqui manda Esc antes do texto.',
+    `com motivo 'menu' a linha de aviso aparece, no DOM (hidden=${avisoEscritaEl.hidden}, texto="${avisoEscritaEl.textContent}")`);
+  // A linha passa por `idiomaUI.bind` — "no DOM" não prova "traduzida" (achado do painel).
+  try {
+    comPergunta.cockpitI18n.definir('en');
+    tudoOk &= ok(avisoEscritaEl.textContent === 'Typing here sends Esc before the text.',
+      `o aviso muda de idioma junto com o resto (${avisoEscritaEl.textContent})`);
+  } finally {
+    comPergunta.cockpitI18n.definir('pt-BR');
+  }
   comPergunta.aplicar({ tipo: 'esperando', valor: false });
 
-  // ── Faixa de jobs: só o projeto da conversa aberta ───────────────────────────
+  // ── A pergunta do agente vira CARTÃO (card pergunta-do-agente-em-cartao, D74) ─────────
+  // Spec: docs/superpowers/specs/2026-10-08-pergunta-do-agente-em-cartao-design.md §4.8.
+  // O servidor manda `cartao` na resposta da tela (o hook do Claude Code é a fonte); o
+  // cliente desenha, guarda o que o usuário marcou e manda UM POST no fim. O cartão de
+  // 2 perguntas sai do payload medido (Audio simples, Aviso LGPD multi) — o mesmo da tela
+  // `m1-01` — para o gate não inventar um formato que o hook nunca produziu.
+  await rodarGrupo('CA1-CA15: o cartão da pergunta (public/app.js)', async () => {
+    const pre01 = JSON.parse(fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'pergunta', 'ganchos', '01-pre.json'), 'utf8'));
+    const ID_CARTAO = pre01.tool_use_id;
+    const cartaoDe = (id = ID_CARTAO) => ({
+      toolUseId: id,
+      perguntas: pre01.tool_input.questions.map((q) => ({
+        texto: q.question, cabecalho: q.header, multipla: q.multiSelect,
+        opcoes: q.options.map((o) => ({ rotulo: o.label, descricao: o.description })),
+      })),
+    });
+    // Um cliente com a aba aberta e a pergunta no ar. `estado.cartao` é o que o servidor
+    // devolve no PRÓXIMO tique (`undefined` = o campo some da resposta); `estado.aoPerguntar`
+    // responde o POST do cartão (pode devolver uma promessa presa).
+    const montar = async (cartao = cartaoDe(), { semCampo = false, semGancho } = {}) => {
+      const estado = { cartao, semCampo, semGancho, posts: [], teclas: [], aoPerguntar: () => ({ respondido: true }) };
+      const c = carregarCliente({
+        guardado: memoria(),
+        aoBuscar: (rota, opcoes = {}) => {
+          const r = String(rota);
+          if (/\/tela(\?|$)/.test(r)) {
+            const base = { chave: 'aba-7', tela: '  1. Sim', linhas: 1 };
+            return estado.semCampo ? base : { ...base, cartao: estado.cartao, ...(estado.semGancho === undefined ? {} : { semGancho: estado.semGancho }) };
+          }
+          if (/\/pergunta$/.test(r)) {
+            estado.posts.push({ rota: r, corpo: JSON.parse(String(opcoes.body || '{}')) });
+            return estado.aoPerguntar();
+          }
+          if (/\/teclas$/.test(r)) {
+            estado.teclas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+            return { apertado: true, chave: 'aba-7', esperando: true, tela: '> 1. Sim', linhas: 1 };
+          }
+          if (r.startsWith('api/abas')) return { abas: [umaAba({ esperando: true })] };
+          return { painel: true, jobs: [] };
+        },
+      });
+      await c.carregarAbas();
+      await c.abrirAba('aba-7');
+      c.aplicar({ tipo: 'esperando', valor: true });
+      await new Promise((pronto) => { setImmediate(pronto); });
+      await c.atualizarTelaDaPane(c.painelAtual());
+      porIdDe(c, 'app').dataset.vista = 'chat';   // a guarda 8 do ouvinte das teclas físicas
+      return { c, estado, painel: c.painelAtual() };
+    };
+    const partes = (c) => {
+      const pergunta = porIdDe(c, 'pergunta');
+      const cartaoEl = pergunta.querySelector('.pergunta-cartao');
+      return {
+        pergunta, cartaoEl,
+        terminal: pergunta.querySelector('.pergunta-terminal'),
+        teclas: pergunta.querySelector('.pergunta-teclas'),
+        questoes: cartaoEl ? cartaoEl.querySelectorAll('.cartao-questao') : [],
+        enviar: cartaoEl ? cartaoEl.querySelector('.cartao-enviar') : null,
+        erro: cartaoEl ? cartaoEl.querySelector('.cartao-erro') : null,
+      };
+    };
+    const opcoesDe = (questao) => questao.querySelectorAll('.cartao-opcao');
+    const campoDe = (questao) => questao.querySelector('.cartao-outra-campo');
+    const marcadas = (questao) => opcoesDe(questao)
+      .map((b, i) => (b.getAttribute('aria-pressed') === 'true' ? i : -1)).filter((i) => i >= 0);
+    const escrever = (questao, texto) => {
+      const campo = campoDe(questao);
+      campo.value = texto;
+      campo.disparar('input', {});
+    };
+    const teclaFisica = (c, propriedades) => {
+      const evento = {
+        key: '', code: '', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+        repeat: false, isComposing: false, getModifierState() { return false; },
+        chamouPreventDefault: false, ...propriedades,
+      };
+      evento.preventDefault = () => { evento.chamouPreventDefault = true; };
+      for (const fn of c.ouvintes.get('keydown') || []) fn(evento);
+      return evento;
+    };
+    const respira = () => new Promise((pronto) => { setImmediate(pronto); });
+
+    // ── CA1 — com cartão ──
+    {
+      const { c } = await montar();
+      const p = partes(c);
+      tudoOk &= ok(Boolean(p.cartaoEl) && p.cartaoEl.hidden === false,
+        'CA1: com `cartao`, o .pergunta-cartao está visível');
+      tudoOk &= ok(p.questoes.length === 2, `CA1: duas .cartao-questao (${p.questoes.length})`);
+      const chips = p.cartaoEl.querySelectorAll('.cartao-chip').map(textoDe);
+      tudoOk &= ok(chips.join('|') === 'Audio|Aviso LGPD', `CA1: os chips são os headers (${chips.join('|')})`);
+      const qs = pre01.tool_input.questions;
+      tudoOk &= ok(p.questoes.every((q, i) => textoDe(q.querySelector('.cartao-texto')) === qs[i].question),
+        'CA1: o texto de cada pergunta aparece INTEIRO (era o corte do print)');
+      const todasOpcoes = p.cartaoEl.querySelectorAll('.cartao-opcao');
+      tudoOk &= ok(todasOpcoes.length === 6, `CA1: 3+3 botões de opção (${todasOpcoes.length})`);
+      tudoOk &= ok(p.questoes.every((q, i) => opcoesDe(q).every((b, k) => {
+        const t = textoDe(b);
+        return t.includes(qs[i].options[k].label) && t.includes(qs[i].options[k].description);
+      })), 'CA1: cada opção leva o rótulo E a descrição inteira');
+      const dicasMulti = textoDe(p.cartaoEl).split('Pode marcar mais de uma.').length - 1;
+      tudoOk &= ok(dicasMulti === 1 && textoDe(p.questoes[1]).includes('Pode marcar mais de uma.')
+        && !textoDe(p.questoes[0]).includes('Pode marcar mais de uma.'),
+      `CA1: "Pode marcar mais de uma." só na multi (${dicasMulti})`);
+      const campos = p.cartaoEl.querySelectorAll('.cartao-outra-campo');
+      tudoOk &= ok(campos.length === 2 && campos.every((cp) => cp.maxLength === 500 && Boolean(cp.dataset.cartao)),
+        'CA1: dois campos "Outra resposta" com maxLength 500 e data-cartao');
+      tudoOk &= ok(p.cartaoEl.querySelectorAll('.cartao-enviar').length === 1
+        && textoDe(p.enviar) === 'Enviar respostas' && p.enviar.disabled === true,
+      `CA1: um "Enviar respostas", desabilitado (${p.enviar && textoDe(p.enviar)})`);
+      tudoOk &= ok(Boolean(p.terminal) && p.terminal.tag === 'details' && p.terminal.open === false,
+        'CA1: o terminal cru vai num <details> FECHADO');
+      tudoOk &= ok(p.terminal.querySelector('.pergunta-tela') !== null
+        && p.terminal.querySelector('.pergunta-terminal-rotulo') !== null
+        && textoDe(p.terminal.querySelector('.pergunta-terminal-rotulo')) === 'ver terminal',
+      'CA1: o <details> carrega SÓ a tela da pane, e o rótulo "ver terminal"');
+      tudoOk &= ok(p.teclas.hidden === true, 'CA1: as seis teclas ficam escondidas com o terminal fechado');
+      tudoOk &= ok(p.pergunta.filhos.map((f) => f.className).join('|')
+        === 'pergunta-cartao|pergunta-terminal|pergunta-teclas|aviso-escrita|aviso-gancho',
+      `CA1: a ordem dentro da .pergunta (${p.pergunta.filhos.map((f) => f.className).join('|')})`);
+    }
+
+    // ── CA2 — sem cartão: a tela de hoje (nos dois jeitos de "sem") ──
+    for (const [rotulo, opcoes, cartao] of [['null', {}, null], ['campo ausente', { semCampo: true }, undefined]]) {
+      const { c } = await montar(cartao, opcoes);
+      const p = partes(c);
+      tudoOk &= ok(p.cartaoEl.hidden === true, `CA2 (${rotulo}): o cartão fica escondido`);
+      tudoOk &= ok(p.terminal.open === true && p.terminal.dataset.semCartao === '1',
+        `CA2 (${rotulo}): o <details> fica ABERTO e marcado sem-cartão (o CSS esconde o summary)`);
+      tudoOk &= ok(p.teclas.hidden === false, `CA2 (${rotulo}): as teclas continuam visíveis`);
+      tudoOk &= ok(textoDe(p.terminal.querySelector('.pergunta-tela')).includes('1. Sim'),
+        `CA2 (${rotulo}): e a tela da pane aparece como sempre`);
+    }
+
+    // ── CA3 — simples: a Outra resposta é "mais uma opção" ──
+    {
+      const { c } = await montar();
+      const q = partes(c).questoes[0];
+      opcoesDe(q)[1].onclick();
+      tudoOk &= ok(marcadas(q).join() === '1', `CA3: clicar a opção 2 marca SÓ ela (${marcadas(q)})`);
+      opcoesDe(q)[0].onclick();
+      tudoOk &= ok(marcadas(q).join() === '0', 'CA3: clicar outra troca a marca (simples não soma)');
+      escrever(q, 'outra coisa');
+      tudoOk &= ok(marcadas(q).length === 0, 'CA3: escrever na Outra resposta DESMARCA a opção');
+      opcoesDe(q)[0].onclick();
+      tudoOk &= ok(campoDe(q).value === '' && marcadas(q).join() === '0',
+        `CA3: clicar uma opção ESVAZIA a Outra resposta (${JSON.stringify(campoDe(q).value)})`);
+    }
+
+    // ── CA4 — multi: alterna, e o texto soma ──
+    {
+      const { c } = await montar();
+      const q = partes(c).questoes[1];
+      opcoesDe(q)[0].onclick();
+      opcoesDe(q)[2].onclick();
+      tudoOk &= ok(marcadas(q).join() === '0,2', `CA4: 1 e 3 marcadas (${marcadas(q)})`);
+      opcoesDe(q)[0].onclick();
+      tudoOk &= ok(marcadas(q).join() === '2', 'CA4: clicar de novo DESMARCA');
+      escrever(q, 'mais um aviso');
+      tudoOk &= ok(marcadas(q).join() === '2' && campoDe(q).value === 'mais um aviso',
+        'CA4: o texto SOMA às opções, não as desmarca');
+    }
+
+    // ── CA5 — Enviar só com tudo respondido; o corpo do POST ──
+    {
+      const { c, estado } = await montar();
+      const p = partes(c);
+      tudoOk &= ok(p.enviar.disabled === true, 'CA5: nada respondido → Enviar travado');
+      opcoesDe(p.questoes[0])[1].onclick();
+      tudoOk &= ok(p.enviar.disabled === true, 'CA5: só a 1ª respondida → ainda travado');
+      opcoesDe(p.questoes[1])[0].onclick();
+      tudoOk &= ok(p.enviar.disabled === false, 'CA5: as duas respondidas → destrava');
+      opcoesDe(p.questoes[1])[0].onclick();
+      tudoOk &= ok(p.enviar.disabled === true, 'CA5: desmarcou a única da 2ª → trava de novo');
+      opcoesDe(p.questoes[1])[0].onclick();
+      escrever(p.questoes[1], 'Aviso de gravacao');
+      await p.enviar.onclick();
+      tudoOk &= ok(estado.posts.length === 1 && estado.posts[0].rota === 'api/abas/aba-7/pergunta',
+        `CA5: UM POST em api/abas/aba-7/pergunta (${estado.posts.map((x) => x.rota)})`);
+      tudoOk &= ok(JSON.stringify(estado.posts[0] && estado.posts[0].corpo) === JSON.stringify({
+        toolUseId: 'toolu_01GHXu3upq4BCfmmSHZ2iSCH',
+        respostas: [{ opcoes: [1], texto: '' }, { opcoes: [0], texto: 'Aviso de gravacao' }],
+      }), `CA5: o corpo é o do contrato (${JSON.stringify(estado.posts[0] && estado.posts[0].corpo)})`);
+      tudoOk &= ok(textoDe(p.cartaoEl).includes('Respostas enviadas.'),
+        'CA5: 200 → "Respostas enviadas."');
+    }
+
+    // ── CA6 — o tique de 5 s não apaga o que o usuário marcou ──
+    {
+      const { c, estado, painel } = await montar();
+      const antes = partes(c);
+      opcoesDe(antes.questoes[0])[2].onclick();
+      escrever(antes.questoes[1], 'rascunho');
+      await c.atualizarTelaDaPane(painel);
+      const meio = partes(c);
+      tudoOk &= ok(meio.questoes[0] === antes.questoes[0] && marcadas(meio.questoes[0]).join() === '2'
+        && campoDe(meio.questoes[1]).value === 'rascunho',
+      'CA6: mesmo toolUseId → o cartão NÃO se refaz e as marcações ficam');
+      estado.cartao = cartaoDe('toolu_NOVA');
+      await c.atualizarTelaDaPane(painel);
+      const depois = partes(c);
+      tudoOk &= ok(depois.questoes.length === 2 && depois.questoes[0] !== antes.questoes[0]
+        && marcadas(depois.questoes[0]).length === 0 && campoDe(depois.questoes[1]).value === ''
+        && depois.enviar.disabled === true,
+      'CA6: toolUseId NOVO → o cartão se refaz do zero, desmarcado');
+    }
+
+    // ── CA7 — erro do servidor ──
+    {
+      const { c, estado } = await montar();
+      const p = partes(c);
+      opcoesDe(p.questoes[0])[0].onclick();
+      opcoesDe(p.questoes[1])[0].onclick();
+      estado.aoPerguntar = () => ({ __status: 409, erro: 'X', parcial: true });
+      await p.enviar.onclick();
+      tudoOk &= ok(p.erro.hidden === false && textoDe(p.erro) === 'X' && p.erro.getAttribute('role') === 'alert',
+        `CA7: 409 parcial → .cartao-erro (role=alert) com a frase do servidor (${textoDe(p.erro)})`);
+      tudoOk &= ok(p.terminal.open === true && p.teclas.hidden === false,
+        'CA7: parcial abre o "ver terminal" (e as teclas aparecem) — o resto se termina por lá');
+      tudoOk &= ok(p.enviar.disabled === true && textoDe(p.cartaoEl).includes('Termine pelo terminal.'),
+        'CA7: o Enviar fica travado e a frase manda terminar pelo terminal');
+    }
+    {
+      const { c, estado } = await montar();
+      const p = partes(c);
+      opcoesDe(p.questoes[0])[0].onclick();
+      opcoesDe(p.questoes[1])[0].onclick();
+      estado.aoPerguntar = () => ({ __status: 409, erro: 'a pergunta mudou' });
+      await p.enviar.onclick();
+      tudoOk &= ok(textoDe(p.erro) === 'a pergunta mudou' && p.terminal.open === false,
+        'CA7: erro SEM parcial mostra a frase mas deixa o <details> como estava (fechado)');
+    }
+
+    // ── CA8 — tecla física × cartão (D57 intacta sem cartão, #77) ──
+    {
+      const { c, estado, painel } = await montar();
+      const p = partes(c);
+      const corpo = criarElemento('div');
+      teclaFisica(c, { key: 'ArrowDown', target: corpo });
+      await respira();
+      tudoOk &= ok(estado.teclas.length === 0,
+        `CA8: cartão à vista + terminal fechado → a seta NÃO vai à pane (${estado.teclas})`);
+      teclaFisica(c, { key: 'ArrowDown', target: campoDe(p.questoes[0]) });
+      await respira();
+      tudoOk &= ok(estado.teclas.length === 0, 'CA8: tecla dentro do campo do cartão nunca vai à pane');
+      p.terminal.open = true;
+      p.terminal.disparar('toggle', {});
+      teclaFisica(c, { key: 'ArrowDown', target: corpo });
+      await respira();
+      tudoOk &= ok(estado.teclas.join() === 'Down', `CA8: com o "ver terminal" ABERTO a D57 vale (${estado.teclas})`);
+      tudoOk &= ok(p.teclas.hidden === false, 'CA8: e as teclas aparecem junto do terminal aberto');
+      teclaFisica(c, { key: 'ArrowDown', target: campoDe(p.questoes[0]) });
+      await respira();
+      tudoOk &= ok(estado.teclas.length === 1, 'CA8: mesmo com o terminal aberto, o campo do cartão não manda tecla');
+      p.terminal.open = false;
+      p.terminal.disparar('toggle', {});
+      tudoOk &= ok(p.teclas.hidden === true, 'CA8: fechar o terminal esconde as teclas de novo');
+      void painel;
+    }
+    {
+      const { c, estado } = await montar(null);
+      teclaFisica(c, { key: 'ArrowDown', target: criarElemento('div') });
+      await respira();
+      tudoOk &= ok(estado.teclas.join() === 'Down',
+        `CA8: SEM cartão a seta física responde o menu, como na D57 (${estado.teclas})`);
+    }
+
+    // ── CA9 — fechar a pergunta limpa; reabrir monta de novo ──
+    {
+      const { c, painel } = await montar();
+      const antes = partes(c);
+      opcoesDe(antes.questoes[0])[0].onclick();
+      c.marcarPergunta(painel, false);
+      await respira();
+      tudoOk &= ok(antes.cartaoEl.hidden === true && painel.cartao === null,
+        'CA9: marcarPergunta(false) esconde o cartão e zera o estado');
+      c.aplicar({ tipo: 'esperando', valor: true });
+      await respira();
+      await c.atualizarTelaDaPane(painel);
+      const depois = partes(c);
+      tudoOk &= ok(depois.cartaoEl.hidden === false && depois.questoes.length === 2
+        && marcadas(depois.questoes[0]).length === 0,
+      'CA9: reabrir com o MESMO toolUseId monta o cartão de novo, desmarcado');
+    }
+
+    // ── CA10 / CA11 / CA13 — CSS por texto e sem title/placeholder ──
+    {
+      const cssCartao = fs.readFileSync(path.join(__dirname, '..', 'public', 'estilo.css'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+      const regras = [...cssCartao.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .map((m) => ({ seletor: m[1].trim(), corpo: m[2] }))
+        .filter((r) => /\.cartao-|\.pergunta-cartao/.test(r.seletor));
+      tudoOk &= ok(regras.length >= 6, `CA11 pré-condição: o CSS do cartão existe (${regras.length} regras)`);
+      const comCor = regras.filter((r) => /(^|[;\s])color\s*:/.test(r.corpo));
+      tudoOk &= ok(comCor.length > 0 && comCor.every((r) => /color\s*:\s*var\(--texto\)\s*(;|$)/.test(r.corpo)),
+        `CA11: toda cor de texto do cartão é var(--texto) (${comCor.map((r) => r.seletor).join(' · ')})`);
+      tudoOk &= ok(!regras.some((r) => /--texto-[23]/.test(r.corpo)),
+        'CA11: nenhuma regra do cartão usa --texto-2/--texto-3 (o fundo da .pergunta reprova no rose-pine-dawn)');
+
+      const { c } = await montar();
+      const p = partes(c);
+      const todos = [];
+      const andar = (no) => { for (const f of no.filhos || []) { if (f.tag !== '#texto') { todos.push(f); andar(f); } } };
+      andar(p.cartaoEl);
+      andar(p.terminal);
+      tudoOk &= ok(todos.length > 20 && todos.every((el) => !el.title && el.atributos.title === undefined),
+        'CA13: nenhum elemento do cartão (nem o summary) carrega `title` — tooltip não existe no celular (#31)');
+      tudoOk &= ok(todos.every((el) => !el.placeholder && el.atributos.placeholder === undefined),
+        'CA13: e nenhum carrega `placeholder` (#89)');
+      const fonteCartao = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+      const iPintar = fonteCartao.indexOf('function pintarCartao');
+      const iFim = fonteCartao.indexOf('async function apertarTecla');
+      tudoOk &= ok(iPintar > 0 && iFim > iPintar && !/innerHTML|insertAdjacentHTML/.test(fonteCartao.slice(iPintar, iFim)),
+        'CA13: o cartão é montado SÓ com createElement/textContent — dado do agente nunca vira HTML');
+    }
+
+    // ── CA12 — i18n: os textos novos estão no catálogo, em inglês ──
+    {
+      const { c } = await montar();
+      for (const chave of ['ver terminal', 'Pode marcar mais de uma.', 'Outra resposta', 'Enviar respostas',
+        'Enviando…', 'Respostas enviadas.', 'Responda todas as perguntas.', 'Termine pelo terminal.']) {
+        tudoOk &= ok(Object.hasOwn(c.cockpitTraducoes, chave) && c.cockpitTraducoes[chave] !== chave,
+          `CA12: "${chave}" está no catálogo, com tradução`);
+      }
+    }
+
+    // ── CA14 — o POST pendente: o tique que diz `null` NÃO apaga o cartão (nem o erro) ──
+    {
+      const { c, estado, painel } = await montar();
+      const p = partes(c);
+      opcoesDe(p.questoes[0])[0].onclick();
+      opcoesDe(p.questoes[1])[1].onclick();
+      let liberar;
+      estado.aoPerguntar = () => new Promise((resolve) => { liberar = resolve; });
+      const envio = p.enviar.onclick();
+      await respira();
+      estado.cartao = null;   // depois da 1ª tecla a conferência de início deixa de casar
+      await c.atualizarTelaDaPane(painel);
+      tudoOk &= ok(p.cartaoEl.hidden === false && textoDe(p.enviar) === 'Enviando…' && p.enviar.disabled === true,
+        `CA14: POST no ar + tique \`null\` → o cartão CONTINUA, em "Enviando…" (${textoDe(p.enviar)})`);
+      // CA15 — o segundo clique durante o envio não faz o segundo POST
+      p.enviar.onclick();
+      await respira();
+      tudoOk &= ok(estado.posts.length === 1, `CA15: segundo clique durante o envio → um POST só (${estado.posts.length})`);
+      liberar({ __status: 409, erro: 'Y', parcial: true });
+      await envio;
+      tudoOk &= ok(p.cartaoEl.hidden === false && textoDe(p.erro) === 'Y' && p.enviar.disabled === true
+        && p.terminal.open === true,
+      'CA14: 409 parcial → cartão visível com "Y", Enviar travado, "ver terminal" aberto');
+      await c.atualizarTelaDaPane(painel);
+      tudoOk &= ok(p.cartaoEl.hidden === false && textoDe(p.erro) === 'Y',
+        'CA14: outro tique `null` → o cartão (com o erro) continua');
+      estado.cartao = cartaoDe('toolu_OUTRA');
+      await c.atualizarTelaDaPane(painel);
+      const novo = partes(c);
+      tudoOk &= ok(novo.questoes.length === 2 && novo.questoes[0] !== p.questoes[0]
+        && (novo.erro.hidden === true || textoDe(novo.erro) === ''),
+      'CA14: toolUseId NOVO refaz o cartão, sem o erro velho');
+      c.marcarPergunta(painel, false);
+      tudoOk &= ok(novo.cartaoEl.hidden === true, 'CA14: marcarPergunta(false) limpa o cartão');
+    }
+
+    // ── CA16 — respondida, o cartão SAI no tique `null` mesmo com a aba ainda `waiting` ──
+    // Medido (23b3, tela 13): depois do Submit o CLI pode abrir OUTRO menu ("Teach auto mode") e a
+    // aba continua `waiting` — o `esperando:false` não chega. Preso em "Respostas enviadas." com o
+    // terminal fechado, o menu novo ficaria fora da vista e sem as teclas.
+    {
+      const { c, estado, painel } = await montar();
+      const p = partes(c);
+      opcoesDe(p.questoes[0])[0].onclick();
+      opcoesDe(p.questoes[1])[0].onclick();
+      await p.enviar.onclick();
+      tudoOk &= ok(textoDe(p.cartaoEl).includes('Respostas enviadas.'), 'CA16: pré-condição — enviado');
+      estado.cartao = null;
+      await c.atualizarTelaDaPane(painel);
+      tudoOk &= ok(p.cartaoEl.hidden === true && p.terminal.open === true && p.teclas.hidden === false,
+        'CA16: enviado + tique `null` → o cartão sai e o terminal (com as teclas) volta à vista');
+    }
+    // ── CA17 — o aviso de hook não instalado (card pergunta-sem-gancho-avisa) ──
+    {
+      const avisoDe = (c) => porIdDe(c, 'pergunta').querySelector('.aviso-gancho');
+      const { c, estado, painel } = await montar(null, { semGancho: true });
+      const aviso = avisoDe(c);
+      tudoOk &= ok(Boolean(aviso) && aviso.hidden === false
+        && textoDe(aviso) === 'Cartão da pergunta desligado: o hook não está instalado (DECISOES.md, D74).',
+      `CA17: semGancho true → o aviso aparece, no DOM (${aviso && aviso.hidden})`);
+      tudoOk &= ok(aviso && !aviso.getAttribute('title'), 'CA17: sem `title` (#31)');
+      tudoOk &= ok(partes(c).teclas.hidden === false && partes(c).terminal.open === true,
+        'CA17: o terminal cru e as teclas continuam à vista (o aviso não cobre nada)');
+      try {
+        c.cockpitI18n.definir('en');
+        tudoOk &= ok(textoDe(aviso) === 'Question card off: the hook is not installed (DECISOES.md, D74).',
+          `CA17: o aviso muda de idioma (${textoDe(aviso)})`);
+      } finally {
+        c.cockpitI18n.definir('pt-BR');
+      }
+      estado.semGancho = false;
+      await c.atualizarTelaDaPane(painel);
+      tudoOk &= ok(aviso.hidden === true, 'CA17: o tique seguinte com semGancho false esconde');
+      estado.semGancho = true;
+      await c.atualizarTelaDaPane(painel);
+      c.aplicar({ tipo: 'esperando', valor: false });
+      tudoOk &= ok(aviso.hidden === true, 'CA17: a pergunta fechou → o aviso some junto');
+    }
+    for (const [rotulo, opcoes] of [['false', { semGancho: false }], ['campo ausente', {}]]) {
+      const { c } = await montar(null, opcoes);
+      const aviso = porIdDe(c, 'pergunta').querySelector('.aviso-gancho');
+      tudoOk &= ok(aviso && aviso.hidden === true, `CA17 (${rotulo}): o aviso fica escondido`);
+    }
+  });
+
+  // ── A bolinha na lista: aba do projeto com job rodando (jobsPorAba, D51 preserva) ────
   const doJob = (id, projeto, chaves) => ({
     id, titulo: `ship ${projeto}`, projeto, estado: 'running', abas: chaves,
     etapa: 'editando app.js', desde: new Date(Date.now() - 120000).toISOString(),
@@ -1848,23 +2756,8 @@ async function parteA() {
   });
   await faixa.carregarAbas();
   await faixa.atualizarFaixaJobs();
-  tudoOk &= ok(porIdDe(faixa, 'faixa-jobs').hidden === true,
-    'sem conversa aberta (a tela da lista no celular) a faixa fica escondida');
   tudoOk &= ok(textoDe(porIdDe(faixa, 'abas')).includes('•'),
-    'mas a aba do projeto com job rodando ganha a bolinha na lista');
-
-  await faixa.abrirAba('aba-1');
-  await faixa.atualizarFaixaJobs();
-  tudoOk &= ok(porIdDe(faixa, 'faixa-jobs').hidden === false
-    && porIdDe(faixa, 'faixa-titulos').textContent === 'ship cockpit-agentes',
-    'com a aba aberta, a faixa mostra o job DAQUELE projeto');
-  tudoOk &= ok(!porIdDe(faixa, 'faixa-titulos').textContent.includes('projeto-d'),
-    'e o job que não casa com aba nenhuma não aparece — ele vive no painel /jobs');
-
-  await faixa.abrirAba('aba-2');
-  await faixa.atualizarFaixaJobs();
-  tudoOk &= ok(porIdDe(faixa, 'faixa-jobs').hidden === true,
-    'numa aba de outro projeto a faixa some: job de vizinho não é notícia daqui');
+    'a aba do projeto com job rodando ganha a bolinha na lista');
 
   // ── O relógio da lista: 5s para a lista, 15s para a faixa, um relógio só ─────
   //
@@ -1992,8 +2885,11 @@ async function parteA() {
   // não deixar o texto virar TECLA no menu, como não deixa virar comando no shell.
   const abaOk = { chave: 'aba-p7', titulo: 'cockpit', agente: 'claude', temAgente: true, temClaude: true, esperando: false };
   tudoOk &= ok(abasLib.motivoDeRecusa(abaOk) === null, 'aba com claude e sem pergunta recebe texto');
-  tudoOk &= ok(/pergunta aberta/.test(abasLib.motivoDeRecusa({ ...abaOk, esperando: true }) || ''),
-    'aba esperando escolha recusa o envio, e o motivo diz como destravar (Esc)');
+  // A recusa por `esperando` SAIU de `motivoDeRecusa` (card escrever-texto-na-pergunta-aberta):
+  // digitarNaAba() agora faz o gesto (Escape → reconfere → cola → Enter) em vez de recusar
+  // de cara. `preSessao` CONTINUA recusando (caso logo abaixo, `abaPre`).
+  tudoOk &= ok(abasLib.motivoDeRecusa({ ...abaOk, esperando: true }) === null,
+    'aba esperando escolha NÃO recusa mais — o gesto cuida disso em digitarNaAba');
   tudoOk &= ok(/não tem agente/.test(abasLib.motivoDeRecusa({ ...abaOk, temAgente: false, temClaude: false }) || ''),
     'e a recusa de sempre (CLI fechado) continua valendo — e ela fala de AGENTE, não de claude');
   // A recusa passou a olhar `temAgente`, e é isso que faz uma aba de CODEX receber texto: ela
@@ -2016,9 +2912,13 @@ async function parteA() {
     'preSessao abre a tela da pane; aba com conversa continua recusando (D4/D6 de pé)');
   tudoOk &= ok(abasLib.podeVerTela({ ...abaOk, esperando: true }) === true,
     'e o `waiting` de sempre continua abrindo');
+  // R20 (card menu-da-tui-do-codex-na-tela, 10-11/09): a precedência INVERTEU. O prompt de
+  // confiança de pasta nova do Codex É um menu para a régua estrutural — com os dois campos
+  // `true`, `preSessao` GANHA agora, porque ali o Esc ENCERRA o agente, e o motivo `'menu'`
+  // faria o cliente oferecer "Cancelar pergunta" numa tela destrutiva.
   tudoOk &= ok(abasLib.motivoDaTela(abaPre) === 'pre-sessao'
-    && abasLib.motivoDaTela({ ...abaOk, esperando: true, preSessao: true }) === 'menu',
-    'o motivo separa os dois — e `waiting` GANHA de preSessao quando os dois valem');
+    && abasLib.motivoDaTela({ ...abaOk, esperando: true, preSessao: true }) === 'pre-sessao',
+    'o motivo separa os dois — e `preSessao` GANHA de `esperando` quando os dois valem (R20)');
   // A recusa do envio é o item que faltava e o buraco era real: até 09/09 uma aba recém-criada
   // em projeto novo aceitava o POST calada, e cada letra virava tecla do menu de confiança —
   // alguma delas escolhe "No, exit", que MATA o agente.
@@ -2092,6 +2992,361 @@ async function parteA() {
   tudoOk &= ok(inicio.length === 1, 'o aviso de histórico cortado vira uma régua na fita');
   tudoOk &= ok(inicio.length === 1 && /não foi carregado/.test(inicio[0].textContent),
     'e ela diz que o começo não foi carregado');
+
+  // ── O chip `início` vira controle (card `carregar-mais-historico`, H1-H14) ───────────────
+  // Cada H usa um `carregarCliente()` PRÓPRIO — isolado, sem contaminar o `cliente`/`fita`
+  // compartilhado que o resto do arquivo usa a partir daqui.
+
+  await rodarGrupo('H1: historico_cortado com inicio desenha o botão; sem inicio, não desenha', async () => {
+    const cH1 = carregarCliente();
+    const fitaH1 = porIdDe(cH1, 'fita');
+    cH1.aplicar({ tipo: 'historico_cortado', inicio: 500 });
+    const marcaComBotao = fitaH1.filhos.find((f) => f.className === 'corte corte-inicio');
+    tudoOk &= ok(Boolean(marcaComBotao?.querySelector('.corte-mais')),
+      'H1: com inicio > 0, a marca vem com .corte-mais');
+
+    fitaH1.filhos = [];
+    cH1.aplicar({ tipo: 'historico_cortado' });
+    const marcaSemBotao = fitaH1.filhos.find((f) => f.className === 'corte corte-inicio');
+    tudoOk &= ok(Boolean(marcaSemBotao) && !marcaSemBotao.querySelector('.corte-mais'),
+      'H1: sem inicio (undefined, o evento sem âncora dos gates antigos), a marca NÃO tem botão');
+  });
+
+  await rodarGrupo('H2: o clique chama api/historico com a âncora do evento', async () => {
+    const chamadasH2 = [];
+    const cH2 = carregarCliente({
+      aoBuscar: (rota) => {
+        chamadasH2.push(String(rota));
+        return { eventos: [], inicio: 0, cortado: false };
+      },
+    });
+    const fitaH2 = porIdDe(cH2, 'fita');
+    const mensagensH2 = porIdDe(cH2, 'mensagens');
+    fitaH2.crescerJunto = mensagensH2; mensagensH2.crescePorFilho = 20;
+    cH2.aplicar({ tipo: 'historico_cortado', inicio: 4242 });
+    const botaoH2 = fitaH2.filhos[0].querySelector('.corte-mais');
+    await botaoH2.onclick();
+    tudoOk &= ok(chamadasH2.some((r) => r.includes('ate=4242')),
+      `H2: o clique pediu ate=4242 (chamadas: ${JSON.stringify(chamadasH2)})`);
+  });
+
+  await rodarGrupo('H3: o lote entra na FITA, na posição 0 — não na mensagens', async () => {
+    const cH3 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { eventos: [{ tipo: 'texto', texto: 'mensagem antiga do H3' }], inicio: 0, cortado: false }
+        : { abas: [] }),
+    });
+    const fitaH3 = porIdDe(cH3, 'fita');
+    const mensagensH3 = porIdDe(cH3, 'mensagens');
+    fitaH3.crescerJunto = mensagensH3; mensagensH3.crescePorFilho = 20;
+    cH3.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const filhosMensagensAntesH3 = mensagensH3.filhos.length;
+    const botaoH3 = fitaH3.filhos[0].querySelector('.corte-mais');
+    await botaoH3.onclick();
+    tudoOk &= ok(fitaH3.filhos[0].className === 'corte corte-inicio',
+      `H3: a posição 0 da fita é a marca NOVA (${fitaH3.filhos[0]?.className})`);
+    tudoOk &= ok(mensagensH3.filhos.length === filhosMensagensAntesH3,
+      `H3: a mensagens não ganhou filho novo — o prepend foi na fita (${mensagensH3.filhos.length} === ${filhosMensagensAntesH3})`);
+  });
+
+  await rodarGrupo('H4: scrollTop cresce o MESMO tanto que scrollHeight (âncora de rolagem)', async () => {
+    const cH4 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { eventos: [{ tipo: 'texto', texto: 'um' }, { tipo: 'humano', texto: 'dois' }], inicio: 0, cortado: false }
+        : { abas: [] }),
+    });
+    const fitaH4 = porIdDe(cH4, 'fita');
+    const mensagensH4 = porIdDe(cH4, 'mensagens');
+    fitaH4.crescerJunto = mensagensH4; mensagensH4.crescePorFilho = 30;
+    cH4.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    mensagensH4.scrollTop = 77;
+    const antesH4 = mensagensH4.scrollHeight;
+    const botaoH4 = fitaH4.filhos[0].querySelector('.corte-mais');
+    await botaoH4.onclick();
+    const depoisH4 = mensagensH4.scrollHeight;
+    tudoOk &= ok(mensagensH4.scrollTop === 77 + (depoisH4 - antesH4),
+      `H4: scrollTop acompanhou o crescimento (${mensagensH4.scrollTop} === ${77 + (depoisH4 - antesH4)})`);
+  });
+
+  await rodarGrupo('H5/H5b: cortado:false ⇒ marca "começo da conversa", no TOPO do lote (posição 0)', async () => {
+    const cH5 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { eventos: [{ tipo: 'texto', texto: 'primeira mensagem de todas' }], inicio: 0, cortado: false }
+        : { abas: [] }),
+    });
+    const fitaH5 = porIdDe(cH5, 'fita');
+    const mensagensH5 = porIdDe(cH5, 'mensagens');
+    fitaH5.crescerJunto = mensagensH5; mensagensH5.crescePorFilho = 20;
+    cH5.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const botaoH5 = fitaH5.filhos[0].querySelector('.corte-mais');
+    await botaoH5.onclick();
+    const marcaNovaH5 = fitaH5.filhos[0];
+    tudoOk &= ok(marcaNovaH5.className === 'corte corte-inicio',
+      `H5b: a posição 0 da fita é a marca — acima do lote, não no fim (${marcaNovaH5?.className})`);
+    tudoOk &= ok(!marcaNovaH5.querySelector('.corte-mais'), 'H5: sem botão — chegou ao começo da conversa');
+    tudoOk &= ok(/começo da conversa/.test(marcaNovaH5.textContent),
+      `H5: a nota vira "este é o começo da conversa" (${marcaNovaH5.textContent})`);
+    tudoOk &= ok(fitaH5.filhos.some((f) => textoDe(f).includes('primeira mensagem de todas')),
+      'H5b: e o lote entrou — abaixo da marca');
+  });
+
+  await rodarGrupo('H6: limparFita() zera âncora/sessão, INCREMENTA a geração, apaga o lote — resposta antiga descartada mesmo com a MESMA âncora', async () => {
+    let resolverH6;
+    const promessaH6 = new Promise((r) => { resolverH6 = r; });
+    const cH6 = carregarCliente({
+      aoBuscar: async (rota) => {
+        if (String(rota).startsWith('api/historico')) {
+          await promessaH6;
+          return { eventos: [{ tipo: 'texto', texto: 'lote antigo que chegou atrasado' }], inicio: 0, cortado: false };
+        }
+        return { abas: [] };
+      },
+    });
+    const fitaH6 = porIdDe(cH6, 'fita');
+    const mensagensH6 = porIdDe(cH6, 'mensagens');
+    fitaH6.crescerJunto = mensagensH6; mensagensH6.crescePorFilho = 20;
+    cH6.aplicar({ tipo: 'historico_cortado', inicio: 500 });
+    const botaoH6 = fitaH6.filhos[0].querySelector('.corte-mais');
+    const cliqueEmVooH6 = botaoH6.onclick(); // NÃO espera — a fetch fica pendurada
+
+    cH6.limparFita();
+    tudoOk &= ok(fitaH6.filhos.length === 0, 'H6: limparFita() apagou o que estava na fita');
+    // Mesma âncora de propósito: uma guarda por VALOR deixaria isto passar.
+    cH6.aplicar({ tipo: 'historico_cortado', inicio: 500 });
+
+    resolverH6();
+    await cliqueEmVooH6;
+    tudoOk &= ok(!fitaH6.filhos.some((f) => textoDe(f).includes('lote antigo que chegou atrasado')),
+      'H6: a resposta antiga foi descartada — mesmo com a âncora idêntica (500)');
+  });
+
+  await rodarGrupo('H7: split — clique em A não invalida o pedido de B (gerações independentes)', async () => {
+    let resolverA, resolverB;
+    const promA = new Promise((r) => { resolverA = r; });
+    const promB = new Promise((r) => { resolverB = r; });
+    const cH7 = carregarCliente({
+      aoBuscar: async (rota) => {
+        const s = String(rota);
+        if (s.startsWith('api/historico') && s.includes('chave=aba-7')) {
+          await promA;
+          return { eventos: [{ tipo: 'texto', texto: 'lote de A' }], inicio: 0, cortado: false };
+        }
+        if (s.startsWith('api/historico') && s.includes('chave=aba-b7')) {
+          await promB;
+          return { eventos: [{ tipo: 'texto', texto: 'lote de B' }], inicio: 0, cortado: false };
+        }
+        return { abas: [] };
+      },
+    });
+    const painelBH7 = cH7.criarPainel('aba-b7', {});
+    const fitaAH7 = porIdDe(cH7, 'fita', 0);
+    const mensagensAH7 = porIdDe(cH7, 'mensagens', 0);
+    const fitaBH7 = porIdDe(cH7, 'fita', 1);
+    const mensagensBH7 = porIdDe(cH7, 'mensagens', 1);
+    fitaAH7.crescerJunto = mensagensAH7; mensagensAH7.crescePorFilho = 20;
+    fitaBH7.crescerJunto = mensagensBH7; mensagensBH7.crescePorFilho = 20;
+
+    cH7.aplicar({ tipo: 'historico_cortado', inicio: 111 }); // atual === 'aba-7'
+    cH7.aplicarNoPainel(painelBH7, { tipo: 'historico_cortado', inicio: 222 });
+    const botaoAH7 = fitaAH7.filhos[0].querySelector('.corte-mais');
+    const botaoBH7 = fitaBH7.filhos[0].querySelector('.corte-mais');
+
+    const cliqueBH7 = botaoBH7.onclick();
+    const cliqueAH7 = botaoAH7.onclick();
+
+    resolverA();
+    await cliqueAH7;
+    tudoOk &= ok(fitaAH7.filhos.some((f) => textoDe(f).includes('lote de A')), 'H7: o pedido de A completou normalmente');
+
+    resolverB();
+    await cliqueBH7;
+    tudoOk &= ok(fitaBH7.filhos.some((f) => textoDe(f).includes('lote de B')),
+      'H7: o pedido de B TAMBÉM completou — não foi invalidado pelo clique em A');
+  });
+
+  await rodarGrupo('H8: o finally devolve destinoFita ao painel CERTO mesmo com exceção no desenho', async () => {
+    const cH8 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { eventos: [{ tipo: 'texto', texto: 'nunca chega a aparecer' }], inicio: 0, cortado: false }
+        : { abas: [] }),
+    });
+    const fitaH8 = porIdDe(cH8, 'fita');
+    const mensagensH8 = porIdDe(cH8, 'mensagens');
+    fitaH8.crescerJunto = mensagensH8; mensagensH8.crescePorFilho = 20;
+    cH8.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const botaoH8 = fitaH8.filhos[0].querySelector('.corte-mais');
+
+    const encerrarOriginalH8 = cH8.encerrarGrupoFerramentas;
+    cH8.encerrarGrupoFerramentas = () => { throw new Error('estouro forçado pelo gate'); };
+    try {
+      await botaoH8.onclick();
+    } finally {
+      cH8.encerrarGrupoFerramentas = encerrarOriginalH8;
+    }
+
+    // A MARCA tem que sobreviver ao estouro. Ela é removida só DEPOIS do `prepend`; se o
+    // desenho morre antes, a marca velha continua na fita e `painel.marcaDeInicio` volta a
+    // apontar para ela. Sem isto o usuário perde o chip E o botão e não vê erro nenhum — o
+    // estado de erro seria pintado num nó fora do documento (achado do painel de execução,
+    // os dois modelos, 16/09).
+    const marcaViva = fitaH8.filhos.find((f) => String(f.className).includes('corte-inicio'));
+    tudoOk &= ok(Boolean(marcaViva),
+      'H8: a marca `início` CONTINUA na fita depois do estouro — não some junto com o lote');
+    tudoOk &= ok(Boolean(marcaViva) && Boolean(marcaViva.querySelector('.corte-mais')),
+      'H8: e o botão continua nela — dá para tentar de novo');
+    const rotuloDepoisDoErro = marcaViva && marcaViva.querySelector('.corte-mais')
+      ? String(marcaViva.querySelector('.corte-mais').textContent) : '';
+    tudoOk &= ok(/tentar de novo|try again/.test(rotuloDepoisDoErro),
+      `H8: o botão foi pintado com o estado de ERRO, na marca que está NA TELA ("${rotuloDepoisDoErro}")`);
+
+    fitaH8.filhos = [];
+    cH8.aplicar({ tipo: 'texto', texto: 'depois do erro, a fita ainda desenha' });
+    tudoOk &= ok(fitaH8.filhos.some((f) => textoDe(f).includes('depois do erro, a fita ainda desenha')),
+      'H8: um evento normal DEPOIS do erro ainda chega na fita — destinoFita foi restaurado, não ficou preso');
+  });
+
+  await rodarGrupo('H9: clique duplo não duplica o lote', async () => {
+    let chamadasH9 = 0;
+    const cH9 = carregarCliente({
+      aoBuscar: (rota) => {
+        if (String(rota).startsWith('api/historico')) {
+          chamadasH9 += 1;
+          return { eventos: [{ tipo: 'texto', texto: 'lote único' }], inicio: 0, cortado: false };
+        }
+        return { abas: [] };
+      },
+    });
+    const fitaH9 = porIdDe(cH9, 'fita');
+    const mensagensH9 = porIdDe(cH9, 'mensagens');
+    fitaH9.crescerJunto = mensagensH9; mensagensH9.crescePorFilho = 20;
+    cH9.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const botaoH9 = fitaH9.filhos[0].querySelector('.corte-mais');
+    await Promise.all([botaoH9.onclick(), botaoH9.onclick()]);
+    tudoOk &= ok(chamadasH9 === 1, `H9: só UM fetch saiu, mesmo com dois cliques síncronos (${chamadasH9})`);
+    const ocorrenciasH9 = fitaH9.filhos.filter((f) => textoDe(f).includes('lote único')).length;
+    tudoOk &= ok(ocorrenciasH9 === 1, `H9: o lote entrou UMA vez só (${ocorrenciasH9})`);
+  });
+
+  await rodarGrupo('H10: continua no lote antigo NÃO consome a pendente atual nem corrige a hora dela', async () => {
+    const cH10 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { eventos: [{ tipo: 'humano', texto: 'continua', quando: '2020-01-01T00:00:00.000Z' }], inicio: 0, cortado: false }
+        : { abas: [] }),
+    });
+    const fitaH10 = porIdDe(cH10, 'fita');
+    const mensagensH10 = porIdDe(cH10, 'mensagens');
+    fitaH10.crescerJunto = mensagensH10; mensagensH10.crescePorFilho = 20;
+    const agoraH10 = new Date().toISOString();
+    const bolhaPendenteH10 = cH10.marcarPendente(cH10.bolha('bolha-eu', 'continua', agoraH10), 'continua');
+    const horaOriginalH10 = bolhaPendenteH10.horaEl && bolhaPendenteH10.horaEl.textContent;
+    cH10.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const botaoH10 = fitaH10.filhos.at(-1).querySelector('.corte-mais');
+    await botaoH10.onclick();
+    tudoOk &= ok(bolhaPendenteH10.className.includes('bolha-pendente'),
+      'H10: a pendente ATUAL continua marcada — o `continua` do lote antigo não a absorveu');
+    tudoOk &= ok(!bolhaPendenteH10.horaEl || bolhaPendenteH10.horaEl.textContent === horaOriginalH10,
+      'H10: e a hora dela não foi corrigida para a hora do lote antigo');
+  });
+
+  await rodarGrupo('H11: a seta-para-cima continua oferecendo a última mensagem ENVIADA (historicoEntrada intacto)', async () => {
+    const cH11 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { eventos: [{ tipo: 'humano', texto: 'mensagem beeem antiga' }], inicio: 0, cortado: false }
+        : { abas: [] }),
+    });
+    const fitaH11 = porIdDe(cH11, 'fita');
+    const mensagensH11 = porIdDe(cH11, 'mensagens');
+    fitaH11.crescerJunto = mensagensH11; mensagensH11.crescePorFilho = 20;
+    cH11.aplicar({ tipo: 'humano', texto: 'minha última mensagem enviada' });
+    cH11.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const botaoH11 = fitaH11.filhos.at(-1).querySelector('.corte-mais');
+    await botaoH11.onclick();
+    const entradaH11 = porIdDe(cH11, 'entrada');
+    entradaH11.disparar('keydown', { key: 'ArrowUp', preventDefault() {}, shiftKey: false });
+    tudoOk &= ok(entradaH11.value === 'minha última mensagem enviada',
+      `H11: a seta-para-cima oferece a última ENVIADA, não a do lote antigo (veio "${entradaH11.value}")`);
+  });
+
+  await rodarGrupo('H12: 409 leva ao estado "âncora morta", não a "tentar de novo"', async () => {
+    const cH12 = carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/historico')
+        ? { __status: 409, erro: 'a conversa mudou' }
+        : { abas: [] }),
+    });
+    const fitaH12 = porIdDe(cH12, 'fita');
+    cH12.aplicar({ tipo: 'historico_cortado', inicio: 100 });
+    const marcaH12 = fitaH12.filhos[0];
+    const botaoH12 = marcaH12.querySelector('.corte-mais');
+    await botaoH12.onclick();
+    tudoOk &= ok(botaoH12.hidden === true, 'H12: o botão some (âncora morta), não vira "tentar de novo"');
+    tudoOk &= ok(/mudou/.test(marcaH12.textContent), `H12: a nota diz que a conversa mudou (${marcaH12.textContent})`);
+  });
+
+  await rodarGrupo('H13: resposta de geração vencida NÃO libera carregandoHistorico do pedido em voo', async () => {
+    let resolverStaleH13, resolverVivoH13;
+    let chamadasH13 = 0;
+    const promStaleH13 = new Promise((r) => { resolverStaleH13 = r; });
+    const promVivoH13 = new Promise((r) => { resolverVivoH13 = r; });
+    const respostasH13 = [
+      () => promStaleH13.then(() => ({ eventos: [{ tipo: 'texto', texto: 'resposta stale' }], inicio: 0, cortado: false })),
+      () => promVivoH13.then(() => ({ eventos: [{ tipo: 'texto', texto: 'resposta viva' }], inicio: 0, cortado: false })),
+    ];
+    const cH13 = carregarCliente({
+      aoBuscar: (rota) => {
+        if (String(rota).startsWith('api/historico')) {
+          const fn = respostasH13[chamadasH13];
+          chamadasH13 += 1;
+          return fn();
+        }
+        return { abas: [] };
+      },
+    });
+    const fitaH13 = porIdDe(cH13, 'fita');
+    const mensagensH13 = porIdDe(cH13, 'mensagens');
+    fitaH13.crescerJunto = mensagensH13; mensagensH13.crescePorFilho = 20;
+    cH13.aplicar({ tipo: 'historico_cortado', inicio: 500 });
+    const botao1H13 = fitaH13.filhos[0].querySelector('.corte-mais');
+    const cliqueStaleH13 = botao1H13.onclick(); // geração 1, pendurado em promStaleH13
+
+    cH13.limparFita(); // incrementa a geração, libera carregandoHistorico, apaga a fita
+    cH13.aplicar({ tipo: 'historico_cortado', inicio: 500 }); // mesma âncora, de propósito
+    const botao2H13 = fitaH13.filhos[0].querySelector('.corte-mais');
+    const cliqueVivoH13 = botao2H13.onclick(); // geração 2, pendurado em promVivoH13
+
+    resolverStaleH13(); // a resposta ANTIGA chega primeiro
+    await cliqueStaleH13;
+    tudoOk &= ok(!fitaH13.filhos.some((f) => textoDe(f).includes('resposta stale')),
+      'H13: a resposta stale foi descartada, não desenhada');
+
+    // Terceiro clique, com o VIVO ainda em voo: se o `finally` da resposta stale tivesse
+    // liberado `carregandoHistorico`, este clique passaria e faria um 3º fetch.
+    await botao2H13.onclick();
+    tudoOk &= ok(chamadasH13 === 2,
+      `H13: nenhum fetch a mais saiu — carregandoHistorico continuou true (chamadas: ${chamadasH13})`);
+
+    resolverVivoH13();
+    await cliqueVivoH13;
+    tudoOk &= ok(fitaH13.filhos.some((f) => textoDe(f).includes('resposta viva')),
+      'H13: o pedido VIVO completou normalmente, sem interferência do stale');
+  });
+
+  await rodarGrupo('H14: com cockpitI18n.definir("en"), o rótulo do .corte-mais e a nota trocam de idioma', async () => {
+    const cH14 = carregarCliente();
+    const fitaH14 = porIdDe(cH14, 'fita');
+    cH14.aplicar({ tipo: 'historico_cortado', inicio: 500 });
+    const marcaH14 = fitaH14.filhos[0];
+    const botaoH14 = marcaH14.querySelector('.corte-mais');
+    const notaH14 = marcaH14.querySelector('.corte-nota');
+    tudoOk &= ok(botaoH14.textContent === 'carregar mais', `H14: pré-condição — pt-BR (${botaoH14.textContent})`);
+    try {
+      cH14.cockpitI18n.definir('en');
+      tudoOk &= ok(botaoH14.textContent === 'load more', `H14: o botão troca para inglês (${botaoH14.textContent})`);
+      tudoOk &= ok(/beginning of the history/.test(notaH14.textContent),
+        `H14: e a nota também (${notaH14.textContent})`);
+    } finally {
+      cH14.cockpitI18n.definir('pt-BR');
+    }
+  });
 
   // Consumo do plano: parse do texto do /usage, sem gastar turno nenhum.
   const limite = require('../lib/limite');
@@ -2574,10 +3829,12 @@ async function parteA() {
   }));
   const inicialCadencia = await externoFalso.lerConversa(arqCadencia);
 
-  // GUARDA — sem a opção, o retorno é EXATAMENTE o de hoje. É o R1: quem só queria a hora
-  // não pode passar a pagar medição nenhuma, e nem sequer recebe o campo.
-  tudoOk &= ok(Object.keys(inicialCadencia).sort().join(',') === 'bytesLidos,cortado,eventos,tamanho',
-    `lerConversa mede só com a opção opt-in — sem ela o retorno tem as quatro chaves de hoje (${Object.keys(inicialCadencia).sort().join(',')})`);
+  // GUARDA — sem a opção, o retorno é EXATAMENTE o de hoje, mais `inicio`. `inicio` é
+  // INCONDICIONAL (sai sempre, card `carregar-mais-historico`) — ao contrário de `contexto`,
+  // que continua opt-in e só aparece quando pedido. É o R1: quem só queria a hora não pode
+  // passar a pagar medição nenhuma.
+  tudoOk &= ok(Object.keys(inicialCadencia).sort().join(',') === 'bytesLidos,cortado,eventos,inicio,tamanho',
+    `lerConversa mede só com a opção opt-in — sem ela o retorno tem as quatro chaves de hoje + inicio (${Object.keys(inicialCadencia).sort().join(',')})`);
 
   // GUARDA — e a fonte prova que o chamador de 5 em 5 segundos continua sem pedir.
   const fonteAbasContexto = fs.readFileSync(path.join(__dirname, '..', 'lib', 'abas.js'), 'utf8');
@@ -3101,6 +4358,33 @@ async function parteA() {
   tudoOk &= ok(term.separarAnexos('mensagem normal').texto === 'mensagem normal',
     'mensagem sem anexo passa intacta');
 
+  // [F5] `separarAnexos` reconhece o formato do CLI desde que foto vira `[Image #N]` (2.1.258):
+  // o caminho some da linha `[anexo]` (card fila-presa-com-colagem-embrulhada, spec §4.3).
+  const desembrulhadoD = term.separarAnexos(
+    '[Image #2][anexo]\nOs arquivos acima foram enviados pelo usuário junto desta mensagem. Abra o que precisar.\nresponda so ok sem abrir',
+  );
+  tudoOk &= ok(desembrulhadoD.texto === 'responda so ok sem abrir', '[F5] D: texto sem cabeçalho cru');
+  tudoOk &= ok(JSON.stringify(desembrulhadoD.anexos) === JSON.stringify(['Image #2']),
+    '[F5] D: linha [anexo] sem caminho vira Image #2, do prefixo');
+
+  const desembrulhadoE4 = term.separarAnexos(
+    '[Image #4] [Image #5] [Image #6] [Image #7]\n\n[anexo]\n[anexo]\n[anexo]\n[anexo]\n'
+    + 'Os arquivos acima foram enviados pelo usuário junto desta mensagem. Abra o que precisar.\n'
+    + 'Vendas ta quebrada quando a tela fica pequena\nExames tambem\n'
+    + 'na conciliacao deve ter a opcao para ser pagamento ou transferencia na linha e nao nos 3 pontos ou em cima da pagina \n'
+    + 'Na imagem 4 eu deveria conseguir conciliar parcial',
+  );
+  tudoOk &= ok(desembrulhadoE4.texto.startsWith('Vendas ta quebrada'), '[F5] E4 (4 fotos): texto começa com a fala do usuário');
+  tudoOk &= ok(!desembrulhadoE4.texto.includes('[anexo]'), '[F5] E4: texto não contém [anexo] cru');
+  tudoOk &= ok(JSON.stringify(desembrulhadoE4.anexos) === JSON.stringify(['Image #4', 'Image #5', 'Image #6', 'Image #7']),
+    '[F5] E4: os 4 tokens [Image #N] viram os 4 anexos, na ordem');
+
+  const misto = term.separarAnexos(
+    '[Image #9][anexo] /x/a.pdf\n[anexo]\nOs arquivos acima foram enviados pelo usuário junto desta mensagem. Abra o que precisar.\nvai',
+  );
+  tudoOk &= ok(JSON.stringify(misto.anexos) === JSON.stringify(['a.pdf', 'Image #9']),
+    '[F5] misto: PDF com caminho mantém o nome, imagem sem caminho vira o Image #N do prefixo');
+
   // Token: chega pela URL, fica guardado e SOME da barra de endereço.
   const guardado = memoria();
   const comUrl = carregarCliente({ urlInicial: 'http://z/?token=abc123', guardado });
@@ -3265,6 +4549,16 @@ async function parteA() {
   await new Promise((r) => setTimeout(r, 0));
   tudoOk &= ok(puxa.fluxos.length === fluxosAntesDoFantasma,
     'o clique fantasma logo depois do arrasto NÃO abre a conversa');
+  // O ✎ tem a MESMA carência (card `renomear-a-aba`): no celular ele está sempre à vista, e o
+  // clique fantasma do fim do arrasto o acharia tão fácil quanto acha o cartão.
+  const lapisFantasma = listaPuxa.querySelector('.renomear-aba');
+  tudoOk &= ok(Boolean(lapisFantasma), 'a linha da lista tem o ✎');
+  if (lapisFantasma) {
+    lapisFantasma.onclick({ stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 0));
+    tudoOk &= ok(porIdDe(puxa, 'dialogo-renomear-aba').open === false,
+      'o clique fantasma no ✎ logo depois do arrasto NÃO abre o diálogo de renomear');
+  }
   await new Promise((r) => setTimeout(r, CARENCIA + 100));
   cartao.onclick();
   await new Promise((r) => setTimeout(r, 0));
@@ -3496,7 +4790,13 @@ async function parteA() {
   tudoOk &= ok(!/max-height/.test(corpoDe('.pergunta-tela')),
     'e a tela da pane perde o teto de altura: rolador dentro de rolador é o que saiu daqui');
   tudoOk &= ok(/overflow:\s*auto/.test(corpoDe('.pergunta-tela')),
-    'mas o overflow FICA — é ele que segura o framebuffer de 168 colunas na horizontal');
+    'mas o overflow FICA — rede de segurança para uma linha sem ponto de quebra (com pre-wrap não há mais o que rolar para o lado)');
+  // CA10 (card pergunta-do-agente-em-cartao, spec §4.9): a tela crua QUEBRA linha. O `pre`
+  // com `white-space: pre` era o que cortava a pergunta na borda direita (o print do dono).
+  tudoOk &= ok(/white-space:\s*pre-wrap/.test(corpoDe('.pergunta-tela'))
+    && /overflow-wrap:\s*anywhere/.test(corpoDe('.pergunta-tela'))
+    && !/white-space:\s*pre\s*;/.test(corpoDe('.pergunta-tela')),
+  'CA10: a tela da pane quebra linha (pre-wrap + overflow-wrap: anywhere), sem white-space: pre');
   const tamanhoDaPane = (corpoDe('.pergunta-tela').match(/font-size:\s*([\d.]+)px/) || [])[1];
   tudoOk &= ok(Number(tamanhoDaPane) >= 13,
     `e a letra do menu do terminal tem pelo menos 13px no desktop (${tamanhoDaPane}px)`);
@@ -3820,6 +5120,26 @@ async function parteA() {
   tudoOk &= ok(!/effort|esforço/i.test(textoDe(porIdDe(chipSemNivel, 'contexto-grade'))),
     'sem effort o painel não inventa a linha — nada de "desconhecido"');
 
+  // G-e (card `contexto-da-sessao-do-job`, 22/09) — a frase nova é chave de
+  // `public/traducoes.js`, E `abrirContexto` esconde/mostra a nota `contexto-nota-job` nos
+  // DOIS estados: abre um painel de JOB (visível) → abre um painel de ABA (some de novo). O
+  // `<dialog>` é UM SÓ no documento — a atribuição tem de ser INCONDICIONAL, não um `if` que
+  // só liga e nunca desliga.
+  const traducoesFonteGE = fs.readFileSync(path.join(__dirname, '..', 'public', 'traducoes.js'), 'utf8');
+  tudoOk &= ok(traducoesFonteGE.includes('"O número é o da sessão PRINCIPAL do job; os subagentes têm janela própria.":'),
+    'G-e: a frase nova é chave de public/traducoes.js');
+
+  const clienteGE = carregarCliente();
+  const painelJobGE = clienteGE.criarPainel('job-ge', undefined);
+  painelJobGE.medidor.el.onclick();
+  tudoOk &= ok(porIdDe(clienteGE, 'contexto-nota-job').hidden === false,
+    `G-e: abrir o diálogo de um painel de JOB mostra a nota (hidden === ${porIdDe(clienteGE, 'contexto-nota-job').hidden})`);
+
+  const painelAbaGE = clienteGE.painelAtual(); // o painel de partida aba-7, tipo 'aba'
+  painelAbaGE.medidor.el.onclick();
+  tudoOk &= ok(porIdDe(clienteGE, 'contexto-nota-job').hidden === true,
+    `G-e: e abrir o diálogo de uma ABA depois esconde a nota de novo (hidden === ${porIdDe(clienteGE, 'contexto-nota-job').hidden})`);
+
   // MUDANÇA — o CSS. As duas metades na MESMA asserção de propósito: "não cai no display:none"
   // sozinho nasceria VERDE só porque a classe ainda não existe, e guarda que nasce verde não
   // guarda nada. É o R8/#30 — regra certa que nunca dispara.
@@ -3913,18 +5233,41 @@ async function parteA() {
   const celularLimpo = css.replace(/\/\*[\s\S]*?\*\//g, '');
   const blocoCelularLimpo = celularLimpo.slice(celularLimpo.indexOf('@media (max-width: 760px)'));
   const regraPergunta = (blocoCelularLimpo.match(/\.pergunta\s*\{[^}]*\}/) || [''])[0];
-  tudoOk &= ok(/position:\s*fixed/.test(regraPergunta) && /inset:\s*0/.test(regraPergunta),
-    'no celular a tela da pane toma a tela INTEIRA — o terminal parou, não há o que fazer atrás');
+  // A regra INVERTEU em 23/09, e a inversão é a lição: até 22/09 esta asserção EXIGIA
+  // `position: absolute; inset: 0` — e era ela que trancava o bug no lugar. Filho `absolute`
+  // de um rolador (a `.mensagens`) não se mede pela vista dele: se mede pelo topo do CONTEÚDO,
+  // e rola junto. Como abrir a pergunta chama `rolarFim`, o painel ficava a
+  // `getBoundingClientRect().top = -7671` numa conversa de 60 mensagens em 390x844 — presente,
+  // `hidden = false`, e fora da tela. Medido no Chromium, não deduzido.
+  //
+  // `fixed` também não volta (é o que havia antes de 22/09): ele cobria a caixa de escrita, e
+  // com o card `escrever-texto-na-pergunta-aberta` a caixa passou a ser usável com a pergunta
+  // aberta. Nenhum dos dois: no celular a pergunta é BLOCO EM FLUXO, como no desktop.
+  //
+  // Esta asserção é de TEXTO e prova só a régua. Quem prova a GEOMETRIA é
+  // `testes/gate-pergunta-na-vista.js`, que mede no navegador com a conversa comprida — o
+  // caso que o smoke de 22/09 não tinha e por isso deixou o defeito passar.
+  tudoOk &= ok(!/position:\s*(absolute|fixed)/.test(regraPergunta) && !/inset:/.test(regraPergunta),
+    'no celular a pergunta é bloco EM FLUXO — `absolute` dentro do rolador a tirava da tela');
+  // A `.mensagens` continua `relative`, mas o motivo mudou: agora é só berço do `.puxar-selo`
+  // (o anel do puxar-para-atualizar). A pergunta não se ancora mais nela.
+  const regraMensagens = (celularLimpo.match(/\.mensagens\s*\{[^}]*\}/) || [''])[0];
+  tudoOk &= ok(/position:\s*relative/.test(regraMensagens),
+    'e a .mensagens segue relative — agora só pelo .puxar-selo, que é absolute de verdade');
   tudoOk &= ok(/background:[^;]*var\(--fundo\)/.test(regraPergunta),
     'e com fundo OPACO: --perigo-suave é rgba nos dez temas e deixaria a fita aparecendo por baixo');
   tudoOk &= ok(/\.pergunta-tela\s*\{[^}]*max-height:\s*none/.test(blocoCelularLimpo),
     'a tela solta o teto de 42vh do desktop: na tela cheia quem manda é o que sobra');
   tudoOk &= ok(/\.pergunta-tela\s*\{[^}]*font-size/.test(blocoCelularLimpo),
     'e a monoespaçada cresce: 11.5px é o tamanho de quem lê sentado, não do celular');
-  tudoOk &= ok(/\.pergunta-tela\s*\{[^}]*overscroll-behavior-x:\s*contain/.test(blocoCelularLimpo),
-    'rolar a tela até a borda não entrega a vez ao gesto do navegador (igual `.tabela-rolagem`)');
-  tudoOk &= ok(/\.pergunta-tela\s*\{[^}]*mask-image/.test(blocoCelularLimpo),
-    'e a borda esmaece: sem barra de rolagem no celular, é a única dica de que a linha continua');
+  // INVERTIDAS no card pergunta-do-agente-em-cartao (spec §4.9, CA10): até aqui estas duas
+  // asserções EXIGIAM `overscroll-behavior-x` e `mask-image`. Com `pre-wrap` a linha quebra e
+  // não há mais nada para rolar para o lado — e a máscara da borda direita APAGARIA os
+  // últimos 18 px de toda linha, o oposto de "quero que corte nada".
+  tudoOk &= ok(!/\.pergunta-tela\s*\{[^}]*overscroll-behavior-x/.test(blocoCelularLimpo),
+    'CA10: no celular a tela não tem mais overscroll-behavior-x (não rola para o lado)');
+  tudoOk &= ok(!/\.pergunta-tela\s*\{[^}]*mask-image/.test(blocoCelularLimpo),
+    'CA10: e a borda NÃO esmaece — com pre-wrap a máscara apagaria 18 px de cada linha');
 
   // ── O medidor é CLICÁVEL, e o painel é onde os números moram ────────────────
   // `title` é tooltip de MOUSE: no celular ele não existe, e era ali que estavam os tokens
@@ -4432,10 +5775,14 @@ async function parteA() {
   // as que nascem com o código desta fase. 8b e 18c-tela (a TELA) vivem no grupo da Fase 2.
   console.log('\n  · atalhos de teclado — o motor');
   await rodarGrupo('atalhos de teclado — o motor', async () => {
+    // D63: a lista ordena por recência e põe ◆ no topo. Os asserts deste bloco assumem a tela
+    // `aba-1, aba-2, aba-3` — então a fixture DECLARA essa ordem: três conversas LIDAS
+    // (`lidoEm` = `atualizadoEm`), a mais recente primeiro. Sem `lidoEm` as três nasceriam ◆ e a
+    // tela viraria 3,2,1 — vermelho por expectativa velha, não por bug.
     const TRES_ABAS = () => ([
-      { chave: 'aba-1', titulo: 'um', cwd: '/tmp/um', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 },
-      { chave: 'aba-2', titulo: 'dois', cwd: '/tmp/dois', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: 2 },
-      { chave: 'aba-3', titulo: 'tres', cwd: '/tmp/tres', temClaude: true, rodando: false, sessaoId: 's3', atualizadoEm: 3 },
+      { chave: 'aba-1', titulo: 'um', cwd: '/tmp/um', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: 3, lidoEm: 3 },
+      { chave: 'aba-2', titulo: 'dois', cwd: '/tmp/dois', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: 2, lidoEm: 2 },
+      { chave: 'aba-3', titulo: 'tres', cwd: '/tmp/tres', temClaude: true, rodando: false, sessaoId: 's3', atualizadoEm: 1, lidoEm: 1 },
     ]);
     // `api/abas/*/turnos` respondendo `{ enviado: true }` é só para a asserção 19 (Enter
     // continua enviando) não deixar uma promessa rejeitada solta no ar.
@@ -4475,42 +5822,43 @@ async function parteA() {
       return m ? m[1] : null;
     };
 
-    // A navegação segue os grupos visíveis, inclusive após mover/recolher ao vivo.
-    const preferencias = memoria();
-    preferencias.setItem('cockpit-projetos', JSON.stringify({ ordem: ['/tmp/tres', '/tmp/um', '/tmp/dois'], fechados: [] }));
-    const organizado = carregarCliente({ guardado: preferencias,
-      aoBuscar: rota => String(rota).startsWith('api/abas') ? { abas: [
-        ...TRES_ABAS(), { ...TRES_ABAS()[0], chave: 'aba-4', titulo: 'quatro' },
-      ] } : { painel: true, jobs: [] } });
-    await organizado.carregarAbas();
-    await organizado.abrirAba('aba-3');
-    const j = () => dispararTecla(organizado, { key: 'j', code: 'KeyJ', altKey: true });
-    const k = () => dispararTecla(organizado, { key: 'k', code: 'KeyK', altKey: true });
-    j();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-1', 'Alt+J segue a ordem personalizada dos projetos');
-    j();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-4', 'continua dentro do grupo mesmo com abas intercaladas na API');
+    // LC-7 — Alt+J/Alt+K seguem a ordem DA TELA (D69: a hora em que o último turno terminou). A
+    // ordem crua da API é outra de propósito.
+    const postsLC7 = [];
+    const ordenado = carregarCliente({ guardado: memoria(),
+      aoBuscar: (rota, opcoes) => {
+        if (opcoes && opcoes.method && opcoes.method !== 'GET') postsLC7.push(String(rota).split('?')[0]);
+        return String(rota).startsWith('api/abas') ? { abas: [
+          { chave: 'aba-1', titulo: 'um', cwd: '/tmp/um', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: 10, lidoEm: 10, terminouEm: 10 },
+          { chave: 'aba-2', titulo: 'dois', cwd: '/tmp/dois', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: 5, lidoEm: null, terminouEm: 5 },
+          { chave: 'aba-3', titulo: 'tres', cwd: '/tmp/tres', temClaude: true, rodando: false, sessaoId: 's3', atualizadoEm: 20, lidoEm: 20, terminouEm: 20 },
+          { chave: 'aba-4', titulo: 'quatro', cwd: '/tmp/quatro', temClaude: true, rodando: false, sessaoId: 's4', atualizadoEm: null, terminouEm: null },
+        ] } : { painel: true, jobs: [] };
+      } });
+    await ordenado.carregarAbas();
+    tudoOk &= ok(chavesDe(ordenado).join(',') === 'aba-3,aba-1,aba-2,aba-4',
+      `LC-7: tela = por terminouEm: 20, 10, 5 (a ◆), nula (${chavesDe(ordenado).join(',')})`);
+    await ordenado.abrirAba('aba-1');
+    const j = () => dispararTecla(ordenado, { key: 'j', code: 'KeyJ', altKey: true });
+    const k = () => dispararTecla(ordenado, { key: 'k', code: 'KeyK', altKey: true });
     k();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-1', 'Alt+K percorre a mesma ordem no sentido contrário');
-    const gruposOrganizados = () => porIdDe(organizado, 'abas').querySelectorAll('.conversa-grupo[data-cwd]');
-    gruposOrganizados()[1].querySelector('.projeto-alternar').onclick();
-    j();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-2', 'saindo de um projeto recolhido, pula suas conversas ocultas');
+    tudoOk &= ok(abaAbertaEm(ordenado) === 'aba-3', 'LC-7: Alt+K de aba-1 vai para aba-3 — a vizinha NA TELA, não na API');
     k();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-3', 'Alt+K também ignora o grupo recolhido');
-    gruposOrganizados()[2].querySelectorAll('.projeto-mover')[0].onclick();
+    tudoOk &= ok(abaAbertaEm(ordenado) === 'aba-3', 'LC-7: Alt+K de novo grampeia na 1ª da tela');
+    j(); j();
+    tudoOk &= ok(abaAbertaEm(ordenado) === 'aba-2', 'LC-7: Alt+J duas vezes chega na ◆ aba-2');
+    // Abrir a ◆ por Alt+J a lê, mas a tela NÃO muda (D69).
+    tudoOk &= ok(chavesDe(ordenado).join(',') === 'aba-3,aba-1,aba-2,aba-4',
+      `LC-7: abrir a ◆ por Alt+J não a move (${chavesDe(ordenado).join(',')})`);
+    k();
+    tudoOk &= ok(abaAbertaEm(ordenado) === 'aba-1', 'LC-7: e Alt+K a partir dela segue a ordem da tela');
+    j(); j();
+    tudoOk &= ok(abaAbertaEm(ordenado) === 'aba-4', 'LC-7: Alt+J duas vezes chega na nula, que é a última');
+    const fluxosAntes = ordenado.fluxos.length;
     j();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-2', 'mover um projeto atualiza os atalhos imediatamente');
-    gruposOrganizados()[1].querySelectorAll('.projeto-mover')[0].onclick();
-    j();
-    tudoOk &= ok(abaAbertaEm(organizado) === 'aba-3',
-      'após subir o projeto atual para o primeiro lugar, Alt+J segue seu novo vizinho');
-    gruposOrganizados().filter(g => !g.querySelector('.projeto-conteudo').hidden)
-      .forEach(g => g.querySelector('.projeto-alternar').onclick());
-    const antesDeRecolherTudo = organizado.fluxos.length;
-    j(); k();
-    tudoOk &= ok(organizado.fluxos.length === antesDeRecolherTudo,
-      'com todos os projetos recolhidos, os atalhos não abrem conversas escondidas');
+    tudoOk &= ok(ordenado.fluxos.length === fluxosAntes && abaAbertaEm(ordenado) === 'aba-4',
+      'LC-7: na última, Alt+J grampeia — não circula');
+    tudoOk &= ok(postsLC7.every((rota) => rota === 'api/lidas'), `LC-7: os POSTs do bloco são só api/lidas (${JSON.stringify(postsLC7)})`);
 
     // 1 — o ouvinte existe
     const c1 = await novoCliente();
@@ -4608,8 +5956,8 @@ async function parteA() {
     const idsDialogNoHtml = [...htmlDialogos.matchAll(/<dialog id="([^"]+)"/g)].map((m) => m[1]);
     // Contagem EXATA, e não "ao menos": é o que faz um <dialog> a mais ou a menos reprovar
     // em vez de passar calado. Afrouxar para `>=` foi o que escondeu o décimo.
-    tudoOk &= ok(idsDialogNoHtml.length === 10,
-      `são DEZ <dialog> agora — o décimo é o #dialogo-uso da fase 2b (${idsDialogNoHtml.length})`);
+    tudoOk &= ok(idsDialogNoHtml.length === 14,
+      `são CATORZE <dialog> agora — o décimo quarto é o #dialogo-monitor (${idsDialogNoHtml.length})`);
     for (const idDialogo of idsDialogNoHtml) {
       // Par, não negativa solta: sem a positiva ("fechado funciona"), a checagem passaria
       // trivialmente contra código nenhum — é a inércia que a §4.1 condena.
@@ -4757,10 +6105,13 @@ async function parteA() {
   // de. As de HTML (16, 17) e de mapa (18, 18b, 18c-mapa, 18d) já estão verdes desde a Fase 1.
   console.log('\n  · atalhos de teclado — a tela');
   await rodarGrupo('atalhos de teclado — a tela', async () => {
+    // D63: mesma razão da `TRES_ABAS` do bloco "o motor" — a fixture DECLARA a tela `aba-1, aba-2,
+    // aba-3` (três conversas lidas, a mais recente primeiro). Sem `lidoEm` nasceriam três ◆ e a tela
+    // viraria 3,2,1: vermelho por expectativa velha, não por bug.
     const TRES_ABAS_TELA = () => ([
-      { chave: 'aba-1', titulo: 'um', cwd: '/tmp/um', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 },
-      { chave: 'aba-2', titulo: 'dois', cwd: '/tmp/dois', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: 2 },
-      { chave: 'aba-3', titulo: 'tres', cwd: '/tmp/tres', temClaude: true, rodando: false, sessaoId: 's3', atualizadoEm: 3 },
+      { chave: 'aba-1', titulo: 'um', cwd: '/tmp/um', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: 3, lidoEm: 3 },
+      { chave: 'aba-2', titulo: 'dois', cwd: '/tmp/dois', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: 2, lidoEm: 2 },
+      { chave: 'aba-3', titulo: 'tres', cwd: '/tmp/tres', temClaude: true, rodando: false, sessaoId: 's3', atualizadoEm: 1, lidoEm: 1 },
     ]);
     const respostasTela = (rotas) => (rota) => {
       rotas.push(String(rota));
@@ -4891,7 +6242,7 @@ async function parteA() {
     // 12f — a11y: aria-live na nota, aria-pressed no botão em captura, aria-label por linha
     const htmlTela = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
     tudoOk &= ok(/id="nota-atalhos"[^>]*aria-live="polite"|aria-live="polite"[^>]*id="nota-atalhos"/.test(htmlTela),
-      '#nota-atalhos tem aria-live="polite" (mesmo padrão de #faixa-jobs)');
+      '#nota-atalhos tem aria-live="polite" (mesmo padrão da .barra-agentes-aviso)');
     const c12f = await novoClienteTela();
     c12f.abrirConfig();
     tudoOk &= ok(linhaDe(c12f, 'lista').getAttribute('aria-label') === 'Mostrar/esconder a lista, atalho Alt+L',
@@ -5108,12 +6459,18 @@ async function parteA() {
   // notificações" é botão que só sabe falhar.
   tudoOk &= ok(/id="btn-avisos"[^>]*\shidden/.test(dentroDoPainel),
     'btn-avisos continua nascendo escondido');
-  // A lista da lateral vai até embaixo agora; a faixa segura do celular era reserva do rodapé.
-  tudoOk &= ok(/\.conversas\s*\{[^}]*env\(safe-area-inset-bottom\)/.test(blocoCelular),
-    'a lista de abas reserva a faixa segura do celular no fim da rolagem');
+  // A faixa segura do celular trocou de dono na D51: quem encosta no fim da tela agora é a
+  // barra dos agentes, não mais a lista de conversas.
+  tudoOk &= ok(/\.barra-agentes\s*\{[^}]*env\(safe-area-inset-bottom\)/.test(blocoCelular),
+    'a barra dos agentes reserva a faixa segura do celular no fim da tela');
   // Alvo de dedo: a engrenagem é a única porta do painel, e `.icone-so` sozinho dá 25px.
   tudoOk &= ok(/\.engrenagem\s*\{[^}]*min-height:\s*40px/.test(css),
     'a engrenagem tem os 40px de toque que a Apple e o Google pedem');
+  // O botão "Pra revisar" (plano 2026-10-04) é o mesmo alvo de dedo — `.icone-so` sozinho
+  // dá 25px. Aqui a regra é `width`/`height` (não `min-width`/`min-height`), porque o botão
+  // também ancora o selo do contador em `position: absolute` (mockup aprovado).
+  tudoOk &= ok(/\.icone-so\.revisar\s*\{[^}]*width:\s*40px[^}]*height:\s*40px/.test(css),
+    'o #btn-revisar (.icone-so.revisar) tem os 40px de toque');
 
   // Com token guardado: é ele que tem que aparecer no link copiado.
   const guardadoConf = memoria();
@@ -5166,16 +6523,16 @@ async function parteA() {
   // classe e estrutura só se provam lendo `public/index.html` de verdade.
   console.log('\n  · a lista de ajustes em dois grupos');
 
-  const SETE_IDS = ['btn-avisos', 'sel-tema', 'btn-atalhos-abrir', 'sel-effort', 'btn-plano', 'btn-uso', 'btn-copiar-acesso'];
-  tudoOk &= ok(SETE_IDS.every((id) => dentroDoPainel.includes(`id="${id}"`)),
-    'A1: os sete ids (os seis da D32 + btn-atalhos-abrir) moram dentro de #dialogo-config');
-  const BOTOES_AJUSTE = ['btn-avisos', 'btn-atalhos-abrir', 'btn-plano', 'btn-uso', 'btn-copiar-acesso'];
+  const OITO_IDS = ['btn-avisos', 'sel-tema', 'btn-atalhos-abrir', 'sel-effort', 'btn-plano', 'btn-uso', 'btn-copiar-acesso', 'btn-aparelhos'];
+  tudoOk &= ok(OITO_IDS.every((id) => dentroDoPainel.includes(`id="${id}"`)),
+    'A1: os oito ids (os seis da D32 + btn-atalhos-abrir + btn-aparelhos) moram dentro de #dialogo-config');
+  const BOTOES_AJUSTE = ['btn-avisos', 'btn-atalhos-abrir', 'btn-plano', 'btn-uso', 'btn-copiar-acesso', 'btn-aparelhos'];
   const botoesComAjuste = BOTOES_AJUSTE.every((id) =>
     new RegExp(`class="[^"]*\\bajuste\\b[^"]*"[^>]*id="${id}"`).test(dentroDoPainel));
   const temaComAjuste = /<label class="lateral-tema ajuste">[\s\S]{0,400}?id="sel-tema"/.test(dentroDoPainel);
   const effortComAjusteA1 = /<label class="lateral-effort ajuste">[\s\S]{0,700}?id="sel-effort"/.test(dentroDoPainel);
   tudoOk &= ok(botoesComAjuste && temaComAjuste && effortComAjusteA1,
-    'A1: cada um dos sete está dentro de uma .ajuste, inclusive btn-uso');
+    'A1: cada um dos oito está dentro de uma .ajuste, inclusive btn-uso');
 
   const grupos = [...dentroDoPainel.matchAll(/<div class="config-grupo">([\s\S]*?)<\/div>/g)].map((m) => m[1]);
   tudoOk &= ok(grupos.length === 2, `A2: há dois .config-grupo (${grupos.length})`);
@@ -5184,13 +6541,13 @@ async function parteA() {
     && /<h3 class="config-grupo-titulo">O servidor<\/h3>/.test(oServidor),
   'A2: os títulos são "Este aparelho" e "O servidor"');
   const IDS_ESTE_APARELHO = ['btn-avisos', 'sel-tema', 'btn-atalhos-abrir'];
-  const IDS_O_SERVIDOR = ['sel-effort', 'btn-plano', 'btn-uso', 'btn-copiar-acesso'];
+  const IDS_O_SERVIDOR = ['sel-effort', 'btn-plano', 'btn-uso', 'btn-copiar-acesso', 'btn-aparelhos'];
   tudoOk &= ok(
     IDS_ESTE_APARELHO.every((id) => esteAparelho.includes(`id="${id}"`))
     && IDS_O_SERVIDOR.every((id) => !esteAparelho.includes(`id="${id}"`))
     && IDS_O_SERVIDOR.every((id) => oServidor.includes(`id="${id}"`))
     && IDS_ESTE_APARELHO.every((id) => !oServidor.includes(`id="${id}"`)),
-  'A2: cada id está no grupo certo — nenhum dos quatro do servidor em "Este aparelho", e vice-versa');
+  'A2: cada id está no grupo certo — nenhum dos cinco do servidor em "Este aparelho", e vice-versa');
 
   tudoOk &= ok(/\.ajuste\s*\{[^}]*min-height:\s*46px/.test(css), 'A3: .ajuste tem min-height: 46px no CSS');
   // A3b — a regra dos 46px existir NÃO basta: `.config-lista .lateral-acao` tem
@@ -5220,8 +6577,10 @@ async function parteA() {
   const totalChevron = (dentroDoPainel.match(/<svg class="ajuste-chevron"/g) || []).length;
   const recortePlano = (dentroDoPainel.match(/<button class="lateral-acao ajuste" id="btn-plano"[\s\S]*?<\/button>/) || [''])[0];
   const recorteUso = (dentroDoPainel.match(/<button class="lateral-acao ajuste" id="btn-uso"[\s\S]*?<\/button>/) || [''])[0];
-  tudoOk &= ok(totalChevron === 2 && /ajuste-chevron/.test(recortePlano) && /ajuste-chevron/.test(recorteUso),
-    `A5: o chevron aparece exatamente 2 vezes, só em btn-plano e btn-uso (${totalChevron})`);
+  const recorteAparelhos = (dentroDoPainel.match(/<button class="lateral-acao ajuste" id="btn-aparelhos"[\s\S]*?<\/button>/) || [''])[0];
+  tudoOk &= ok(totalChevron === 3 && /ajuste-chevron/.test(recortePlano) && /ajuste-chevron/.test(recorteUso)
+    && /ajuste-chevron/.test(recorteAparelhos),
+  `A5: o chevron aparece exatamente 3 vezes, só em btn-plano, btn-uso e btn-aparelhos (${totalChevron})`);
 
   // "Não consulta api/limite ao abrir" já valia no develop (era assim que P3 evitava gastar
   // turno mesmo antes desta fase) — sozinho, o assert nasceria verde sem testar nada da
@@ -5276,8 +6635,8 @@ async function parteA() {
     `A6b: e TAMBÉM enche #plano-valor (${porIdDe(clienteGatilho2, 'plano-valor').textContent})`);
 
   const totalAjusteIcone = (dentroDoPainel.match(/<svg class="ajuste-icone"/g) || []).length;
-  tudoOk &= ok(totalAjusteIcone === 8, `A9: 8 svg.ajuste-icone dentro do painel (${totalAjusteIcone})`);
-  tudoOk &= ok(totalChevron === 2, `A9: 2 svg.ajuste-chevron dentro do painel (${totalChevron})`);
+  tudoOk &= ok(totalAjusteIcone === 9, `A9: 9 svg.ajuste-icone dentro do painel (${totalAjusteIcone})`);
+  tudoOk &= ok(totalChevron === 3, `A9: 3 svg.ajuste-chevron dentro do painel (${totalChevron})`);
 
   const fonteAjustes = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   tudoOk &= ok(!/\$\('btn-avisos'\)\.textContent/.test(fonteAjustes),
@@ -5358,6 +6717,334 @@ async function parteA() {
   await semRede.cliente.pintarBotaoAvisos();
   tudoOk &= ok(porIdDe(semRede.cliente, 'btn-avisos').dataset.estadoAviso === 'ligado',
     'A17b: consulta que falha NÃO desliga o que está ligado — degrada para o comportamento de antes');
+
+  // ── A19: o nome do aparelho (card `nome-do-aparelho-no-push`, spec 2026-09-12) ──────
+  //
+  // Três capacidades NOVAS neste arquivo, e as três são o que separa "provado" de "lido no
+  // fonte": promise diferida no `aoBuscar` (segura um POST pelo tempo que o caso precisar),
+  // troca de idioma em `try/finally` (o MESMO contexto serve a milhares de asserts depois —
+  // esquecer o `pt-BR` de volta contamina tudo) e o dublê do `ligarAvisos` inteiro.
+  console.log('\n  · o nome do aparelho: a lista, a edição inline e o rótulo do teste');
+
+  tudoOk &= ok(dentroDoPainel.includes('id="btn-aparelhos"'), 'A19: #btn-aparelhos mora dentro do painel de configuração');
+  const recorteAparelhosA19 = (dentroDoPainel.match(/<button class="lateral-acao ajuste" id="btn-aparelhos"[\s\S]*?<\/button>/) || [''])[0];
+  tudoOk &= ok(recorteAparelhosA19.length > 0 && !/ajuste-valor/.test(recorteAparelhosA19),
+    'A19: ele não tem .ajuste-valor — não há contagem a mostrar, e um span vazio seria elemento morto');
+  const dialogoAparelhosHtml = (html.match(/<dialog id="dialogo-aparelhos">([\s\S]*?)<\/dialog>/) || [null, ''])[1];
+  tudoOk &= ok(/id="aparelho-lista"/.test(dialogoAparelhosHtml) && /id="btn-atualizar-aparelhos"/.test(dialogoAparelhosHtml),
+    'A19: o diálogo traz a caixa da lista e o "Atualizar a lista"');
+  // R6: o teto de 80 é do SERVIDOR. Uma terceira cópia da regra no HTML se separaria dele calada.
+  tudoOk &= ok(!/maxlength/i.test(dialogoAparelhosHtml), 'A19: sem `maxlength` no diálogo — o teto é do servidor');
+  const trechoEdicao = (fonteAjustes.match(/function editarAparelho\([\s\S]*?\n\}\n/) || [''])[0];
+  // O ATRIBUTO, não a palavra: o comentário do app.js explica por que não há `maxlength`, e
+  // um teste que casasse o texto reprovaria justamente quem documentou a decisão.
+  tudoOk &= ok(trechoEdicao.length > 0
+    && !/\.maxLength\s*=|setAttribute\(\s*['"]maxlength/i.test(trechoEdicao)
+    && !/\.title\s*=/.test(trechoEdicao),
+  'A19: nem `maxlength` nem `title` no campo da edição — no celular `title` não existe (R5/R6)');
+  tudoOk &= ok(/min-width:\s*0/.test((css.match(/\.aparelho-nome\s*\{[^}]*\}/) || [''])[0])
+    && /text-overflow:\s*ellipsis/.test((css.match(/\.aparelho-nome\s*\{[^}]*\}/) || [''])[0]),
+  'A19: .aparelho-nome tem min-width: 0 + ellipsis — sem o zero o UA de 80 vaza da caixa (R4)');
+  // R7/#66: o Chromium headless responde `hover: none` até no desktop. Controle que só
+  // aparece no hover nunca chega ao print nem ao dedo.
+  tudoOk &= ok(!/\.aparelho-linha:hover\s+\.aparelho-editar/.test(css) && !/\.aparelho-editar\s*\{[^}]*display:\s*none/.test(css),
+    'A19: o ✎ não depende de :hover — é sempre visível');
+
+  // (a) `nomeSugerido()` para 6 user agents conhecidos. A apOrdem das regras importa: `Edg/` e
+  // `OPR/` contêm `Chrome/`, e `Chrome/` contém `Safari/`.
+  const UAS = [
+    ['Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140 Safari/537.36', 'Linux · Chrome'],
+    ['Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36', 'Android · Chrome'],
+    ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Safari/604.1', 'iPhone · Safari'],
+    ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 Edg/140', 'Windows · Edge'],
+    ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Gecko/20100101 Firefox/130.0', 'Mac · Firefox'],
+    ['um agente que não se parece com nada', 'Aparelho'],
+  ];
+  const clienteNome = carregarCliente({ guardado: memoria(), aoBuscar: () => ({ painel: true, jobs: [] }) });
+  for (const [ua, esperado] of UAS) {
+    clienteNome.navigator.userAgent = ua;
+    const apAchado = clienteNome.nomeSugerido();
+    tudoOk &= ok(apAchado === esperado, `A19a: "${ua.slice(0, 28)}…" ⇒ ${esperado} (achei ${apAchado})`);
+  }
+  tudoOk &= ok(/aparelho: nomeSugerido\(\)/.test(fonteAjustes)
+    && !/aparelho: navigator\.userAgent/.test(fonteAjustes),
+  'A19a: o corpo da inscrição manda nomeSugerido(), não o UA cru');
+  tudoOk &= ok(/navigator\.userAgent\.slice\(0, 110\)/.test(fonteAjustes),
+    'A19a: e o diagnóstico continua com o UA de 110 — ele não é a mesma pergunta');
+
+  // (b) Os quatro ramos de `rotuloDoTeste` e as quatro quedas na contagem, NOS DOIS IDIOMAS.
+  // A fronteira do TETO_FRASE é medida no texto JÁ TRADUZIDO, então ela cai em lugar
+  // diferente em cada idioma — de propósito, e é isso que o par de casos abaixo prova.
+  const clienteRotulo = carregarCliente({ guardado: memoria(), aoBuscar: () => ({ painel: true, jobs: [] }) });
+  const apRot = (r) => clienteRotulo.rotuloDoTeste(r);
+  tudoOk &= ok(apRot({ enviados: 0, nomes: [] }) === 'nenhum aparelho inscrito',
+    'A19b: sem ninguém inscrito, a frase de sempre');
+  tudoOk &= ok(apRot({ enviados: 1, nomes: ['Note'] }) === 'enviado para Note', 'A19b: um nome');
+  tudoOk &= ok(apRot({ enviados: 2, nomes: ['Note', 'Celular'] }) === 'enviado para Note e Celular', 'A19b: dois nomes');
+  tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note', 'Celular', 'Tablet'] }) === 'enviado para Note, Celular e mais 1',
+    'A19b: três nomes viram dois + "e mais 1"');
+  tudoOk &= ok(apRot({ enviados: 4, nomes: ['Note', 'Celular', 'Tablet', 'TV'] }) === 'enviado para Note, Celular e mais 2',
+    'A19b: quatro nomes viram dois + "e mais 2"');
+
+  tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note', 'Celular'] }) === 'enviado para 3 aparelho(s)',
+    'A19b: algum SEM nome ⇒ contagem');
+  // O nome comprido está escondido no "e mais 1" e nem entra na frase: um teto só de frase
+  // não o veria, e é por isso que as duas réguas existem.
+  tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note', 'Celular', 'x'.repeat(40)] }) === 'enviado para 3 aparelho(s)',
+    'A19b: UA cru ESCONDIDO no "e mais 1" ainda derruba para a contagem (TETO_NOME)');
+  tudoOk &= ok(apRot({ enviados: 2, nomes: ['Note', 'Note'] }) === 'enviado para 2 aparelho(s)',
+    'A19b: dois com o mesmo nome ⇒ contagem — rótulo que não distingue é pior que número honesto');
+  // A fronteira do TETO_FRASE: 24 + |a| + |b| em pt-BR.
+  tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note da sala', 'Celular novo', 'Tablet'] }) === 'enviado para Note da sala, Celular novo e mais 1',
+    'A19b: frase de exatamente 48 ainda nomeia (o TETO_FRASE é limite, não parede antes dele)');
+  tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note da sala', 'Celular velho', 'Tablet'] }) === 'enviado para 3 aparelho(s)',
+    'A19b: um caractere a mais ⇒ contagem');
+
+  // A troca de idioma vai em try/finally: o MESMO contexto serve a milhares de asserts
+  // depois, e esquecer o `pt-BR` de volta contaminaria todos eles.
+  try {
+    clienteRotulo.cockpitI18n.definir('en');
+    tudoOk &= ok(apRot({ enviados: 2, nomes: ['Note', 'Celular'] }) === 'sent to Note and Celular',
+      'A19b/en: o conector traduz — nenhuma frase ficou literal no JS');
+    tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note', 'Celular', 'Tablet'] }) === 'sent to Note, Celular and 1 more',
+      'A19b/en: e o "e mais N" também');
+    tudoOk &= ok(apRot({ enviados: 0, nomes: [] }) === 'no subscribed devices', 'A19b/en: a contagem vazia traduz');
+    // A MESMA dupla que estourou em pt-BR cabe em inglês: "sent to" tem 5 caracteres a menos
+    // que "enviado para". É o comportamento certo — quem tem de caber no botão é o texto que
+    // o dono vê — e é por isso que o gate roda os dois idiomas nesta fronteira.
+    tudoOk &= ok(apRot({ enviados: 3, nomes: ['Note da sala', 'Celular velho', 'Tablet'] }) === 'sent to Note da sala, Celular velho and 1 more',
+      'A19b/en: a fronteira do TETO_FRASE cai em lugar DIFERENTE em cada idioma');
+  } finally {
+    clienteRotulo.cockpitI18n.definir('pt-BR');
+  }
+  tudoOk &= ok(apRot({ enviados: 1, nomes: ['Note'] }) === 'enviado para Note', 'A19b: e o contexto voltou para pt-BR');
+
+  // (c) A lista, a edição inline e as três guardas. `apPendurar` é a capacidade nova: devolver
+  // uma promise diferida do `aoBuscar` segura o POST pelo tempo que o caso precisar.
+  const APARELHOS = [
+    { id: 'aaaaaaaa1111111111111111111111aa', nome: 'Notebook', criadoEm: '2026-09-01T10:00:00.000Z' },
+    { id: 'bbbbbbbb2222222222222222222222bb', nome: 'x'.repeat(80), criadoEm: '2026-09-02T10:00:00.000Z' },
+    { id: 'cccccccc3333333333333333333333cc', nome: null, criadoEm: null },
+  ];
+  function comAparelhos({ aoNomear = null, listaQuebra = false, comAssinatura = false } = {}) {
+    const rotas = [];
+    const cliente = carregarCliente({
+      guardado: memoria(),
+      aoBuscar: (rota, opcoes) => {
+        rotas.push(String(rota));
+        if (String(rota) === 'api/push/inscricoes') {
+          return listaQuebra ? { __status: 500, erro: 'sem rede' } : { aparelhos: APARELHOS.map((a) => ({ ...a })) };
+        }
+        if (String(rota) === 'api/push/inscricao/consulta') return { conhecida: true, inscritos: 3, id: APARELHOS[0].id };
+        if (String(rota) === 'api/push/inscricao/nome') {
+          const corpo = JSON.parse(opcoes.body);
+          return aoNomear ? aoNomear(corpo) : { renomeados: 1, nome: String(corpo.nome).slice(0, 80) };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    if (comAssinatura) {
+      cliente.navigator.serviceWorker = {
+        getRegistration: async () => ({ pushManager: { getSubscription: async () => ({ endpoint: 'https://fcm.exemplo/abc' }) } }),
+      };
+    }
+    return { cliente, rotas };
+  }
+  const itensDa = (cliente) => porIdDe(cliente, 'aparelho-lista').filhos;
+  const textoDoItem = (cliente, i) => String(itensDa(cliente)[i].textContent);
+
+  const apLista = comAparelhos({ comAssinatura: true });
+  await apLista.cliente.abrirAparelhos();
+  tudoOk &= ok(porIdDe(apLista.cliente, 'dialogo-aparelhos').open === true, 'A19c: abrirAparelhos abre o 12º diálogo');
+  tudoOk &= ok(itensDa(apLista.cliente).length === 3, `A19c: as três linhas (${itensDa(apLista.cliente).length})`);
+  tudoOk &= ok(textoDoItem(apLista.cliente, 0).includes('Notebook'), 'A19c: a linha traz o nome');
+  tudoOk &= ok(textoDoItem(apLista.cliente, 2).includes('sem nome'), 'A19c: sem nome vira a legenda, nunca linha escondida');
+  // `new Date(null).toLocaleDateString()` é 01/01/1970 — mentira com cara de dado.
+  tudoOk &= ok(!/19(70|69)/.test(textoDoItem(apLista.cliente, 2)), 'A19c: `criadoEm` ausente NÃO vira 01/01/1970');
+  tudoOk &= ok(textoDoItem(apLista.cliente, 0).includes(APARELHOS[0].id.slice(0, 8)),
+    'A19c: a linha mostra os 8 hex do id — os MESMOS que o journal imprime');
+  tudoOk &= ok(textoDoItem(apLista.cliente, 0).includes('(este aparelho)')
+    && !textoDoItem(apLista.cliente, 1).includes('(este aparelho)'),
+  'A19c: e a marca "(este aparelho)" cai na linha certa');
+  tudoOk &= ok(!itensDa(apLista.cliente).some((i) => String(i.textContent).includes('fcm.exemplo')),
+    'A19c: o endpoint NUNCA chega à tela — só o id derivado');
+
+  // A lista abre mesmo sem `getSubscription`: a marca é conforto, a lista é o recurso.
+  const semAssinatura2 = comAparelhos({ comAssinatura: false });
+  await semAssinatura2.cliente.abrirAparelhos();
+  tudoOk &= ok(itensDa(semAssinatura2.cliente).length === 3
+    && !textoDoItem(semAssinatura2.cliente, 0).includes('(este aparelho)'),
+  'A19c: sem getSubscription a lista abre igual, só perde a marca — nada do diálogo depende dela');
+
+  const listaRuim = comAparelhos({ listaQuebra: true });
+  await listaRuim.cliente.abrirAparelhos();
+  tudoOk &= ok(String(porIdDe(listaRuim.cliente, 'aparelho-lista').textContent).includes('Tentar de novo'),
+    'A19c: GET que falha mostra a mensagem e um "Tentar de novo"');
+
+  // Abrir, salvar e o corte em 80 que só o servidor conhece.
+  const apEdicao = comAparelhos({ comAssinatura: true });
+  await apEdicao.cliente.abrirAparelhos();
+  apEdicao.cliente.editarAparelho(APARELHOS[1].id);
+  const campoEdicao = achar(itensDa(apEdicao.cliente)[1], 'input')[0];
+  tudoOk &= ok(Boolean(campoEdicao) && campoEdicao.value.length === 80,
+    `A19c: o ✎ abre o campo com o valor COMPLETO, os 80 caracteres (${campoEdicao && campoEdicao.value.length})`);
+  tudoOk &= ok(porIdDe(apEdicao.cliente, 'btn-atualizar-aparelhos').disabled === true,
+    'A19c: com edição aberta, "Atualizar a lista" fica travado — sem isso ele apagaria o rascunho');
+  tudoOk &= ok(String(porIdDe(apEdicao.cliente, 'nota-aparelhos').textContent).includes('salve o nome'),
+    'A19c: e a legenda diz por quê — "desabilita quando não pode" é mais honesto que "some"');
+  campoEdicao.value = 'y'.repeat(200);
+  await apEdicao.cliente.salvarNomeDeAparelho(APARELHOS[1].id);
+  tudoOk &= ok(textoDoItem(apEdicao.cliente, 1).includes('y'.repeat(80)) && !textoDoItem(apEdicao.cliente, 1).includes('y'.repeat(81)),
+    'A19c: a linha redesenha com o que o SERVIDOR gravou — é assim que o corte em 80 aparece sem maxlength');
+  tudoOk &= ok(porIdDe(apEdicao.cliente, 'btn-atualizar-aparelhos').disabled === false,
+    'A19c: e o "Atualizar a lista" destrava quando a edição fecha');
+
+  // Cancelar volta a linha sem tocar no servidor.
+  const apCancelou = comAparelhos();
+  await apCancelou.cliente.abrirAparelhos();
+  apCancelou.cliente.editarAparelho(APARELHOS[0].id);
+  const botoesCancelar = achar(itensDa(apCancelou.cliente)[0], 'button').filter((b) => String(b.textContent) === 'Cancelar');
+  botoesCancelar[0].onclick();
+  tudoOk &= ok(achar(itensDa(apCancelou.cliente)[0], 'input').length === 0
+    && textoDoItem(apCancelou.cliente, 0).includes('Notebook'),
+  'A19c: Cancelar volta a linha ao que era, sem POST nenhum');
+  tudoOk &= ok(!apCancelou.rotas.includes('api/push/inscricao/nome'), 'A19c: e de fato nenhum POST saiu');
+
+  // 404 — o aparelho se descadastrou no meio. A LINHA diz; a lista NÃO se redesenha.
+  const apSumiu = comAparelhos({ aoNomear: () => ({ __status: 404, erro: 'aparelho não encontrado' }) });
+  await apSumiu.cliente.abrirAparelhos();
+  apSumiu.cliente.editarAparelho(APARELHOS[0].id);
+  achar(itensDa(apSumiu.cliente)[0], 'input')[0].value = 'Note';
+  await apSumiu.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  tudoOk &= ok(textoDoItem(apSumiu.cliente, 0).includes('não está mais inscrito'),
+    'A19c: 404 ⇒ a linha diz que o aparelho não está mais inscrito');
+  tudoOk &= ok(itensDa(apSumiu.cliente).length === 3
+    && apSumiu.rotas.filter((r) => r === 'api/push/inscricoes').length === 1,
+  'A19c: e a lista NÃO se redesenha — um GET aqui apagaria o rascunho aberto em outra linha');
+
+  // Erro de rede — a edição CONTINUA aberta, com o que ele digitou.
+  const semRede2 = comAparelhos({ aoNomear: () => ({ __status: 500, erro: 'sem rede' }) });
+  await semRede2.cliente.abrirAparelhos();
+  semRede2.cliente.editarAparelho(APARELHOS[0].id);
+  const campoRede = achar(itensDa(semRede2.cliente)[0], 'input')[0];
+  campoRede.value = 'Note da sala';
+  await semRede2.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  const campoDepois = achar(itensDa(semRede2.cliente)[0], 'input')[0];
+  tudoOk &= ok(Boolean(campoDepois) && campoDepois.value === 'Note da sala',
+    'A19c: erro de rede não fecha a edição nem apaga o que foi digitado');
+  tudoOk &= ok(textoDoItem(semRede2.cliente, 0).includes('sem rede'), 'A19c: e a mensagem aparece na própria linha');
+
+  // ── As TRÊS guardas, uma a uma. Sem a promise diferida, (a) e (c) não têm como existir ──
+  function apPendurar() {
+    let soltar;
+    return { promessa: new Promise((r) => { soltar = r; }), soltar };
+  }
+
+  // (1) Um salvamento por aparelho de cada vez: o segundo POST não sai até o primeiro responder.
+  const apPreso = apPendurar();
+  let apNomeados = 0;
+  const apFila = comAparelhos({ aoNomear: (corpo) => { apNomeados += 1; return apNomeados === 1 ? apPreso.promessa : { renomeados: 1, nome: corpo.nome }; } });
+  await apFila.cliente.abrirAparelhos();
+  apFila.cliente.editarAparelho(APARELHOS[0].id);
+  achar(itensDa(apFila.cliente)[0], 'input')[0].value = 'primeiro';
+  const salvamento1 = apFila.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  await apFila.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  tudoOk &= ok(apNomeados === 1, `A19d(1): com um POST do mesmo aparelho no ar, o segundo NÃO sai (${apNomeados})`);
+  apPreso.soltar({ renomeados: 1, nome: 'primeiro' });
+  await salvamento1;
+  tudoOk &= ok(apNomeados === 1 && textoDoItem(apFila.cliente, 0).includes('primeiro'),
+    'A19d(1): e quando ele responde a linha fica com o nome certo');
+
+  // (2) `aplicadoPorId`: resposta velha que chega por último não sobrescreve a nova.
+  const apVelha = apPendurar();
+  const apNova = apPendurar();
+  const apOrdem = comAparelhos({ aoNomear: (corpo) => (corpo.nome === 'velho' ? apVelha.promessa : apNova.promessa) });
+  await apOrdem.cliente.abrirAparelhos();
+  apOrdem.cliente.editarAparelho(APARELHOS[0].id);
+  achar(itensDa(apOrdem.cliente)[0], 'input')[0].value = 'velho';
+  const salvaVelho = apOrdem.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  // A guarda 1 é do cliente e serializa por id — para exercitar a guarda 2 sozinha, o
+  // primeiro responde ANTES do segundo sair, mas com a resposta aplicada fora de apOrdem.
+  apNova.soltar({ renomeados: 1, nome: 'novo' });
+  apVelha.soltar({ renomeados: 1, nome: 'velho' });
+  await salvaVelho;
+  apOrdem.cliente.editarAparelho(APARELHOS[0].id);
+  achar(itensDa(apOrdem.cliente)[0], 'input')[0].value = 'novo';
+  await apOrdem.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  tudoOk &= ok(textoDoItem(apOrdem.cliente, 0).includes('novo'),
+    'A19d(2): o envio mais novo é o que fica aplicado na linha');
+
+  // (3) Não pisar em edição aberta. Salvar → cancelar → REABRIR a MESMA linha e digitar: a
+  // resposta do primeiro salvamento não pode apagar o rascunho. As guardas 1 e 2 não pegam
+  // este caso — a edição é outra, o id é o mesmo.
+  const apLenta = apPendurar();
+  const apRascunho = comAparelhos({ aoNomear: () => apLenta.promessa });
+  await apRascunho.cliente.abrirAparelhos();
+  apRascunho.cliente.editarAparelho(APARELHOS[0].id);
+  achar(itensDa(apRascunho.cliente)[0], 'input')[0].value = 'salvando';
+  const salvamentoLento = apRascunho.cliente.salvarNomeDeAparelho(APARELHOS[0].id);
+  apRascunho.cliente.pintarLinhaDeAparelho(APARELHOS[0].id);          // o Cancelar
+  apRascunho.cliente.editarAparelho(APARELHOS[0].id);                 // reabre a MESMA linha
+  achar(itensDa(apRascunho.cliente)[0], 'input')[0].value = 'o rascunho novo';
+  apLenta.soltar({ renomeados: 1, nome: 'salvando' });
+  await salvamentoLento;
+  const campoRascunho = achar(itensDa(apRascunho.cliente)[0], 'input')[0];
+  tudoOk &= ok(Boolean(campoRascunho) && campoRascunho.value === 'o rascunho novo',
+    'A19d(3): a resposta do salvamento antigo NÃO apaga o rascunho da edição reaberta');
+
+  // (e) O pós-inscrição: `abrirAparelhos` que LANÇA não abre o painel de falha de inscrição
+  // (está fora do try) e o rótulo termina com a mensagem do `.catch`, não com a pintura.
+  function comLigar({ abrirQuebra = false } = {}) {
+    const cliente = carregarCliente({
+      guardado: memoria(),
+      aoBuscar: (rota) => {
+        if (String(rota) === 'api/push/chave') return { chave: 'AAAA' };
+        if (String(rota) === 'api/push/inscricao') return { inscritos: 1, id: APARELHOS[0].id, nome: 'Linux · Chrome' };
+        if (String(rota) === 'api/push/inscricoes') return { aparelhos: APARELHOS.map((a) => ({ ...a })) };
+        if (String(rota) === 'api/push/inscricao/consulta') return { conhecida: true, inscritos: 1, id: APARELHOS[0].id };
+        return { painel: true, jobs: [] };
+      },
+    });
+    // O dublê do fluxo INTEIRO: `requestPermission`, `serviceWorker.ready`,
+    // `pushManager.subscribe()` e `toJSON()`. O de A17b injeta só `permission` e
+    // `getSubscription` — este é o que faz `ligarAvisos()` rodar de ponta a ponta.
+    cliente.Notification = { permission: 'default', requestPermission: async () => 'granted' };
+    cliente.window.Notification = cliente.Notification;
+    cliente.window.PushManager = function PushManager() {};
+    const assinatura = { endpoint: 'https://fcm.exemplo/abc', toJSON: () => ({ endpoint: 'https://fcm.exemplo/abc', keys: { p256dh: 'p', auth: 'a' } }) };
+    // Nasce SEM assinatura: com uma, `estadoDosAvisos()` devolve 'ligado' e o clique vira
+    // TESTE — `ligarAvisos()` sairia na primeira linha e nada do fluxo seria exercitado.
+    let assinado = false;
+    const registro = {
+      active: true,
+      pushManager: {
+        subscribe: async () => { assinado = true; return assinatura; },
+        getSubscription: async () => (assinado ? assinatura : null),
+      },
+    };
+    cliente.navigator.serviceWorker = { ready: Promise.resolve(registro), getRegistration: async () => registro };
+    if (abrirQuebra) porIdDe(cliente, 'dialogo-aparelhos').showModal = () => { throw new Error('o diálogo apQuebrou'); };
+    return cliente;
+  }
+
+  const apLigou = comLigar();
+  await apLigou.ligarAvisos();
+  await new Promise((r) => setImmediate(r));
+  tudoOk &= ok(porIdDe(apLigou, 'dialogo-aparelhos').open === true,
+    'A19e: inscrição bem-sucedida abre a lista logo depois do 201 — a pergunta do nome é DEPOIS do POST');
+  tudoOk &= ok(achar(itensDa(apLigou)[0], 'input').length === 1,
+    'A19e: e já com a linha do aparelho novo em edição');
+
+  const apQuebrou = comLigar({ abrirQuebra: true });
+  await apQuebrou.ligarAvisos();
+  // O `.catch` roda num microtask depois do `await pintarBotaoAvisos()`: o assert é sobre o
+  // rótulo DEPOIS DE TUDO RESOLVER, que é onde o `await` da §4.4 se prova. Sem ele a pintura
+  // sobrescreveria a mensagem com "Notificações ligadas · testar".
+  for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+  tudoOk &= ok(porIdDe(apQuebrou, 'dialogo-diagnostico').open === false,
+    'A19e: um erro do DIÁLOGO não abre o painel de "inscrição recusada" — ele está fora do try');
+  tudoOk &= ok(String(porIdDe(apQuebrou, 'avisos-rotulo').textContent).includes('não consegui abrir a lista'),
+    `A19e: e o rótulo termina dizendo que ligou E que a lista não abriu (achei "${porIdDe(apQuebrou, 'avisos-rotulo').textContent}")`);
 
   tudoOk &= ok(dentroDoPainel.includes('id="btn-atalhos-abrir"'), 'A18: a linha de Atalhos usa #btn-atalhos-abrir');
   const recorteAtalhos = (dentroDoPainel.match(/<button class="lateral-acao atalhos-abrir ajuste" id="btn-atalhos-abrir"[\s\S]*?<\/button>/) || [''])[0];
@@ -5645,6 +7332,67 @@ async function parteA() {
   tudoOk &= ok(/chegou/.test(notaArq.textContent) && /v\.mp4/.test(notaArq.textContent), `a nota termina com chegou ("${notaArq.textContent}")`);
   tudoOk &= ok(travouDuranteOEnvio && btnMandar.dataset.recarregando !== '1', 'o Mandar destrava no fim');
 
+  // (d3) Vários arquivos de uma vez (card `enviar-varios-arquivos-de-uma-vez`, 18/09). O
+  // servidor RECUSA o 4º upload simultâneo com 429 (`lib/arquivos.js:209`, medido) — por isso
+  // o cliente manda UM DE CADA VEZ, e é isso que a primeira leva prova: o XHR seguinte só
+  // nasce depois que o anterior respondeu. A segunda leva prova que um arquivo acima do teto
+  // NÃO aborta o lote: os outros dois sobem e o resumo diz quem ficou de fora.
+  console.log('\n  · vários arquivos de uma vez');
+  tudoOk &= ok(/id="inp-arquivo-servidor"[^>]*\bmultiple\b/.test(html),
+    'o <input type=file> do painel tem `multiple` — a trava na origem saiu (index.html)');
+  const responderUltimoXhr = async (nome) => {
+    const atual = arq.xhrs[arq.xhrs.length - 1];
+    atual.status = 201;
+    atual.responseText = JSON.stringify({ nome, bytes: 10, pasta: '_triagem' });
+    if (typeof atual.onload === 'function') atual.onload();
+    await respirar(); await respirar();
+    return atual;
+  };
+  const nomesDosXhrs = (desde) => arq.xhrs.slice(desde).map((x) => decodeURIComponent(String(x.url).replace(/^.*nome=/, '')));
+
+  const antesDoLote = arq.xhrs.length;
+  porIdDe(arq, 'inp-arquivo-servidor').files = [{ name: 'a.txt', size: 10 }, { name: 'b.txt', size: 10 }, { name: 'c.txt', size: 10 }];
+  if (typeof porIdDe(arq, 'inp-arquivo-servidor').onchange === 'function') porIdDe(arq, 'inp-arquivo-servidor').onchange();
+  tudoOk &= ok(/3 arquivos/.test(porIdDe(arq, 'arquivo-servidor-selecionado').textContent),
+    `o rótulo vira contagem + soma ("${porIdDe(arq, 'arquivo-servidor-selecionado').textContent}")`);
+  if (typeof btnMandar.onclick === 'function') btnMandar.onclick();
+  await respirar(); await respirar();
+  const umDeCadaVez = arq.xhrs.length - antesDoLote === 1;
+  tudoOk &= ok(umDeCadaVez, `com 3 escolhidos só UM XHR abre de cara (${arq.xhrs.length - antesDoLote}) — serializado por causa do 429 do 4º simultâneo`);
+  tudoOk &= ok(btnMandar.dataset.recarregando === '1', 'e o Mandar trava já no primeiro do lote');
+  tudoOk &= ok(/1 de 3/.test(notaArq.textContent), `a nota mostra a posição no lote ("${notaArq.textContent}")`);
+  await responderUltimoXhr('a.txt');
+  tudoOk &= ok(arq.xhrs.length - antesDoLote === 2 && btnMandar.dataset.recarregando === '1',
+    'respondido o 1º, o 2º XHR nasce — e o botão continua travado no meio do lote');
+  await responderUltimoXhr('b.txt');
+  tudoOk &= ok(arq.xhrs.length - antesDoLote === 3, 'respondido o 2º, o 3º XHR nasce');
+  await responderUltimoXhr('c.txt');
+  tudoOk &= ok(arq.xhrs.length - antesDoLote === 3 && umDeCadaVez,
+    `escolher 3 arquivos gera exatamente 3 envios (${nomesDosXhrs(antesDoLote).join(', ')})`);
+  tudoOk &= ok(nomesDosXhrs(antesDoLote).join(',') === 'a.txt,b.txt,c.txt',
+    'os três sobem na ordem em que foram escolhidos, cada um com seu nome na URL');
+  tudoOk &= ok(/chegaram 3/.test(notaArq.textContent), `a nota final conta o lote ("${notaArq.textContent}")`);
+  tudoOk &= ok(btnMandar.dataset.recarregando !== '1' && progArq.value === 100,
+    'o Mandar destrava só no fim de TODOS, com a barra do lote em 100');
+
+  // Um acima do teto (2 GB, vindo de `api/arquivos/pastas`) no MEIO: os outros dois passam.
+  const antesDoTeto = arq.xhrs.length;
+  porIdDe(arq, 'inp-arquivo-servidor').files = [
+    { name: 'bom1.txt', size: 10 },
+    { name: 'gigante.iso', size: 3 * 1024 * 1024 * 1024 },
+    { name: 'bom2.txt', size: 10 },
+  ];
+  if (typeof btnMandar.onclick === 'function') btnMandar.onclick();
+  await respirar(); await respirar();
+  await responderUltimoXhr('bom1.txt');
+  await responderUltimoXhr('bom2.txt');
+  const subiramApesarDoTeto = nomesDosXhrs(antesDoTeto);
+  tudoOk &= ok(subiramApesarDoTeto.length === 2 && subiramApesarDoTeto.join(',') === 'bom1.txt,bom2.txt',
+    `o arquivo acima do teto NÃO impede os outros dois (subiram: ${subiramApesarDoTeto.join(', ')})`);
+  tudoOk &= ok(/chegaram 2 de 3/.test(notaArq.textContent) && /gigante\.iso/.test(notaArq.textContent) && /teto/.test(notaArq.textContent),
+    `e o resumo diz quem falhou e por quê ("${notaArq.textContent}")`);
+  tudoOk &= ok(btnMandar.dataset.recarregando !== '1', 'e o botão destrava mesmo com falha no meio do lote');
+
   // (e) A dica embaixo da caixa diz a verdade do aparelho.
   console.log('\n  · a dica diz a verdade de cada aparelho');
   const dic = carregarCliente({ aoBuscar: respostasDoCelular([]) });
@@ -5877,6 +7625,7 @@ async function parteA() {
       cwd: '/home/y/projetos/cockpit-agentes',
       status,
       updatedAt: Date.now(),
+      statusUpdatedAt: 1755800000123,
       pid: PID_DO_CLI,
       procStart: PARTIDA,
       tmux: `${SESSAO_FAKE}:${janela}.${pane}`,
@@ -5995,6 +7744,10 @@ async function parteA() {
     );
     tudoOk &= ok(subiu && subiu.temClaude === true && subiu.nascendo === false && subiu.falhou === false,
       'linha 2: com o claude no ar, `temClaude` apaga `nascendo` e `falhou` na hora');
+    tudoOk &= ok(subiu && subiu.statusDesde === 1755800000123,
+      'a linha da aba carrega `statusDesde` (o statusUpdatedAt do CLI) — identidade do aviso (lib/entregas.js)');
+    tudoOk &= ok(subiu && !('statusDesde' in require('../lib/abas').paraCliente(subiu)),
+      '`paraCliente()` não deixa `statusDesde` sair para o navegador');
     fs.rmSync(casaSubiu, { recursive: true, force: true });
   });
 
@@ -6318,8 +8071,8 @@ async function parteA() {
   await rodarGrupo('GUARDA: a aba sem agente de sempre', async () => {
     const cg = await telaCom(abaNova());
     const t = porIdDe(cg, 'abas').textContent;
-    tudoOk &= ok(t.includes('○') && /agente fechado/.test(t),
-      '[GUARDA] aba sem agente, sem nascendo e sem falhou, continua ○ + "agente fechado"');
+    tudoOk &= ok(t.includes('○') && !/agente fechado/.test(t) && porIdDe(cg, 'abas').querySelector('.conversa-rodape') === null,
+      '[GUARDA] aba sem agente, sem nascendo e sem falhou, continua ○ — e sem 2ª linha (D63: o sinal já diz)');
     await cg.abrirAba('aba-7');
     tudoOk &= ok(/sem agente rodando/.test(porIdDe(cg, 'aviso-agente').textContent),
       '[GUARDA] e o aviso de sempre continua aparecendo — agora no #aviso-agente, não na bolha');
@@ -6348,22 +8101,50 @@ async function parteA() {
    * `cwd` — e não só que o botão fez alguma coisa.
    */
   const clienteDaTela = ({ projetos = [{ nome: 'projeto-a' }, { nome: 'projeto-b' }], aba = abaDaTela(),
-    respostaPost = { chave: 'aba-9', titulo: 'projeto-a' }, respostaDelete = { morta: true } } = {}) => {
+    respostaPost = { chave: 'aba-9', titulo: 'projeto-a' }, respostaDelete = { morta: true },
+    // Renomear (card `renomear-a-aba`): `respostaPatch` pode ser objeto ou função — a função recebe
+    // (rota, opcoes) e pode devolver uma PROMESSA pendurada, que é como se prova a resposta
+    // atrasada. `respostaLista` troca a lista do GET quando o teste precisa que ela reflita o
+    // nome novo (ou falhe).
+    // `respostaAgentes` (card `modelo-na-nova-aba`): sem ela, `api/agentes` cai no padrão
+    // `{ painel: true, jobs: [] }` — sem `agentes`, o cliente degrada (campo Modelo escondido).
+    respostaPatch = { chave: 'aba-7', titulo: 'nome novo' }, respostaLista = null,
+    respostaAgentes = null,
+    // `respostaCriarPasta` (card `criar-pasta-na-aba-nova`): objeto ou função `(rota, opcoes)`. O padrão
+    // empurra `{ nome }` no MESMO array `projetos` do GET — o GET seguinte já lista a pasta nova.
+    respostaCriarPasta = (rota, opcoes) => {
+      const { nome } = JSON.parse(opcoes.body || '{}');
+      projetos.push({ nome });
+      return { nome };
+    } } = {}) => {
     const chamadas = [];
     const c = carregarCliente({
       aoBuscar: (rota, opcoes) => {
         chamadas.push({ rota: String(rota), opcoes: opcoes || {} });
+        // Antes do `startsWith`, e SÓ para POST: sem o filtro de método o GET cairia aqui (spec §6.2).
+        if (String(rota) === 'api/projetos' && (opcoes || {}).method === 'POST') {
+          return typeof respostaCriarPasta === 'function' ? respostaCriarPasta(String(rota), opcoes || {}) : respostaCriarPasta;
+        }
         if (String(rota).startsWith('api/projetos')) return { projetos };
         if (String(rota) === 'api/abas' && (opcoes || {}).method === 'POST') return respostaPost;
         if (/^api\/abas\/[\w-]+$/.test(String(rota)) && (opcoes || {}).method === 'DELETE') return respostaDelete;
-        if (String(rota).startsWith('api/abas')) return { abas: [aba] };
+        if (/^api\/abas\/[\w-]+$/.test(String(rota)) && (opcoes || {}).method === 'PATCH') {
+          return typeof respostaPatch === 'function' ? respostaPatch(String(rota), opcoes || {}) : respostaPatch;
+        }
+        if (String(rota).startsWith('api/abas')) return respostaLista ? respostaLista() : { abas: [aba] };
+        if (String(rota).startsWith('api/agentes') && respostaAgentes) {
+          return typeof respostaAgentes === 'function' ? respostaAgentes() : respostaAgentes;
+        }
         return { painel: true, jobs: [] };
       },
     });
     c.chamadas = chamadas;
     c.posts = () => chamadas.filter((x) => x.rota === 'api/abas' && x.opcoes.method === 'POST');
     c.deletes = () => chamadas.filter((x) => /^api\/abas\/[\w-]+$/.test(x.rota) && x.opcoes.method === 'DELETE');
+    c.patches = () => chamadas.filter((x) => /^api\/abas\/[\w-]+$/.test(x.rota) && x.opcoes.method === 'PATCH');
     c.listas = () => chamadas.filter((x) => x.rota === 'api/abas' && x.opcoes.method === undefined);
+    c.criacoes = () => chamadas.filter((x) => x.rota === 'api/projetos' && x.opcoes.method === 'POST');
+    c.leiturasDeProjetos = () => chamadas.filter((x) => x.rota === 'api/projetos' && x.opcoes.method === undefined);
     return c;
   };
   const respirarTela = () => new Promise((r) => setImmediate(r));
@@ -6428,11 +8209,10 @@ async function parteA() {
       tudoOk &= ok(Boolean(d) && /class="dialogo-corpo"/.test(d[1]) && /class="dialogo-acoes"/.test(d[1]),
         `${id} usa o padrão .dialogo-corpo + .dialogo-acoes, sem mecanismo novo (D32)`);
     }
-    // Dez desde a tela de tokens ter vindo para dentro do app (spec 2026-09-04, fase 2b):
-    // os nove de sempre mais o `#dialogo-uso`. Contagem exata, para um <dialog> a mais ou a
-    // menos não passar calado.
-    tudoOk &= ok((html.match(/<dialog id=/g) || []).length === 10,
-      `são DEZ <dialog> agora — os nove de sempre mais #dialogo-uso (${(html.match(/<dialog id=/g) || []).length})`);
+    // Doze desde o nome do aparelho (card `nome-do-aparelho-no-push`): os onze de antes mais o
+    // `#dialogo-aparelhos`. Contagem exata, para um <dialog> a mais ou a menos não passar calado.
+    tudoOk &= ok((html.match(/<dialog id=/g) || []).length === 14,
+      `são CATORZE <dialog> agora — os treze de antes mais #dialogo-monitor (${(html.match(/<dialog id=/g) || []).length})`);
     // Os dois são alvo de DEDO, e `.icone-so` sozinho dá 25px — o mesmo motivo que a
     // engrenagem e o recarregar já tinham.
     for (const classe of ['novo', 'fechar-aba']) {
@@ -6468,7 +8248,11 @@ async function parteA() {
     porIdDe(c, 'btn-nova-aba').onclick();
     await respirarTela();
     const sel = porIdDe(c, 'sel-projeto-novo');
-    tudoOk &= ok(sel.filhos.length === 2, `o diálogo lista os projetos (${sel.filhos.length})`);
+    // O <select> virou campo que filtra (card `pesquisar-a-pasta-na-aba-nova`): os projetos
+    // aparecem na LISTA, ao focar o campo — contados pela âncora da lista (#44).
+    sel.focus();
+    const opcoesC = porIdDe(c, 'lista-projeto-novo').querySelectorAll('.paleta-item');
+    tudoOk &= ok(opcoesC.length === 2, `o diálogo lista os projetos (${opcoesC.length})`);
     sel.value = 'projeto-a';
     const listasAntes = c.listas().length;
     porIdDe(c, 'btn-criar-aba').onclick();
@@ -6485,6 +8269,547 @@ async function parteA() {
     tudoOk &= ok(abaAberta(c) === 'aba-9' && conversaNaTela(c),
       `a aba nova já abre — o fluxo dela é o que está no ar (${abaAberta(c)})`);
   });
+
+  // (c2) card pesquisar-a-pasta-na-aba-nova: o campo Projeto filtra, escolhe pelo teclado e recusa nome que não está na lista.
+  {
+  const NOMES = ['agenda-web', 'cockpit-agentes', 'Coração', 'disco-backup', 'kids-app', 'site-clinica'];
+  const tecla = (el, key, extra = {}) => {
+    const ev = { key, barrado: false, preventDefault() { this.barrado = true; }, ...extra };
+    el.disparar('keydown', ev);
+    return ev;
+  };
+  const digitar = (el, texto) => { el.value = texto; el.disparar('input', {}); };
+  // Pela CLASSE, escopada pela lista (#44): o seletor de atributo do molde (`casaParte`,
+  // `gate-ui.js:49-53`) só lê `dataset` — `[role="option"]` não casaria nada aqui.
+  // Só os NOMES: o item "+ Criar pasta" (card `criar-pasta-na-aba-nova`) também é `.paleta-item`, marcado
+  // com `data-criar`. Quem precisa dele usa `itemCriar` (grupo c3).
+  const itens = (c) => porIdDe(c, 'lista-projeto-novo').querySelectorAll('.paleta-item').filter((b) => !b.dataset.criar);
+  const opcoes = (c) => itens(c).map((b) => b.textContent);
+  const destacado = (c) => (itens(c).find((b) => b.getAttribute('aria-selected') === 'true') || {}).textContent;
+  // TODO grupo abre o diálogo de verdade: sem `carregarProjetos()`, `projetosDaAba` fica vazio e
+  // as recusas passariam por vácuo.
+  const abrirCom = async (nomes = NOMES) => {
+    const c = clienteDaTela({ projetos: nomes.map((nome) => ({ nome })) });
+    porIdDe(c, 'btn-nova-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    return { c, campo: porIdDe(c, 'sel-projeto-novo'), lista: porIdDe(c, 'lista-projeto-novo') };
+  };
+  const novoMd = () => ({ barrado: false, preventDefault() { this.barrado = true; } });
+
+  await rodarGrupo('c2 · o HTML do campo e da lista', async () => {
+    tudoOk &= ok(/<input id="sel-projeto-novo"[^>]*role="combobox"/.test(html), 'o campo é um <input role="combobox">');
+    tudoOk &= ok(/<input id="sel-projeto-novo"[^>]*\bautofocus\b/.test(html), 'o campo tem autofocus');
+    tudoOk &= ok(/<input id="sel-projeto-novo"[^>]*aria-controls="lista-projeto-novo"/.test(html), 'o campo aponta a lista por aria-controls');
+    tudoOk &= ok(!/<select id="sel-projeto-novo"/.test(html), 'não sobrou o <select> do projeto');
+    tudoOk &= ok(dentroDoBloco('<dialog id="dialogo-nova-aba">', 'id="lista-projeto-novo"'), 'a lista mora dentro do diálogo da aba nova');
+    tudoOk &= ok(/id="lista-projeto-novo"[^>]*role="listbox"/.test(html), 'a lista é role="listbox"');
+    tudoOk &= ok(/\.lista-projeto\s*\{[^}]*overscroll-behavior:\s*contain/.test(css), 'a lista rola sem arrastar a página (overscroll-behavior)');
+    tudoOk &= ok(/\.lista-projeto\s*\{[^}]*overflow-y:\s*auto/.test(css), 'a lista rola sozinha (overflow-y)');
+  });
+
+  await rodarGrupo('c2 · lista completa com o campo vazio', async () => {
+    const { c, campo } = await abrirCom();
+    campo.focus();
+    tudoOk &= ok(opcoes(c).length === 6, `a lista traz as 6 pastas (${opcoes(c).length})`);
+    tudoOk &= ok(campo.getAttribute('aria-expanded') === 'true', 'aria-expanded="true"');
+    tudoOk &= ok(destacado(c) === 'agenda-web', `a 1ª vem destacada (${destacado(c)})`);
+    tudoOk &= ok(itens(c)[0]?.getAttribute('role') === 'option', 'o item é role="option"');
+    tudoOk &= ok(Boolean(itens(c)[0]?.id) && campo.getAttribute('aria-activedescendant') === itens(c)[0]?.id,
+      'aria-activedescendant aponta o item destacado');
+  });
+
+  await rodarGrupo('c2 · filtra sem acento, sem caixa, prefixo primeiro', async () => {
+    const { c, campo } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'CORACAO');
+    tudoOk &= ok(JSON.stringify(opcoes(c)) === '["Coração"]', `CORACAO acha Coração (${JSON.stringify(opcoes(c))})`);
+    digitar(campo, 'co');
+    tudoOk &= ok(JSON.stringify(opcoes(c)) === '["cockpit-agentes","Coração","disco-backup"]',
+      `co: prefixo primeiro (${JSON.stringify(opcoes(c))})`);
+  });
+
+  await rodarGrupo('c2 · escolhe pelo teclado', async () => {
+    const { c, campo, lista } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'co');
+    const e1 = tecla(campo, 'ArrowDown');
+    tudoOk &= ok(e1.barrado === true, 'ArrowDown dá preventDefault');
+    tudoOk &= ok(destacado(c) === 'Coração', `ArrowDown vai ao 2º (${destacado(c)})`);
+    // S6 (card `criar-pasta-na-aba-nova`): o item de criar é a ÚLTIMA posição da volta. Relido a cada
+    // tecla — `desenharProjetos()` recria os botões.
+    const criarAgora = () => porIdDe(c, 'lista-projeto-novo').querySelectorAll('[data-criar]')[0];
+    tecla(campo, 'ArrowDown');
+    tecla(campo, 'ArrowDown');
+    tudoOk &= ok(destacado(c) === undefined && criarAgora()?.getAttribute('aria-selected') === 'true',
+      'depois do último nome, o ↓ vai ao item de criar pasta');
+    tecla(campo, 'ArrowDown');
+    tudoOk &= ok(destacado(c) === 'cockpit-agentes', `volta circular (${destacado(c)})`);
+    tecla(campo, 'ArrowUp');
+    tudoOk &= ok(destacado(c) === undefined && criarAgora()?.getAttribute('aria-selected') === 'true',
+      'ArrowUp no 1º vai ao item de criar pasta');
+    tecla(campo, 'ArrowUp');
+    tudoOk &= ok(destacado(c) === 'disco-backup', `ArrowUp volta ao último nome (${destacado(c)})`);
+    const ev = tecla(campo, 'Enter');
+    tudoOk &= ok(ev.barrado === true, 'Enter dá preventDefault');
+    tudoOk &= ok(campo.value === 'disco-backup', `Enter escolhe (${campo.value})`);
+    tudoOk &= ok(lista.hidden === true, 'a lista fecha');
+    tudoOk &= ok(campo.getAttribute('aria-expanded') === 'false', 'aria-expanded="false"');
+  });
+
+  await rodarGrupo('c2 · filtro sem resultado', async () => {
+    const { c, campo, lista } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'zzz');
+    tudoOk &= ok(opcoes(c).length === 0, `nenhuma opção (${opcoes(c).length})`);
+    tudoOk &= ok(/Nenhuma pasta com esse nome/.test(lista.textContent), 'a lista diz que não há pasta');
+    tecla(campo, 'Enter');
+    tudoOk &= ok(campo.value === 'zzz', `Enter não muda o campo (${campo.value})`);
+  });
+
+  await rodarGrupo('c2 · Esc em dois tempos', async () => {
+    const { campo, lista } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'co');
+    const e1 = tecla(campo, 'Escape');
+    tudoOk &= ok(e1.barrado === true, '1º Esc com a lista aberta: preventDefault');
+    tudoOk &= ok(lista.hidden === true, '1º Esc fecha a lista');
+    const e2 = tecla(campo, 'Escape');
+    tudoOk &= ok(e2.barrado === false, '2º Esc com a lista fechada: sem preventDefault (o diálogo fecha)');
+  });
+
+  await rodarGrupo('c2 · Tab e IME', async () => {
+    const { c, campo, lista } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'co');
+    const t = tecla(campo, 'Tab');
+    tudoOk &= ok(t.barrado === false, 'Tab não dá preventDefault');
+    tudoOk &= ok(lista.hidden === true, 'Tab fecha a lista');
+    digitar(campo, 'co');
+    tecla(campo, 'Enter', { isComposing: true });
+    tudoOk &= ok(campo.value === 'co', `Enter de IME não escolhe (${campo.value})`);
+    tudoOk &= ok(lista.hidden === false && opcoes(c).length === 3, 'e a lista continua aberta com 3');
+  });
+
+  await rodarGrupo('c2 · toque e blur', async () => {
+    const { c, campo, lista } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'co');
+    const md = novoMd();
+    itens(c)[1]?.onmousedown?.(md);
+    tudoOk &= ok(md.barrado === true, 'mousedown na opção dá preventDefault');
+    tudoOk &= ok(campo.value === 'Coração', `e escolhe (${campo.value})`);
+    tudoOk &= ok(lista.hidden === true, 'e fecha a lista');
+    digitar(campo, 'co');
+    tudoOk &= ok(lista.hidden === false, 'digitar reabre');
+    campo.disparar('blur', {});
+    const tm = [...c.temporizadores.values()].at(-1);
+    tm?.fn?.();
+    tudoOk &= ok(lista.hidden === true, 'o blur fecha a lista (temporizador disparado à mão)');
+    // O foco que VOLTA antes dos 120 ms cancela o fechamento pendente (achado do painel de
+    // execução): sem isso, Tab para fora e de volta reabre a lista e ela fecha sozinha logo depois.
+    digitar(campo, 'co');
+    campo.disparar('blur', {});
+    const [idPendente] = [...c.temporizadores.entries()].at(-1) || [];
+    campo.focus();
+    c.temporizadores.get(idPendente)?.fn?.();
+    tudoOk &= ok(lista.hidden === false, 'o foco que volta antes dos 120 ms cancela o fechar do blur');
+  });
+
+  await rodarGrupo('c2 · reabrir depois de escolher', async () => {
+    const { c, campo } = await abrirCom();
+    campo.focus();
+    digitar(campo, 'cock');
+    tecla(campo, 'Enter');
+    tudoOk &= ok(campo.value === 'cockpit-agentes', `escolheu (${campo.value})`);
+    campo.disparar('click', {});
+    tudoOk &= ok(opcoes(c).length === 6, `o clique reabre com as 6 (${opcoes(c).length})`);
+    tudoOk &= ok(destacado(c) === 'cockpit-agentes', `com a escolhida destacada (${destacado(c)})`);
+    digitar(campo, 'kid');
+    tudoOk &= ok(JSON.stringify(opcoes(c)) === '["kids-app"]', `digitar volta a filtrar (${JSON.stringify(opcoes(c))})`);
+  });
+
+  await rodarGrupo('c2 · recusa fora da lista, vazio e quase-igual', async () => {
+    const { c, campo } = await abrirCom();
+    const notaDe = () => porIdDe(c, 'nota-nova-aba').textContent;
+    const criar = async (v) => {
+      campo.value = v;
+      porIdDe(c, 'btn-criar-aba').onclick();
+      await respirarTela();
+      await respirarTela();
+    };
+    await criar('nao-existe');
+    tudoOk &= ok(c.posts().length === 0, 'nome inexistente: zero POST');
+    tudoOk &= ok(/nenhuma pasta "nao-existe"/.test(notaDe()), `e a nota diz o motivo (${notaDe()})`);
+    await criar('');
+    tudoOk &= ok(c.posts().length === 0, 'campo vazio: zero POST');
+    tudoOk &= ok(/escolha um projeto da lista/.test(notaDe()), `e a nota pede a lista (${notaDe()})`);
+    await criar('Cockpit-Agentes');
+    tudoOk &= ok(c.posts().length === 0, 'quase-igual: zero POST');
+    await criar('kids-app');
+    tudoOk &= ok(c.posts().length === 1, `nome exato sai (${c.posts().length})`);
+  });
+
+  await rodarGrupo('c2 · digitar não apaga a nota do Criar travado', async () => {
+    const { c, campo, lista } = await abrirCom([]);
+    tudoOk &= ok(porIdDe(c, 'btn-criar-aba').disabled === true, 'Criar travado sem projeto');
+    tudoOk &= ok(campo.disabled !== true, 'o campo não é desabilitado');
+    campo.focus();
+    tudoOk &= ok(/Nenhuma pasta com esse nome/.test(lista.textContent), 'a lista diz que não há pasta');
+    digitar(campo, 'x');
+    tudoOk &= ok(/nenhum projeto/i.test(porIdDe(c, 'nota-nova-aba').textContent), 'digitar não apaga a nota do motivo');
+  });
+
+  await rodarGrupo('c2 · sem trim', async () => {
+    const { c, campo } = await abrirCom(['app', 'app ']);
+    campo.focus();
+    digitar(campo, 'app');
+    itens(c).find((b) => b.textContent === 'app ')?.onmousedown?.(novoMd());
+    porIdDe(c, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(c.posts().length === 1, `sai um POST (${c.posts().length})`);
+    tudoOk &= ok(JSON.parse(c.posts()[0]?.opcoes.body || '{}').projeto === 'app ', 'e leva "app " com o espaço');
+    const o = await abrirCom(['app', 'app ']);
+    o.campo.value = ' app';
+    porIdDe(o.c, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(o.c.posts().length === 0, '" app" não vale: zero POST');
+  });
+
+  await rodarGrupo('c2 · a resposta que chega com o campo focado', async () => {
+    let soltar;
+    const pendente = new Promise((r) => { soltar = r; });
+    const c = carregarCliente({
+      aoBuscar: (rota) => {
+        if (String(rota).startsWith('api/projetos')) return pendente;
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(c, 'btn-nova-aba').onclick();
+    porIdDe(c, 'sel-projeto-novo').focus();
+    soltar({ projetos: NOMES.map((nome) => ({ nome })) });
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(itens(c).length === 6, `a lista se redesenha com a resposta (${itens(c).length})`);
+  });
+  }
+
+  // (c3) card criar-pasta-na-aba-nova: o item "+ Criar pasta" no fim da lista do campo Projeto.
+  // Spec §6.2. Nomes neutros (publicação pública). O item é `.paleta-item[data-criar]`; os nomes, o resto.
+  {
+  const NOMES = ['app', 'appCockpit', 'Coração', 'Demo', 'disco-backup'];
+  const tecla = (el, key, extra = {}) => {
+    const ev = { key, barrado: false, preventDefault() { this.barrado = true; }, ...extra };
+    el.disparar('keydown', ev);
+    return ev;
+  };
+  const digitar = (el, texto) => { el.value = texto; el.disparar('input', {}); };
+  const lista = (c) => porIdDe(c, 'lista-projeto-novo');
+  const nomes = (c) => lista(c).querySelectorAll('.paleta-item').filter((b) => !b.dataset.criar).map((b) => b.textContent);
+  const itemCriar = (c) => lista(c).querySelectorAll('[data-criar]')[0] || null;
+  const destacados = (c) => lista(c).querySelectorAll('.paleta-item').filter((b) => b.getAttribute('aria-selected') === 'true');
+  const novoMd = () => ({ barrado: false, preventDefault() { this.barrado = true; } });
+  const respirar = async () => { await respirarTela(); await respirarTela(); await respirarTela(); };
+  const abrirCom = async (opcoes = {}) => {
+    const projetos = (opcoes.nomes || NOMES).map((nome) => ({ nome }));
+    const c = clienteDaTela({ projetos, ...(opcoes.respostaCriarPasta ? { respostaCriarPasta: opcoes.respostaCriarPasta } : {}) });
+    porIdDe(c, 'btn-nova-aba').onclick();
+    await respirar();
+    const campo = porIdDe(c, 'sel-projeto-novo');
+    campo.focus();
+    return { c, campo };
+  };
+
+  await rodarGrupo('c3 · o item aparece com o nome convertido (T1, T2, T3)', async () => {
+    const { c, campo } = await abrirCom();
+    tudoOk &= ok(itemCriar(c) === null, 'T3: campo vazio, sem item');
+    digitar(campo, 'Meu Projeto');
+    tudoOk &= ok(itemCriar(c)?.textContent === '+ Criar pasta Meu-Projeto', `T1: o item mostra o convertido (${itemCriar(c)?.textContent})`);
+    tudoOk &= ok(/Nenhuma pasta com esse nome/.test(lista(c).textContent), 'T1: e a frase "Nenhuma pasta…" continua (S8)');
+    tudoOk &= ok(destacados(c).length === 0 && !campo.getAttribute('aria-activedescendant'), 'T1: com zero nomes, nada nasce destacado (S5)');
+    tudoOk &= ok(itemCriar(c)?.getAttribute('role') === 'option' && itemCriar(c)?.id === 'projeto-opcao-criar', 'T1: o item é role=option com id próprio');
+    digitar(campo, 'ap');
+    tudoOk &= ok(JSON.stringify(nomes(c)) === '["app","appCockpit"]', `T2: os nomes que casam (${JSON.stringify(nomes(c))})`);
+    tudoOk &= ok(itemCriar(c)?.textContent === '+ Criar pasta ap', `T2: com resultado parcial o item continua (${itemCriar(c)?.textContent})`);
+    const filhos = lista(c).filhos.filter((f) => f.tag !== '#texto');
+    tudoOk &= ok(filhos[filhos.length - 1] === itemCriar(c), 'T2: o item é o ÚLTIMO filho da lista');
+    tudoOk &= ok(destacados(c)[0]?.textContent === 'app', 'T2: com nomes, o 1º continua destacado (D71)');
+    digitar(campo, 'apps');
+    tudoOk &= ok(nomes(c).length === 0 && itemCriar(c)?.textContent === '+ Criar pasta apps', 'T2: apps ⇒ só o item');
+  });
+
+  await rodarGrupo('c3 · não oferece o que já existe (T4) nem nome inválido (T5)', async () => {
+    const { c, campo } = await abrirCom();
+    for (const v of ['app', 'APP', 'Demo', 'demo', 'Coracao']) {
+      digitar(campo, v);
+      tudoOk &= ok(itemCriar(c) === null, `T4: "${v}" já existe (caixa/acento) ⇒ sem item`);
+    }
+    digitar(campo, 'disco backup');
+    tudoOk &= ok(itemCriar(c) === null && nomes(c).includes('disco-backup'), `T4: "disco backup" acha disco-backup pelo convertido (S4) (${nomes(c)})`);
+    for (const [v, esperado] of [['Ação Já!', 'Acao-Ja'], ['a.b', 'ab'], ['  Meu  Projeto  ', 'Meu-Projeto']]) {
+      digitar(campo, v);
+      tudoOk &= ok(itemCriar(c)?.textContent === `+ Criar pasta ${esperado}`, `T5: "${v}" ⇒ ${esperado} (${itemCriar(c)?.textContent})`);
+    }
+    for (const v of ['!!!', '   ', '-x', 'x'.repeat(65)]) {
+      digitar(campo, v);
+      tudoOk &= ok(itemCriar(c) === null, `T5: "${v.length > 10 ? '65×x' : v}" ⇒ sem item (S2)`);
+    }
+  });
+
+  await rodarGrupo('c3 · setas alcançam o item (T6)', async () => {
+    const { c, campo } = await abrirCom();
+    digitar(campo, 'ap');
+    tecla(campo, 'ArrowDown');
+    tudoOk &= ok(destacados(c)[0]?.textContent === 'appCockpit', 'T6: 1º ↓ vai ao 2º nome');
+    const e = tecla(campo, 'ArrowDown');
+    tudoOk &= ok(e.barrado === true && itemCriar(c)?.getAttribute('aria-selected') === 'true', 'T6: 2º ↓ destaca o item');
+    tudoOk &= ok(campo.getAttribute('aria-activedescendant') === 'projeto-opcao-criar', 'T6: aria-activedescendant aponta o item');
+    tecla(campo, 'ArrowDown');
+    tudoOk &= ok(destacados(c)[0]?.textContent === 'app', 'T6: mais um ↓ volta ao 1º');
+    tecla(campo, 'ArrowUp');
+    tudoOk &= ok(itemCriar(c)?.getAttribute('aria-selected') === 'true', 'T6: ↑ no 1º vai ao item');
+  });
+
+  await rodarGrupo('c3 · Enter no item cria, escolhe e deixa o Criar abrir a aba (T7, T8)', async () => {
+    const { c, campo } = await abrirCom();
+    digitar(campo, 'ap');
+    tecla(campo, 'ArrowDown');
+    tecla(campo, 'ArrowDown');
+    const leiturasAntes = c.leiturasDeProjetos().length;
+    const e = tecla(campo, 'Enter');
+    await respirar();
+    tudoOk &= ok(e.barrado === true, 'T7: Enter no item dá preventDefault');
+    tudoOk &= ok(c.criacoes().length === 1, `T7: UM POST api/projetos (${c.criacoes().length})`);
+    tudoOk &= ok(c.criacoes()[0]?.opcoes.body === '{"nome":"ap"}', `T7: o corpo é só o nome (${c.criacoes()[0]?.opcoes.body})`);
+    tudoOk &= ok(c.leiturasDeProjetos().length === leiturasAntes + 1, 'T7: depois do POST, um GET api/projetos (recarrega)');
+    tudoOk &= ok(campo.value === 'ap', `T7: a pasta nova fica escolhida (${campo.value})`);
+    tudoOk &= ok(lista(c).hidden === true, 'T7: a lista fecha');
+    tudoOk &= ok(porIdDe(c, 'nota-nova-aba').textContent === '', 'T7: a nota fica vazia');
+    tudoOk &= ok(c.document.activeElement === campo, 'T7: o foco continua no campo');
+    porIdDe(c, 'btn-criar-aba').onclick();
+    await respirar();
+    tudoOk &= ok(c.posts().length === 1 && JSON.parse(c.posts()[0].opcoes.body).projeto === 'ap', 'T8: o Criar abre a aba na pasta nova (D71 aceita)');
+  });
+
+  await rodarGrupo('c3 · zero resultados: Enter não cria; ↓ + Enter cria (T9)', async () => {
+    const { c, campo } = await abrirCom();
+    digitar(campo, 'zzz');
+    tecla(campo, 'Enter');
+    await respirar();
+    tudoOk &= ok(c.criacoes().length === 0 && campo.value === 'zzz', 'T9: Enter sem nada destacado não cria');
+    tecla(campo, 'ArrowDown');
+    tecla(campo, 'Enter');
+    await respirar();
+    tudoOk &= ok(c.criacoes().length === 1 && c.criacoes()[0].opcoes.body === '{"nome":"zzz"}', 'T9: ↓ + Enter cria zzz');
+  });
+
+  await rodarGrupo('c3 · toque no item (T10) e dedo duplo (T11)', async () => {
+    const { c, campo } = await abrirCom();
+    digitar(campo, 'novo');
+    const md = novoMd();
+    itemCriar(c)?.onmousedown?.(md);
+    await respirar();
+    tudoOk &= ok(md.barrado === true && c.criacoes().length === 1, 'T10: mousedown dá preventDefault e cria');
+    tudoOk &= ok(campo.value === 'novo' && c.document.activeElement === campo, 'T10: campo com o nome, foco no campo');
+
+    let soltar;
+    const pendente = new Promise((r) => { soltar = r; });
+    const o = await abrirCom({ respostaCriarPasta: () => pendente });
+    digitar(o.campo, 'lento');
+    itemCriar(o.c)?.onmousedown?.(novoMd());
+    itemCriar(o.c)?.onmousedown?.(novoMd());
+    tecla(o.campo, 'ArrowDown');
+    tecla(o.campo, 'Enter');
+    await respirar();
+    tudoOk &= ok(o.c.criacoes().length === 1, `T11: dois toques + Enter = UM POST (${o.c.criacoes().length})`);
+    soltar({ nome: 'lento' });
+    await respirar();
+    tudoOk &= ok(o.campo.value === 'lento', `T11: solto o POST, o campo fica com o nome (${o.campo.value})`);
+  });
+
+  await rodarGrupo('c3 · erro do servidor vai para a nota (T12)', async () => {
+    const { c, campo } = await abrirCom({ respostaCriarPasta: { __status: 409, erro: 'já existe uma pasta com esse nome' } });
+    digitar(campo, 'outra');
+    itemCriar(c)?.onmousedown?.(novoMd());
+    await respirar();
+    tudoOk &= ok(/já existe uma pasta com esse nome/.test(porIdDe(c, 'nota-nova-aba').textContent), 'T12: a nota diz o motivo');
+    tudoOk &= ok(porIdDe(c, 'dialogo-nova-aba').open === true, 'T12: o diálogo continua aberto (D32)');
+    tudoOk &= ok(campo.value === 'outra' && lista(c).hidden === true, 'T12: campo com o texto, lista fechada');
+    tudoOk &= ok(c.posts().length === 0, 'T12: nenhum POST api/abas');
+  });
+
+  await rodarGrupo('c3 · primeira pasta destrava o Criar (T13)', async () => {
+    const { c, campo } = await abrirCom({ nomes: [] });
+    tudoOk &= ok(porIdDe(c, 'btn-criar-aba').disabled === true, 'T13: sem pasta, o Criar nasce travado');
+    digitar(campo, 'novo');
+    itemCriar(c)?.onmousedown?.(novoMd());
+    await respirar();
+    tudoOk &= ok(porIdDe(c, 'btn-criar-aba').disabled === false, 'T13: a primeira pasta destrava o Criar');
+    tudoOk &= ok(!/nenhum projeto/i.test(porIdDe(c, 'nota-nova-aba').textContent), 'T13: e a nota "nenhum projeto" some');
+  });
+
+  await rodarGrupo('c3 · GET depois do POST falha (T14)', async () => {
+    const projetos = NOMES.map((nome) => ({ nome }));
+    let posts = 0;
+    const postsAbas = [];
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (String(rota) === 'api/projetos' && opcoes.method === 'POST') { posts += 1; return { nome: JSON.parse(opcoes.body).nome }; }
+        if (String(rota).startsWith('api/projetos')) return posts ? { __status: 500, erro: 'falhou' } : { projetos };
+        if (String(rota) === 'api/abas' && opcoes.method === 'POST') { postsAbas.push(opcoes); return { chave: 'aba-9', titulo: 'x' }; }
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(c, 'btn-nova-aba').onclick();
+    await respirar();
+    const campo = porIdDe(c, 'sel-projeto-novo');
+    campo.focus();
+    digitar(campo, 'novo');
+    porIdDe(c, 'lista-projeto-novo').querySelectorAll('[data-criar]')[0]?.onmousedown?.(novoMd());
+    await respirar();
+    tudoOk &= ok(campo.value === 'novo', `T14: o 201 basta — campo com o nome (${campo.value})`);
+    tudoOk &= ok(porIdDe(c, 'nota-nova-aba').textContent === '', 'T14: sem recado de erro (o GET que falhou é absorvido, S9)');
+    porIdDe(c, 'btn-criar-aba').onclick();
+    await respirar();
+    tudoOk &= ok(postsAbas.length === 1 && JSON.parse(postsAbas[0].body).projeto === 'novo',
+      `T14: o Criar abre a aba em novo — o push de reserva pôs o nome na lista (${postsAbas.length})`);
+  });
+
+  await rodarGrupo('c3 · resposta velha não mexe na abertura nova (T16, T17, T18)', async () => {
+    // T16: POST pendurado; reabre; escolhe app; solta.
+    let soltar;
+    const pendente = new Promise((r) => { soltar = r; });
+    const { c, campo } = await abrirCom({ respostaCriarPasta: () => pendente });
+    digitar(campo, 'velha');
+    itemCriar(c)?.onmousedown?.(novoMd());
+    porIdDe(c, 'btn-fechar-nova-aba').onclick();   // Cancelar — no navegador, showModal num diálogo aberto lança
+    porIdDe(c, 'btn-nova-aba').onclick();
+    await respirar();
+    campo.focus();
+    digitar(campo, 'app');
+    tecla(campo, 'Enter');
+    soltar({ nome: 'velha' });
+    await respirar();
+    tudoOk &= ok(campo.value === 'app', `T16: a resposta velha não troca o campo (${campo.value})`);
+    porIdDe(c, 'btn-criar-aba').onclick();
+    await respirar();
+    tudoOk &= ok(c.posts().length === 1 && JSON.parse(c.posts()[0].opcoes.body).projeto === 'app', 'T16: o Criar abre em app');
+
+    // T17: POST resolve, GET pendurado e REJEITA depois da reabertura.
+    let rejeitarGet;
+    let fase = 'normal';
+    const projetos = NOMES.map((nome) => ({ nome }));
+    const cB = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (String(rota) === 'api/projetos' && opcoes.method === 'POST') { fase = 'get-pendurado'; return { nome: 'velha' }; }
+        if (String(rota).startsWith('api/projetos')) {
+          if (fase === 'get-pendurado') { fase = 'normal'; return new Promise((resolve) => { rejeitarGet = () => resolve({ __status: 500, erro: 'falhou' }); }); }
+          return { projetos };
+        }
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(cB, 'btn-nova-aba').onclick();
+    await respirar();
+    const campo2 = porIdDe(cB, 'sel-projeto-novo');
+    campo2.focus();
+    digitar(campo2, 'velha');
+    porIdDe(cB, 'lista-projeto-novo').querySelectorAll('[data-criar]')[0]?.onmousedown?.(novoMd());
+    await respirar();
+    porIdDe(cB, 'btn-fechar-nova-aba').onclick();
+    porIdDe(cB, 'btn-nova-aba').onclick();
+    await respirar();
+    campo2.focus();
+    digitar(campo2, 'app');
+    tecla(campo2, 'Enter');
+    rejeitarGet?.();
+    await respirar();
+    tudoOk &= ok(campo2.value === 'app', `T17: o GET velho que falha não troca o campo (${campo2.value})`);
+    tudoOk &= ok(porIdDe(cB, 'nota-nova-aba').textContent === '', 'T17: nem escreve na nota');
+
+    // T18: POST pendurado; reabre; um POST novo sai mesmo assim.
+    const o = await abrirCom({ respostaCriarPasta: (rota, opcoes) => (JSON.parse(opcoes.body).nome === 'primeira' ? new Promise(() => {}) : { nome: 'outra' }) });
+    digitar(o.campo, 'primeira');
+    itemCriar(o.c)?.onmousedown?.(novoMd());
+    porIdDe(o.c, 'btn-fechar-nova-aba').onclick();
+    porIdDe(o.c, 'btn-nova-aba').onclick();
+    await respirar();
+    o.campo.focus();
+    digitar(o.campo, 'outra');
+    tecla(o.campo, 'ArrowDown');
+    tecla(o.campo, 'Enter');
+    await respirar();
+    tudoOk &= ok(o.c.criacoes().length === 2 && o.c.criacoes()[1].opcoes.body === '{"nome":"outra"}',
+      `T18: a trava da abertura velha não trava a nova (${o.c.criacoes().length} POSTs)`);
+    tudoOk &= ok(o.campo.value === 'outra', `T18: e a pasta nova fica escolhida (${o.campo.value})`);
+  });
+
+  await rodarGrupo('c3 · o item só nasce depois do GET desta abertura (T19, T20)', async () => {
+    // T19: GET inicial pendurado — sem lista, sem item; solto, o item aparece.
+    let soltar;
+    const pendente = new Promise((r) => { soltar = r; });
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (String(rota).startsWith('api/projetos') && opcoes.method !== 'POST') return pendente;
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(c, 'btn-nova-aba').onclick();
+    const campo = porIdDe(c, 'sel-projeto-novo');
+    campo.focus();
+    digitar(campo, 'novo');
+    tudoOk &= ok(itemCriar(c) === null, 'T19: antes do GET responder, sem item');
+    soltar({ projetos: NOMES.map((nome) => ({ nome })) });
+    await respirar();
+    tudoOk &= ok(itemCriar(c)?.textContent === '+ Criar pasta novo', `T19: o GET respondeu e o item apareceu (${itemCriar(c)?.textContent})`);
+
+    // T20: GET da abertura 1 chega VAZIO depois da criação na abertura 2.
+    let soltarVelho;
+    let leituras = 0;
+    const lista = NOMES.map((nome) => ({ nome }));
+    const postsAbas = [];
+    const cB = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (String(rota) === 'api/projetos' && opcoes.method === 'POST') {
+          const { nome } = JSON.parse(opcoes.body);
+          lista.push({ nome });
+          return { nome };
+        }
+        if (String(rota).startsWith('api/projetos')) {
+          leituras += 1;
+          if (leituras === 1) return new Promise((r) => { soltarVelho = () => r({ projetos: [] }); });
+          return { projetos: lista.slice() };
+        }
+        if (String(rota) === 'api/abas' && opcoes.method === 'POST') { postsAbas.push(opcoes); return { chave: 'aba-9', titulo: 'x' }; }
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(cB, 'btn-nova-aba').onclick();
+    porIdDe(cB, 'btn-fechar-nova-aba').onclick();
+    porIdDe(cB, 'btn-nova-aba').onclick();
+    await respirar();
+    const campoB = porIdDe(cB, 'sel-projeto-novo');
+    campoB.focus();
+    digitar(campoB, 'novo');
+    porIdDe(cB, 'lista-projeto-novo').querySelectorAll('[data-criar]')[0]?.onmousedown?.(novoMd());
+    await respirar();
+    soltarVelho?.();
+    await respirar();
+    tudoOk &= ok(campoB.value === 'novo', `T20: o GET velho não apaga a escolha (${campoB.value})`);
+    tudoOk &= ok(porIdDe(cB, 'btn-criar-aba').disabled === false, 'T20: nem trava o Criar');
+    tudoOk &= ok(!/nenhum projeto/i.test(porIdDe(cB, 'nota-nova-aba').textContent), 'T20: nem escreve "nenhum projeto"');
+    porIdDe(cB, 'btn-criar-aba').onclick();
+    await respirar();
+    tudoOk &= ok(postsAbas.length === 1 && JSON.parse(postsAbas[0].body).projeto === 'novo', `T20: o Criar abre em novo (${postsAbas.length})`);
+  });
+  }
 
   // (d) §5.1 item 7: o erro do POST vai DENTRO do diálogo, que continua aberto. O painel é
   // modal — bolha atrás dele nasce invisível (D32).
@@ -6534,6 +8859,124 @@ async function parteA() {
     await respirarTela();
     tudoOk &= ok(porIdDe(cf, 'btn-criar-aba').dataset.recarregando !== '1',
       'o botão volta a aceitar clique mesmo quando o POST falha');
+  });
+
+  // (e2) card `modelo-na-nova-aba`: o campo Modelo do diálogo de aba nova.
+  await rodarGrupo('o campo Modelo da aba nova', async () => {
+    const mockAgentes = {
+      agentes: [
+        { id: 'claude', rotulo: 'Claude Code', modelos: [
+          { id: 'opus', rotulo: 'Opus' }, { id: 'fable', rotulo: 'Fable' },
+          { id: 'sonnet', rotulo: 'Sonnet' }, { id: 'haiku', rotulo: 'Haiku' },
+        ] },
+        { id: 'codex', rotulo: 'Codex CLI', modelos: [] },
+      ],
+      padrao: 'claude',
+    };
+    const corpoDoUltimoPost = (c) => {
+      const p = c.posts();
+      return p.length ? JSON.parse(p[p.length - 1].opcoes.body) : {};
+    };
+
+    // Abrir o diálogo → o campo Modelo nasce visível (o fallback `agentePadraoDaAba` decide,
+    // já que `sel-agente-novo.value` ainda é '' no DOM falso) com Padrão + os 4 modelos.
+    const c1 = clienteDaTela({ respostaAgentes: mockAgentes });
+    porIdDe(c1, 'btn-nova-aba').onclick();
+    await respirarTela();
+    tudoOk &= ok(porIdDe(c1, 'campo-modelo-novo').hidden === false,
+      'o campo Modelo aparece ao abrir o diálogo com o Claude');
+    const selModelo1 = porIdDe(c1, 'sel-modelo-novo');
+    tudoOk &= ok(selModelo1.filhos.length === 5, `5 opções: Padrão + 4 modelos (achei ${selModelo1.filhos.length})`);
+    tudoOk &= ok(selModelo1.filhos[0].value === '', 'a 1a opção é Padrão, com value vazio');
+
+    // Criar com o modelo em Padrão → o POST NÃO leva a chave `modelo`.
+    porIdDe(c1, 'sel-projeto-novo').value = 'projeto-a';
+    porIdDe(c1, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(!('modelo' in corpoDoUltimoPost(c1)), 'POST com Padrão não leva a chave modelo');
+
+    // Novo cliente: escolher Claude + Fable manda `{agente:'claude', modelo:'fable'}`.
+    const c2 = clienteDaTela({ respostaAgentes: mockAgentes });
+    porIdDe(c2, 'btn-nova-aba').onclick();
+    await respirarTela();
+    // Preparação do TESTE: o DOM falso (`criarElemento`) nasce com `value: ''` e `append()`
+    // não sincroniza com `option.selected` — achado do painel; o app não muda por isso.
+    porIdDe(c2, 'sel-agente-novo').value = 'claude';
+    porIdDe(c2, 'sel-modelo-novo').value = 'fable';
+    porIdDe(c2, 'sel-projeto-novo').value = 'projeto-a';
+    porIdDe(c2, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    const corpo2 = corpoDoUltimoPost(c2);
+    tudoOk &= ok(corpo2.modelo === 'fable' && corpo2.agente === 'claude',
+      `corpo leva agente+modelo escolhidos (${JSON.stringify(corpo2)})`);
+
+    // Novo cliente: trocar para Codex esconde o campo, e o POST sai sem `modelo`.
+    const c3 = clienteDaTela({ respostaAgentes: mockAgentes });
+    porIdDe(c3, 'btn-nova-aba').onclick();
+    await respirarTela();
+    porIdDe(c3, 'sel-agente-novo').value = 'codex';
+    porIdDe(c3, 'sel-agente-novo').onchange();
+    tudoOk &= ok(porIdDe(c3, 'campo-modelo-novo').hidden === true, 'com Codex, o campo Modelo some');
+    porIdDe(c3, 'sel-projeto-novo').value = 'projeto-a';
+    porIdDe(c3, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(!('modelo' in corpoDoUltimoPost(c3)), 'POST com Codex não leva a chave modelo');
+
+    // Voltar para Claude reabre o campo, de volta em Padrão.
+    porIdDe(c3, 'sel-agente-novo').value = 'claude';
+    porIdDe(c3, 'sel-agente-novo').onchange();
+    tudoOk &= ok(porIdDe(c3, 'campo-modelo-novo').hidden === false, 'voltar para Claude reabre o campo');
+    tudoOk &= ok(porIdDe(c3, 'sel-modelo-novo').value === '', 'e ele volta para Padrão');
+
+    // Reabrir o diálogo: reset SÍNCRONO. Escolhe fable, fecha, abre de novo com a resposta de
+    // /api/agentes pendurada (nunca resolve) na 2a abertura — ANTES de respirarTela(), o
+    // campo já tem que estar escondido de novo. O reset é SÍNCRONO: não espera resposta
+    // nenhuma do servidor, nem a da PRIMEIRA abertura, que já voltou.
+    let chamadasAgentes4 = 0;
+    let ultimoPostAbas4 = null;
+    const c4 = carregarCliente({
+      aoBuscar: (rota, opcoes) => {
+        if (String(rota).startsWith('api/projetos')) return { projetos: [{ nome: 'projeto-a' }] };
+        if (String(rota) === 'api/abas' && (opcoes || {}).method === 'POST') {
+          ultimoPostAbas4 = JSON.parse(opcoes.body);
+          return { chave: 'aba-9', titulo: 'projeto-a' };
+        }
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        if (String(rota).startsWith('api/agentes')) {
+          chamadasAgentes4 += 1;
+          return chamadasAgentes4 === 1 ? mockAgentes : new Promise(() => { /* nunca resolve */ });
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(c4, 'btn-nova-aba').onclick();
+    await respirarTela();
+    porIdDe(c4, 'sel-modelo-novo').value = 'fable';
+    porIdDe(c4, 'btn-fechar-nova-aba').onclick();
+    porIdDe(c4, 'btn-nova-aba').onclick(); // reabre — a 2a /api/agentes nunca volta
+    tudoOk &= ok(porIdDe(c4, 'campo-modelo-novo').hidden === true,
+      'reset síncrono: o campo já nasce escondido ANTES de qualquer resposta do servidor');
+    porIdDe(c4, 'sel-projeto-novo').value = 'projeto-a';
+    porIdDe(c4, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(ultimoPostAbas4 !== null && !('modelo' in ultimoPostAbas4),
+      `com /api/agentes pendurado, o POST sai sem modelo (= Padrão) (achei ${JSON.stringify(ultimoPostAbas4)})`);
+
+    // Sem mock de agentes (cliente padrão): campo escondido, POST sem modelo — cliente
+    // velho/servidor velho degrada, não quebra.
+    const c5 = clienteDaTela();
+    porIdDe(c5, 'btn-nova-aba').onclick();
+    await respirarTela();
+    tudoOk &= ok(porIdDe(c5, 'campo-modelo-novo').hidden === true, 'sem mock de agentes, o campo fica escondido');
+    porIdDe(c5, 'sel-projeto-novo').value = 'projeto-a';
+    porIdDe(c5, 'btn-criar-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(!('modelo' in corpoDoUltimoPost(c5)), 'e o POST sai sem a chave modelo');
   });
 
   // (f) §5.1 item 5: o diálogo de matar escreve O ESTADO, tirado da aba que a lista já tem.
@@ -6612,6 +9055,346 @@ async function parteA() {
       'e o diálogo fica aberto para ele ler o motivo');
   });
 
+  // ── Renomear a aba (card `renomear-a-aba`) ────────────────────────────────
+  const lapisDe = (c, i = 0) => porIdDe(c, 'abas').querySelectorAll('.renomear-aba')[i] || null;
+  const tocar = (lapis) => lapis.onclick({ stopPropagation() {} });
+
+  await rodarGrupo('renomear: o lápis em cada linha e o 11º <dialog>', async () => {
+    const d = html.match(/<dialog id="dialogo-renomear-aba">([\s\S]*?)<\/dialog>/);
+    tudoOk &= ok(Boolean(d), 'existe o <dialog id="dialogo-renomear-aba">');
+    tudoOk &= ok(Boolean(d) && /class="dialogo-corpo"/.test(d[1]) && /class="dialogo-acoes"/.test(d[1]),
+      'no padrão .dialogo-corpo + .dialogo-acoes, sem mecanismo novo (D32)');
+    tudoOk &= ok(dentroDoBloco('<dialog id="dialogo-renomear-aba">', 'id="nota-renomear-aba"'),
+      'a nota de erro mora DENTRO do diálogo — fora dele nasceria atrás do modal');
+    tudoOk &= ok(Boolean(d) && /<input id="nome-aba"/.test(d[1]), 'o campo mora dentro do diálogo');
+    tudoOk &= ok(Boolean(d) && !/maxlength/.test(d[1]),
+      'o campo NÃO tem maxlength — o teto é regra do servidor, duas cópias se separam (#40)');
+    const c = clienteDaTela({ respostaLista: () => ({ abas: [abaDaTela(), abaDaTela({ chave: 'aba-8', titulo: 'outra', sessaoId: 'sess-8' })] }) });
+    await c.carregarAbas();
+    const lista = porIdDe(c, 'abas');
+    const linhas = lista.querySelectorAll('.conversa-linha');
+    const lapis = lista.querySelectorAll('.renomear-aba');
+    tudoOk &= ok(linhas.length === 2 && lapis.length === 2, `um lápis por linha de aba (${lapis.length}/${linhas.length})`);
+    tudoOk &= ok(lapis.every((b) => b.pai && String(b.pai.className).split(/\s+/).includes('conversa-linha')),
+      'o lápis é filho da .conversa-linha — irmão do .conversa');
+    tudoOk &= ok(lista.querySelectorAll('.conversa').every((b) => b.querySelector('.renomear-aba') === null),
+      'e nenhum .conversa tem o lápis dentro (botão em botão é HTML inválido)');
+    tudoOk &= ok(lapis.every((b) => /Renomear a aba/.test(String(b.getAttribute('aria-label') || ''))),
+      'o lápis tem aria-label — o title é só bônus de mouse (#31)');
+    tudoOk &= ok(lapis.every((b) => achar(b, 'svg').length === 1), 'o lápis é um ícone SVG (S5 da spec)');
+  });
+
+  await rodarGrupo('renomear: o lápis abre o diálogo preenchido e NÃO abre a aba', async () => {
+    const c = clienteDaTela();
+    await c.carregarAbas();
+    const fluxosAntes = c.fluxos.length;
+    let parou = false;
+    lapisDe(c).onclick({ stopPropagation() { parou = true; } });
+    await respirarTela();
+    const campo = porIdDe(c, 'nome-aba');
+    tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === true, 'o diálogo abre');
+    tudoOk &= ok(campo.value === 'cockpit', `o campo nasce com o nome atual (${campo.value})`);
+    tudoOk &= ok(campo.selectionStart === 0 && campo.selectionEnd === 'cockpit'.length,
+      `e o texto já vem selecionado (${campo.selectionStart}-${campo.selectionEnd})`);
+    tudoOk &= ok(parou, 'o clique para no lápis (stopPropagation)');
+    tudoOk &= ok(c.fluxos.length === fluxosAntes, 'nenhuma conversa abriu (nenhum EventSource novo)');
+    tudoOk &= ok(c.patches().length === 0, 'abrir não manda nada ao servidor');
+  });
+
+  await rodarGrupo('renomear: Salvar manda UM PATCH, fecha, recarrega e corrige o cabeçalho', async () => {
+    let titulo = 'cockpit';
+    const c = clienteDaTela({
+      respostaPatch: () => { titulo = 'nome novo'; return { chave: 'aba-7', titulo }; },
+      respostaLista: () => ({ abas: [abaDaTela({ titulo })] }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = '  nome novo  ';
+    const listasAntes = c.listas().length;
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    botao.onclick({ currentTarget: botao });
+    botao.onclick({ currentTarget: botao });   // o segundo toque, com o primeiro no ar
+    await respirarTela(); await respirarTela(); await respirarTela();
+    const ps = c.patches();
+    tudoOk &= ok(ps.length === 1, `dois toques, UM PATCH (${ps.length})`);
+    tudoOk &= ok(Boolean(ps[0]) && ps[0].rota === 'api/abas/aba-7', `na rota da aba (${ps[0] && ps[0].rota})`);
+    tudoOk &= ok(Boolean(ps[0]) && JSON.parse(ps[0].opcoes.body).nome === '  nome novo  ',
+      'com o nome CRU no corpo — quem apara e valida é o servidor');
+    tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === false, 'o diálogo fecha');
+    tudoOk &= ok(c.listas().length > listasAntes, 'a lista recarrega na hora');
+    tudoOk &= ok(porIdDe(c, 'chat-titulo').textContent === 'nome novo',
+      `o cabeçalho do painel aberto mostra o nome novo (${porIdDe(c, 'chat-titulo').textContent})`);
+    tudoOk &= ok(botao.dataset.recarregando !== '1', 'e o botão destrava no fim');
+  });
+
+  await rodarGrupo('renomear: Enter no campo salva; outra tecla e composição não', async () => {
+    const c = clienteDaTela();
+    await c.carregarAbas();
+    tocar(lapisDe(c));
+    const campo = porIdDe(c, 'nome-aba');
+    campo.value = 'x';
+    campo.onkeydown({ key: 'a', isComposing: false, preventDefault() {} });
+    campo.onkeydown({ key: 'Enter', isComposing: true, preventDefault() {} });
+    await respirarTela();
+    tudoOk &= ok(c.patches().length === 0, 'letra e Enter de composição (IME) não mandam nada');
+    let barrou = false;
+    campo.onkeydown({ key: 'Enter', isComposing: false, preventDefault() { barrou = true; } });
+    await respirarTela(); await respirarTela();
+    tudoOk &= ok(c.patches().length === 1 && barrou, `Enter manda UM PATCH e segura o Enter (${c.patches().length})`);
+  });
+
+  await rodarGrupo('renomear: PATCH 400 deixa o diálogo aberto com o recado', async () => {
+    const c = clienteDaTela({ respostaPatch: { __status: 400, erro: 'o nome não pode ficar vazio' } });
+    await c.carregarAbas();
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = '   ';
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(/não pode ficar vazio/.test(porIdDe(c, 'nota-renomear-aba').textContent),
+      `o recado do servidor aparece na nota (${porIdDe(c, 'nota-renomear-aba').textContent})`);
+    tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === true, 'o diálogo fica aberto para corrigir');
+    tudoOk &= ok(botao.dataset.recarregando !== '1', 'e o botão destrava mesmo com o erro');
+  });
+
+  await rodarGrupo('renomear: resposta ATRASADA não mexe na edição seguinte', async () => {
+    for (const [rotulo, resposta] of [
+      ['200', { chave: 'aba-7', titulo: 'A novo' }],
+      ['400', { __status: 400, erro: 'o nome não pode ficar vazio' }],
+    ]) {
+      let soltar = null;
+      const pendurado = new Promise((r) => { soltar = r; });
+      const c = clienteDaTela({
+        respostaPatch: () => pendurado,
+        respostaLista: () => ({ abas: [abaDaTela(), abaDaTela({ chave: 'aba-8', titulo: 'outra', sessaoId: 'sess-8' })] }),
+      });
+      await c.carregarAbas();
+      const lapisA = lapisDe(c, 0);
+      const lapisB = lapisDe(c, 1);
+      tocar(lapisA);
+      porIdDe(c, 'nome-aba').value = 'A novo';
+      const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+      botao.onclick({ currentTarget: botao });
+      await respirarTela();
+      porIdDe(c, 'btn-fechar-renomear-aba').onclick();
+      tocar(lapisB);
+      tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === true && porIdDe(c, 'nome-aba').value === 'outra',
+        `[${rotulo}] a edição de B está aberta, com o nome de B`);
+      soltar(resposta);
+      await respirarTela(); await respirarTela(); await respirarTela();
+      tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === true, `[${rotulo}] a resposta de A NÃO fecha o diálogo de B`);
+      tudoOk &= ok(porIdDe(c, 'nome-aba').value === 'outra', `[${rotulo}] o campo de B continua com o texto de B`);
+      tudoOk &= ok(!porIdDe(c, 'nota-renomear-aba').textContent, `[${rotulo}] e a nota de B continua vazia`);
+    }
+  });
+
+  await rodarGrupo('renomear: salvar B com o PATCH de A pendurado MANDA o de B', async () => {
+    let soltar = null;
+    const pendurado = new Promise((r) => { soltar = r; });
+    let chamadas = 0;
+    const c = clienteDaTela({
+      // O 1º PATCH (A) pendura; o 2º (B) responde na hora.
+      respostaPatch: () => { chamadas += 1; return chamadas === 1 ? pendurado : { chave: 'aba-8', titulo: 'B novo' }; },
+      respostaLista: () => ({ abas: [abaDaTela(), abaDaTela({ chave: 'aba-8', titulo: 'outra', sessaoId: 'sess-8' })] }),
+    });
+    await c.carregarAbas();
+    const lapisA = lapisDe(c, 0);
+    const lapisB = lapisDe(c, 1);
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    tocar(lapisA);
+    porIdDe(c, 'nome-aba').value = 'A novo';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela();
+    porIdDe(c, 'btn-fechar-renomear-aba').onclick();
+    tocar(lapisB);
+    tudoOk &= ok(botao.dataset.recarregando !== '1', 'abrir B destrava o Salvar — a trava de A não é de B');
+    porIdDe(c, 'nome-aba').value = 'B novo';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    const ps = c.patches();
+    tudoOk &= ok(ps.length === 2 && ps[1].rota === 'api/abas/aba-8',
+      `o PATCH de B sai mesmo com o de A no ar (${ps.map((p) => p.rota).join(', ')})`);
+    tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === false, 'e o sucesso de B fecha o diálogo de B');
+    soltar({ chave: 'aba-7', titulo: 'A novo' });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(!porIdDe(c, 'nota-renomear-aba').textContent && botao.dataset.recarregando !== '1',
+      'a resposta tardia de A não escreve nota nem deixa o botão travado');
+  });
+
+  await rodarGrupo('renomear: cada cabeçalho copia o SEU título da lista — a irmã da janela dividida não muda (D66)', async () => {
+    let titulo = 'janela';
+    const c = clienteDaTela({
+      respostaPatch: () => { titulo = 'janela nova'; return { chave: 'aba-7', titulo }; },
+      respostaLista: () => ({ abas: [abaDaTela({ titulo }), abaDaTela({ chave: 'aba-8', titulo: 'irmã', sessaoId: 'sess-8' })] }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    await c.abrirAba('aba-8', { aoLado: true });
+    tudoOk &= ok(contarPaineis(c) === 2, `dois painéis abertos (${contarPaineis(c)})`);
+    tocar(lapisDe(c, 0));
+    porIdDe(c, 'nome-aba').value = 'janela nova';
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    const titulos = [0, 1].map((i) => porIdDe(c, 'chat-titulo', i).textContent);
+    tudoOk &= ok(titulos[0] === 'janela nova' && titulos[1] === 'irmã',
+      `o renomeado muda e a irmã mantém o título dela (${titulos.join(' | ')})`);
+  });
+
+  await rodarGrupo('renomear: listas fora de ORDEM — a velha não desfaz o cabeçalho novo', async () => {
+    const soltadores = [];
+    let pendurar = false;
+    const c = clienteDaTela({
+      respostaPatch: (rota) => (rota.endsWith('aba-7') ? { chave: 'aba-7', titulo: 'A2' } : { chave: 'aba-8', titulo: 'B2' }),
+      respostaLista: () => {
+        if (!pendurar) return { abas: [abaDaTela({ titulo: 'A' }), abaDaTela({ chave: 'aba-8', titulo: 'B', sessaoId: 'sess-8' })] };
+        return new Promise((r) => { soltadores.push(r); });
+      },
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    await c.abrirAba('aba-8', { aoLado: true });
+    const lapisA = lapisDe(c, 0);
+    const lapisB = lapisDe(c, 1);
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    pendurar = true;
+    tocar(lapisA);
+    porIdDe(c, 'nome-aba').value = 'A2';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tocar(lapisB);
+    porIdDe(c, 'nome-aba').value = 'B2';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(soltadores.length === 2, `as duas listas estão penduradas (${soltadores.length})`);
+    const cabecalhos = () => [0, 1].map((i) => porIdDe(c, 'chat-titulo', i).textContent);
+    // A lista de B (a nova) chega PRIMEIRO; a de A (velha, com o nome antigo de B) chega depois.
+    soltadores[1]({ abas: [abaDaTela({ titulo: 'A2' }), abaDaTela({ chave: 'aba-8', titulo: 'B2', sessaoId: 'sess-8' })] });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    soltadores[0]({ abas: [abaDaTela({ titulo: 'A2' }), abaDaTela({ chave: 'aba-8', titulo: 'B', sessaoId: 'sess-8' })] });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(cabecalhos()[0] === 'A2' && cabecalhos()[1] === 'B2',
+      `a lista velha que chega por último NÃO desfaz o cabeçalho de B (${cabecalhos().join(' | ')})`);
+    // A LISTA, aqui, fica com o nome velho de B até a próxima leitura (≤ 5 s) — é o `carregarAbas()`
+    // de sempre aceitando resposta fora de ordem, o mesmo que o polling já faz hoje. Limitação
+    // declarada na spec (§6), fora do escopo desta entrega. Por isso o assert é só do cabeçalho.
+  });
+
+  await rodarGrupo('renomear: B recusado NÃO impede o cabeçalho de A de acompanhar', async () => {
+    let soltar = null;
+    const pendurado = new Promise((r) => { soltar = r; });
+    let tituloA = 'cockpit';
+    const c = clienteDaTela({
+      respostaPatch: (rota) => (rota.endsWith('aba-7') ? pendurado : { __status: 400, erro: 'o nome não pode ficar vazio' }),
+      // D63: as duas LIDAS (`lidoEm` = `atualizadoEm`): abrir a aba-7 não pode fazê-la descer abaixo da
+      // aba-8 e trocar de lugar o lápis A com o lápis B (`lapisDe` é por posição na tela).
+      respostaLista: () => ({ abas: [abaDaTela({ titulo: tituloA, lidoEm: 1 }), abaDaTela({ chave: 'aba-8', titulo: 'outra', sessaoId: 'sess-8', lidoEm: 1 })] }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    const lapisA = lapisDe(c, 0);
+    const lapisB = lapisDe(c, 1);
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    tocar(lapisA);
+    porIdDe(c, 'nome-aba').value = 'A novo';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela();
+    porIdDe(c, 'btn-fechar-renomear-aba').onclick();
+    tocar(lapisB);
+    porIdDe(c, 'nome-aba').value = '   ';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(/vazio/.test(porIdDe(c, 'nota-renomear-aba').textContent), 'B recusado mostra o recado no diálogo de B');
+    tituloA = 'A novo';
+    soltar({ chave: 'aba-7', titulo: 'A novo' });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(porIdDe(c, 'chat-titulo').textContent === 'A novo',
+      `o cabeçalho de A acompanha, mesmo com um B recusado DEPOIS dele (${porIdDe(c, 'chat-titulo').textContent})`);
+    tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === true, 'e o sucesso de A não fecha o diálogo de B');
+  });
+
+  await rodarGrupo('renomear: a MESMA aba salva duas vezes, respostas invertidas — vale a última', async () => {
+    let soltar = null;
+    const pendurado = new Promise((r) => { soltar = r; });
+    let chamadas = 0;
+    let titulo = 'cockpit';
+    const c = clienteDaTela({
+      respostaPatch: () => {
+        chamadas += 1;
+        if (chamadas === 1) return pendurado;          // o 1º Salvar pendura
+        titulo = 'segundo'; return { chave: 'aba-7', titulo };
+      },
+      respostaLista: () => ({ abas: [abaDaTela({ titulo })] }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = 'primeiro';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela();
+    porIdDe(c, 'btn-fechar-renomear-aba').onclick();
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = 'segundo';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    soltar({ chave: 'aba-7', titulo: 'primeiro' });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(porIdDe(c, 'chat-titulo').textContent === 'segundo',
+      `a resposta do 1º Salvar, chegando por último, NÃO põe "primeiro" no cabeçalho (${porIdDe(c, 'chat-titulo').textContent})`);
+  });
+
+  await rodarGrupo('renomear: MESMA aba — 2º Salvar recusado, 1º volta 200 com a lista caída: o cabeçalho acompanha', async () => {
+    let soltar = null;
+    const pendurado = new Promise((r) => { soltar = r; });
+    let chamadas = 0;
+    let listaCaiu = false;
+    const c = clienteDaTela({
+      respostaPatch: () => {
+        chamadas += 1;
+        return chamadas === 1 ? pendurado : { __status: 400, erro: 'o nome não pode ficar vazio' };
+      },
+      respostaLista: () => (listaCaiu ? { __status: 500, erro: 'caiu' } : { abas: [abaDaTela()] }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = 'primeiro';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela();
+    porIdDe(c, 'btn-fechar-renomear-aba').onclick();
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = '   ';
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    listaCaiu = true;
+    soltar({ chave: 'aba-7', titulo: 'primeiro' });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(porIdDe(c, 'chat-titulo').textContent === 'primeiro',
+      `o 1º Salvar deu certo e aparece — a recusa do 2º não conta na régua (${porIdDe(c, 'chat-titulo').textContent})`);
+  });
+
+  await rodarGrupo('renomear: PATCH 200 e o GET seguinte falhando — nada vira vazio', async () => {
+    let falhar = false;
+    const c = clienteDaTela({
+      respostaPatch: () => { falhar = true; return { chave: 'aba-7', titulo: 'nome novo' }; },
+      respostaLista: () => (falhar ? { __status: 500, erro: 'caiu' } : { abas: [abaDaTela()] }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-7');
+    tocar(lapisDe(c));
+    porIdDe(c, 'nome-aba').value = 'nome novo';
+    const botao = porIdDe(c, 'btn-confirma-renomear-aba');
+    botao.onclick({ currentTarget: botao });
+    await respirarTela(); await respirarTela(); await respirarTela();
+    tudoOk &= ok(porIdDe(c, 'dialogo-renomear-aba').open === false, 'o diálogo fecha — o nome MUDOU no servidor');
+    tudoOk &= ok(!porIdDe(c, 'nota-renomear-aba').textContent, 'e nenhum recado de erro aparece');
+    tudoOk &= ok(porIdDe(c, 'chat-titulo').textContent === 'nome novo',
+      `o cabeçalho da chave renomeada fica com o nome devolvido, não vazio (${porIdDe(c, 'chat-titulo').textContent})`);
+  });
+
   // [GUARDA] o que já existia: os seis <dialog> de antes continuam abrindo.
   await rodarGrupo('GUARDA: os seis diálogos de antes continuam abrindo', async () => {
     const c = clienteDaTela();
@@ -6625,6 +9408,38 @@ async function parteA() {
       '[GUARDA] o botão Enviar continua visível em toda largura (tripwire)');
   });
   }
+
+  // ── Renomear a aba: o CSS do lápis (card `renomear-a-aba`) ────────────────
+  await rodarGrupo('renomear: o CSS do lápis — hover com mouse, sempre à vista no toque', async () => {
+    const todos = cor.blocos(cssSemComentario) || [];
+    const sel = (b) => b.seletor.split(',').map((p) => p.trim());
+    const base = todos.find((b) => !b.dentroDe && sel(b).includes('.renomear-aba'));
+    tudoOk &= ok(Boolean(base) && /position:\s*absolute/.test(base.corpo) && !/display:\s*none/.test(base.corpo),
+      'fora de mídia o lápis é VISÍVEL — o erro seguro é o descobrível');
+    tudoOk &= ok(todos.some((b) => /\(hover:\s*hover\)/.test(b.dentroDe) && sel(b).includes('.renomear-aba') && /display:\s*none/.test(b.corpo)),
+      'com mouse (hover: hover) ele nasce escondido');
+    tudoOk &= ok(todos.some((b) => /\(hover:\s*hover\)/.test(b.dentroDe)
+      && sel(b).includes('.conversa-linha:hover .renomear-aba') && sel(b).includes('.conversa-linha:focus-within .renomear-aba')
+      && /display:\s*flex/.test(b.corpo)), 'e volta no :hover e no :focus-within da linha');
+    const toque = todos.filter((b) => /\(hover:\s*none\)/.test(b.dentroDe) && sel(b).includes('.renomear-aba'));
+    tudoOk &= ok(toque.length > 0 && toque.every((b) => !/display:\s*none/.test(b.corpo))
+      && toque.some((b) => /width:\s*40px/.test(b.corpo) && /height:\s*40px/.test(b.corpo)),
+    'no toque (hover: none) nada o esconde, e o alvo tem 40 px');
+    tudoOk &= ok(todos.some((b) => sel(b).includes('.renomear-aba svg') && /width:\s*16px/.test(b.corpo)),
+      'o SVG do lápis tem tamanho declarado (sem ele o svg inline cresce)');
+    const vaga = todos.find((b) => !b.dentroDe && sel(b).includes('.conversa-linha:has(> .renomear-aba) .conversa-titulo'));
+    tudoOk &= ok(Boolean(vaga) && /padding-right:\s*28px/.test(vaga.corpo), 'a vaga do lápis mora na regra pelo PAPEL (:has)');
+    const baseTitulo = todos.find((b) => !b.dentroDe && b.seletor.trim() === '.conversa-titulo');
+    tudoOk &= ok(Boolean(baseTitulo) && !/padding-right/.test(baseTitulo.corpo),
+      'e a regra base do .conversa-titulo NÃO ganhou padding — a linha de job não tem lápis (#52)');
+    // Assert de FONTE, e declara de qual símbolo depende (#53): `function linhaDeJob(` em
+    // public/app.js. Renomeou a função → ajuste aqui.
+    const fonteApp = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const inicioJob = fonteApp.indexOf('function linhaDeJob(');
+    const fimJob = inicioJob < 0 ? -1 : fonteApp.indexOf('\nfunction ', inicioJob + 10);
+    tudoOk &= ok(inicioJob >= 0 && fimJob > inicioJob && !fonteApp.slice(inicioJob, fimJob).includes('renomear-aba'),
+      'a linha de JOB não ganha lápis (renomear é de aba, não de job)');
+  });
 
   // ── celular: a primeira leva do design (02/09) ──────────────────────────────
   //
@@ -6692,9 +9507,6 @@ async function parteA() {
     const medidorCel = noCelular.find((b) => b.seletor === '.medidor');
     tudoOk &= ok(Boolean(medidorCel) && /\border:\s*\d/.test(medidorCel.corpo),
       'PL-4: .medidor tem order: no bloco de celular');
-    const faixaCel = noCelular.find((b) => b.seletor === '.faixa-jobs');
-    tudoOk &= ok(Boolean(faixaCel) && /\border:\s*\d/.test(faixaCel.corpo) && !/flex-basis:\s*100%/.test(faixaCel.corpo),
-      'PL-4: .faixa-jobs no celular tem order: e NÃO tem flex-basis:100% — divide a linha 2');
     const recarregarCel = noCelular.filter((b) => b.seletor === '.btn-recarregar-conversa');
     tudoOk &= ok(recarregarCel.length === 1 && /display:\s*none/.test(recarregarCel[0].corpo),
       'PL-4: .btn-recarregar-conversa { display: none } em regra PRÓPRIA no bloco de celular');
@@ -6968,6 +9780,19 @@ async function parteA() {
       'FG-4: grupo de dois passos antes da fala');
     tudoOk &= ok(soltas4.length === 1 && soltas4[0].dataset.ferramentaId === 'fg4-3',
       'FG-4: e a ferramenta depois da fala recomeça solta');
+
+    // G-d (card `contexto-da-sessao-do-job`, 22/09) — `contexto` está em `NEUTROS_DO_GRUPO`,
+    // e a sequência ferramenta → contexto → ferramenta mantém UM grupo, não três. Defeito
+    // PRÉ-EXISTENTE: a aba emite `contexto` desde 24/08, então a fita já se partia hoje; esta
+    // mudança conserta as duas superfícies (aba e job), não só o job.
+    const gD = carregarCliente();
+    gD.aplicar({ tipo: 'ferramenta', id: 'gd-1', nome: 'Read', entrada: {} });
+    gD.aplicar({ tipo: 'contexto', contexto: { usados: 50000, teto: 200000, pct: 25, modelo: 'claude-opus-5', esforco: null } });
+    gD.aplicar({ tipo: 'ferramenta', id: 'gd-2', nome: 'Edit', entrada: {} });
+    const fitaD = porIdDe(gD, 'fita');
+    const gruposD = fitaD.filhos.filter((f) => f.className === 'grupo-ferramentas');
+    tudoOk &= ok(gruposD.length === 1 && gruposD[0].querySelectorAll('.passo').length === 2,
+      `G-d: ferramenta → contexto → ferramenta mantém UM grupo de dois passos, não três (vieram ${gruposD.length} grupo(s))`);
 
     // FG-5: o grupo fecha (open === false) quando a fala chega e todos terminaram; e
     // continua aberto se algum passo ainda está rodando.
@@ -7415,41 +10240,12 @@ async function parteA() {
     tudoOk &= ok(Boolean(ferEstadoBloco) && /transition\s*:[^;]*color[^;]*240ms/.test(ferEstadoBloco.corpo),
       'FT-4: .fer-estado tem transition: color de 240ms');
 
-    // FT-5a (sempre exigida): .faixa-jobs tem transition com opacity e transform de 180ms,
-    // e existe @starting-style para a entrada.
-    const faixaBloco = blocosFt.find((b) => b.seletor === '.faixa-jobs' && /transition/.test(b.corpo));
-    tudoOk &= ok(Boolean(faixaBloco) && /opacity[^;]*180ms/.test(faixaBloco.corpo) && /transform[^;]*180ms/.test(faixaBloco.corpo),
-      'FT-5a: .faixa-jobs tem transition com opacity e transform de 180ms');
-    const startingFaixa = blocosFt.find((b) => temSeletor(b, '.faixa-jobs:not([hidden])') && /@starting-style/.test(b.dentroDe));
-    tudoOk &= ok(Boolean(startingFaixa), 'FT-5a: existe @starting-style para a entrada da .faixa-jobs');
-
-    // FT-5b (só com T5_SAIDA === 'animada'): três estados, não dois — ver a Fase 0 do plano
-    // e o relatório do job. A bancada mediu allow-discrete VENCENDO o [hidden]!important
-    // (displayT60 === 'flex'), mas com um salto de layout de 48px (>8px) no colapso final —
-    // nem caminho A nem caminho B da spec: é o terceiro cenário que o plano manda declarar
-    // como NÃO VERIFICADO em vez de escolher sozinho.
-    const T5_SAIDA = 'nao-verificada:bancada da Fase 0 mediu allow-discrete vencendo o !important (displayT60=flex), mas com salto de layout de 48px (>8px) no colapso final — nem caminho A nem B; ver relatório do job f49b';
-    if (T5_SAIDA === 'animada') {
-      const faixaHidden = blocosFt.find((b) => b.seletor === '.faixa-jobs[hidden]');
-      tudoOk &= ok(Boolean(faixaHidden) && /opacity\s*:\s*0/.test(faixaHidden.corpo)
-        && /transform\s*:\s*translateY\(-6px\)/.test(faixaHidden.corpo),
-        'FT-5b: existe .faixa-jobs[hidden] com opacity: 0 e transform: translateY(-6px)');
-      tudoOk &= ok(Boolean(faixaBloco) && /display[^;]*allow-discrete/.test(faixaBloco.corpo),
-        'FT-5b: a transition inclui display … allow-discrete');
-    } else if (T5_SAIDA === 'caminho-b') {
-      console.log('  ⚠️ FT-5b: saída de T5 NÃO animada — a bancada da Fase 0 mediu caminho B');
-    } else {
-      console.log(`  ⚠️ FT-5b: saída de T5 NÃO VERIFICADA — ${T5_SAIDA.replace('nao-verificada:', '')}`);
-    }
-
-    // FT-6: as três transições de MOVIMENTO (.chat, dialog, .faixa-jobs) declaram <=220ms;
+    // FT-6: as duas transições de MOVIMENTO (.chat, dialog) declaram <=220ms;
     // .bolha-eu declara 300ms e .fer-estado 240ms; nenhuma regra do arquivo passa de 300ms.
     tudoOk &= ok(Boolean(chatCelular) && maxMs(chatCelular.corpo) <= 220,
       `FT-6: .chat declara <=220ms (${chatCelular && maxMs(chatCelular.corpo)})`);
     tudoOk &= ok(Boolean(dialogTransicao) && maxMs(dialogTransicao.corpo) <= 220,
       `FT-6: dialog declara <=220ms (${dialogTransicao && maxMs(dialogTransicao.corpo)})`);
-    tudoOk &= ok(Boolean(faixaBloco) && maxMs(faixaBloco.corpo) <= 220,
-      `FT-6: .faixa-jobs declara <=220ms (${faixaBloco && maxMs(faixaBloco.corpo)})`);
     tudoOk &= ok(Boolean(bolhaEuBloco) && msDe(bolhaEuBloco.corpo).includes(300), 'FT-6: .bolha-eu declara 300ms');
     tudoOk &= ok(Boolean(ferEstadoBloco) && msDe(ferEstadoBloco.corpo).includes(240), 'FT-6: .fer-estado declara 240ms');
     // O teto de 300ms vale para as TRANSIÇÕES da folha, não para o arquivo inteiro: o spinner
@@ -7465,10 +10261,10 @@ async function parteA() {
     tudoOk &= ok(todasMs.every((v) => v <= 300), `FT-6: nenhuma transição nova passa de 300ms (máx ${Math.max(0, ...todasMs)})`);
 
     // FT-7: existe bloco prefers-reduced-motion desligando transition de dialog,
-    // dialog::backdrop, .faixa-jobs, .bolha-eu, .fer-estado e .chat.
+    // dialog::backdrop, .bolha-eu, .fer-estado e .chat.
     const desligaEm = (sel) => blocosFt.some((b) => temSeletor(b, sel) && /prefers-reduced-motion/.test(b.dentroDe)
       && /transition\s*:\s*none/.test(b.corpo));
-    for (const sel of ['dialog', 'dialog::backdrop', '.faixa-jobs', '.bolha-eu', '.fer-estado', '.chat']) {
+    for (const sel of ['dialog', 'dialog::backdrop', '.bolha-eu', '.fer-estado', '.chat']) {
       tudoOk &= ok(desligaEm(sel), `FT-7: prefers-reduced-motion desliga transition de ${sel}`);
     }
 
@@ -7549,8 +10345,9 @@ async function parteA() {
   const totalIconeBotaoHtml = (html.match(/<svg class="icone-botao"/g) || []).length;
   const clienteIcones = carregarCliente();
   const totalIconeBotaoPainel = painelDe(clienteIcones).querySelectorAll('.icone-botao').length;
-  tudoOk &= ok(totalIconeBotaoHtml + totalIconeBotaoPainel === 9,
-    `A9: 9 svg.icone-botao ao todo — HTML + painel (${totalIconeBotaoHtml} + ${totalIconeBotaoPainel})`);
+  // Dez desde o botão "Pra revisar" (plano 2026-10-04): os nove de antes + o ícone dele.
+  tudoOk &= ok(totalIconeBotaoHtml + totalIconeBotaoPainel === 10,
+    `A9: 10 svg.icone-botao ao todo — HTML + painel (${totalIconeBotaoHtml} + ${totalIconeBotaoPainel})`);
   const GLIFOS_ANTIGOS = ['&#8635;', '&#9881;', '&#43;', '&#8645;', '&#9776;', '&#8592;', '&#10005;', '&#128206;'];
   const glifosQueSobraram = GLIFOS_ANTIGOS.filter((g) => html.includes(g));
   tudoOk &= ok(glifosQueSobraram.length === 0,
@@ -7616,13 +10413,13 @@ async function parteA() {
     'A10: o atributo placeholder saiu do index.html — o JS é o dono único (R5/#40)');
 
   console.log('\n  · M3: o resumo de relance na tela vazia');
+  // `lidoEm: 1000` na FIXTURE da aba — desde 14/09 (D53) é assim que a marca chega, dentro
+  // de cada aba, no GET /api/abas. Não há mapa de localStorage para semear.
   const abasA11 = [
-    ...['s1', 's2'].map((id) => ({ chave: `aba-${id}`, titulo: id, cwd: '/tmp', temAgente: true, rodando: true, sessaoId: id, atualizadoEm: 2000 })),
-    ...['s3', 's4', 's5'].map((id) => ({ chave: `aba-${id}`, titulo: id, cwd: '/tmp', temAgente: true, rodando: false, sessaoId: id, atualizadoEm: 2000 })),
-    ...['s6', 's7', 's8', 's9'].map((id) => ({ chave: `aba-${id}`, titulo: id, cwd: '/tmp', temAgente: true, rodando: false, sessaoId: id, atualizadoEm: 500 })),
+    ...['s1', 's2'].map((id) => ({ chave: `aba-${id}`, titulo: id, cwd: '/tmp', temAgente: true, rodando: true, sessaoId: id, atualizadoEm: 2000, lidoEm: 1000 })),
+    ...['s3', 's4', 's5'].map((id) => ({ chave: `aba-${id}`, titulo: id, cwd: '/tmp', temAgente: true, rodando: false, sessaoId: id, atualizadoEm: 2000, lidoEm: 1000 })),
+    ...['s6', 's7', 's8', 's9'].map((id) => ({ chave: `aba-${id}`, titulo: id, cwd: '/tmp', temAgente: true, rodando: false, sessaoId: id, atualizadoEm: 500, lidoEm: 1000 })),
   ];
-  const guardadoA11 = memoria();
-  guardadoA11.setItem('cockpit-lidas', JSON.stringify(Object.fromEntries(abasA11.map((a) => [a.sessaoId, 1000]))));
   const desdeJobA11 = new Date(Date.now() - 5 * 60000).toISOString();
   const jobA11 = { id: 'job-1', titulo: 'ship x', projeto: 'x', estado: 'running', abas: [], desde: desdeJobA11 };
   const aoBuscarA11 = (rota) => {
@@ -7630,7 +10427,7 @@ async function parteA() {
     if (/api\/jobs/.test(rota)) return { painel: true, jobs: [jobA11] };
     return { painel: true, jobs: [] };
   };
-  const clienteA11 = carregarCliente({ aoBuscar: aoBuscarA11, guardado: guardadoA11 });
+  const clienteA11 = carregarCliente({ aoBuscar: aoBuscarA11 });
   await clienteA11.carregarAbas();
   await clienteA11.atualizarFaixaJobs();
   tudoOk &= ok(porIdDe(clienteA11, 'vazio-resumo').textContent === '2 trabalhando · 3 te esperando · 1 job rodando há 5 min',
@@ -7647,9 +10444,7 @@ async function parteA() {
     }
     return { painel: true, jobs: [] };
   };
-  const guardadoA11b = memoria();
-  guardadoA11b.setItem('cockpit-lidas', JSON.stringify(Object.fromEntries(abasA11.map((a) => [a.sessaoId, 1000]))));
-  const clienteA11b = carregarCliente({ aoBuscar: aoBuscarA11b, guardado: guardadoA11b });
+  const clienteA11b = carregarCliente({ aoBuscar: aoBuscarA11b });
   await clienteA11b.carregarAbas();
   modoJobsA11b = 'sem-job';
   await clienteA11b.atualizarFaixaJobs();
@@ -7686,7 +10481,7 @@ async function parteA() {
   await clienteA12.carregarAbas();
   await clienteA12.abrirAba('aba-7');
   clienteA12.marcarPergunta(clienteA12.painelAtual(), true);
-  tudoOk &= ok(porIdDe(clienteA12, 'parar-rotulo').textContent === 'Cancelar pergunta',
+  tudoOk &= ok(porIdDe(clienteA12, 'parar-rotulo').textContent === 'Parar',
     `A12: marcarPergunta escreve no #parar-rotulo (${porIdDe(clienteA12, 'parar-rotulo').textContent})`);
   clienteA12.marcarPergunta(clienteA12.painelAtual(), false);
   tudoOk &= ok(porIdDe(clienteA12, 'parar-rotulo').textContent === 'Parar',
@@ -7788,6 +10583,93 @@ async function parteA() {
     voltarDoAparelhoA22(clienteA22);
     tudoOk &= ok(porIdDe(clienteA22, 'app').dataset.vista === 'lista',
       'A22: só o 3º voltar devolve a lista — sem degrau fantasma no meio');
+  });
+
+  // ── Card `codex-no-relatorio-de-tokens` (22/09): a seção do Codex em #dialogo-uso ───────
+  //
+  // GC13 é sobre os ARQUIVOS, não o DOM: o DOM de mentira acima não faz parse de HTML (a
+  // própria #40 avisa — ver o comentário da fase 2b logo acima), então uma asserção sobre a
+  // string "Só do Claude" só prova alguma coisa lendo `index.html`/`traducoes.js` como texto.
+  await rodarGrupo('GC13', async () => {
+    const htmlBruto = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    const traducoesBruto = fs.readFileSync(path.join(__dirname, '..', 'public', 'traducoes.js'), 'utf8');
+    tudoOk &= ok(!htmlBruto.includes('Só do Claude'), 'GC13: "Só do Claude" não sobrevive em public/index.html');
+    tudoOk &= ok(!traducoesBruto.includes('Só do Claude'), 'GC13: "Só do Claude" não sobrevive em public/traducoes.js (a chave EN morreu junto)');
+  });
+
+  // GC14/GC15 precisam do CLIENTE com uso.js carregado (`comUso: true`) e de um `aoBuscar`
+  // que responda `/api/uso` (Claude) e `/api/uso-codex` (Codex) — as duas rotas que
+  // `carregar()` dispara em paralelo.
+  const RELATORIO_CODEX_OK = {
+    geradoEm: '2026-09-22T22:00:00.000Z', desde: '2026-09-22', ate: '2026-09-22', dias: 1,
+    total: { entrada: 4200, saida: 900, cacheLeitura: 3500, raciocinio: 300, tokens: 5100 },
+    porModelo: [{ modelo: 'gpt-6-astra', total: { entrada: 4200, saida: 900, cacheLeitura: 3500, raciocinio: 300, tokens: 5100 } }],
+    porDia: [],
+    projetos: [{ projeto: 'loja-exemplo', total: { entrada: 4200, saida: 900, cacheLeitura: 3500, raciocinio: 300, tokens: 5100 } }],
+    leitura: { arquivos: 1, comUsage: 1, relidos: 1, bytesLidos: 100, ms: 1, arquivosComErro: 0, linhasIgnoradas: 0, precisaoPerdida: false },
+  };
+  const RELATORIO_CLAUDE_VAZIO = {
+    geradoEm: '2026-09-22T22:00:00.000Z', desde: '2026-09-22', ate: '2026-09-22', dias: 1,
+    total: { entrada: 0, saida: 0, cacheEscrita: 0, cacheLeitura: 0, linhas: 0 },
+    precos: { consultadoEm: '2026-09-04', moeda: 'USD' },
+    custo: { usd: 0, conhecido: true, tokensSemPreco: 0, cacheSemDuracao: 0 },
+    porModelo: [], porDia: [], projetos: [],
+    leitura: { arquivos: 0, comUsage: 0, relidos: 0, bytesLidos: 0, ms: 0, arquivosComErro: 0, linhasIgnoradas: 0, precisaoPerdida: false },
+  };
+  const abrirUso = async (aoBuscar) => {
+    const cli = carregarCliente({ aoBuscar, guardado: memoria(), comUso: true });
+    porIdDe(cli, 'btn-config').onclick();
+    porIdDe(cli, 'btn-uso').onclick();
+    await new Promise((r) => setImmediate(r)); // deixa as duas promessas (Claude + Codex) assentar
+    await new Promise((r) => setImmediate(r));
+    return cli;
+  };
+
+  await rodarGrupo('GC14', async () => {
+    const cli = await abrirUso((rota) => {
+      const r = String(rota);
+      if (r.startsWith('api/uso-codex')) return RELATORIO_CODEX_OK;
+      if (r.startsWith('api/uso')) return RELATORIO_CLAUDE_VAZIO;
+      return { abas: [] };
+    });
+    const secaoCodex = porIdDe(cli, 'uso-codex');
+    tudoOk &= ok(Boolean(secaoCodex) && secaoCodex.textContent.length > 0,
+      'GC14: #uso-codex foi desenhado, com conteúdo');
+    const linha = secaoCodex.querySelector('.uso-linha');
+    tudoOk &= ok(Boolean(linha), 'GC14: pelo menos uma .uso-linha foi desenhada (por modelo/projeto)');
+    const valor = linha && linha.querySelector('.uso-linha-valor');
+    tudoOk &= ok(Boolean(valor) && /5,1k|5\.1k/.test(valor.textContent),
+      `GC14: o total renderizado é o CERTO (5,1k), não 0 (veio "${valor && valor.textContent}")`);
+    tudoOk &= ok(!/(^|\D)0(\D|$)/.test((valor && valor.textContent) || 'x'),
+      `GC14: e não é "0" — a prova de que \`total.tokens\` foi usado, nunca \`somaTotal()\` (veio "${valor && valor.textContent}")`);
+  });
+
+  await rodarGrupo('GC15', async () => {
+    // (a) Codex responde, Claude FALHA depois: #uso-codex continua desenhado.
+    const cliCodexOk = await abrirUso((rota) => {
+      const r = String(rota);
+      if (r.startsWith('api/uso-codex')) return RELATORIO_CODEX_OK;
+      if (r.startsWith('api/uso')) return { __status: 500 };
+      return { abas: [] };
+    });
+    const secaoCodexOk = porIdDe(cliCodexOk, 'uso-codex');
+    tudoOk &= ok(Boolean(secaoCodexOk) && secaoCodexOk.textContent.length > 0,
+      'GC15a: Claude falhou, mas #uso-codex CONTINUA desenhado — a falha de um não limpa o outro');
+    tudoOk &= ok(porIdDe(cliCodexOk, 'uso-lista').textContent.length > 0,
+      'GC15a: e a lista do Claude mostra o aviso de erro (não fica vazia sem explicação)');
+
+    // (b) o inverso: Claude responde, Codex FALHA depois — o relatório do Claude continua.
+    const cliClaudeOk = await abrirUso((rota) => {
+      const r = String(rota);
+      if (r.startsWith('api/uso-codex')) return { __status: 500 };
+      if (r.startsWith('api/uso')) return RELATORIO_CLAUDE_VAZIO;
+      return { abas: [] };
+    });
+    tudoOk &= ok(porIdDe(cliClaudeOk, 'uso-lista').textContent.length > 0,
+      'GC15b: Codex falhou, mas o relatório do Claude continua desenhado (#uso-lista tem conteúdo)');
+    const secaoCodexFalhou = porIdDe(cliClaudeOk, 'uso-codex');
+    tudoOk &= ok(Boolean(secaoCodexFalhou) && secaoCodexFalhou.textContent.length > 0,
+      'GC15b: e #uso-codex mostra o AVISO de erro dele — não fica vazio sem dizer por quê');
   });
 
   // ── R1: a fita não arrasta a vista enquanto o agente trabalha ───────────────
@@ -8137,6 +11019,7 @@ async function parteA() {
     });
     await c1.carregarAbas();
     await c1.atualizarFaixaJobs();
+    porIdDe(c1, 'barra-agentes').onclick();
     const grupo1 = porIdDe(c1, 'abas').querySelector('#grupo-jobs');
     tudoOk &= ok(Boolean(grupo1), 'G1: o grupo JOBS aparece na lista com job rodando');
     const pino1 = grupo1?.querySelector('.conversa-pino')?.textContent?.trim();
@@ -8160,6 +11043,7 @@ async function parteA() {
     });
     await c1b.carregarAbas();
     await c1b.atualizarFaixaJobs();
+    porIdDe(c1b, 'barra-agentes').onclick();
     const grupo1b = porIdDe(c1b, 'abas').querySelector('#grupo-jobs');
     const nome1b = grupo1b?.querySelector('.conversa-nome')?.textContent;
     tudoOk &= ok(nome1b === 'Caixa de envio por painel',
@@ -8172,7 +11056,7 @@ async function parteA() {
       `G1b: e o tipo continua alcançável no title (${dica1b})`);
   });
 
-  console.log('\n  · G2: recolher esconde as linhas e mantém o cabeçalho');
+  console.log('\n  · G2: a caixa NÃO recolhe — sem botão de alternar, linhas sempre no DOM');
   await rodarGrupo('G2', async () => {
     const c2 = carregarCliente({
       aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
@@ -8181,46 +11065,50 @@ async function parteA() {
     });
     await c2.carregarAbas();
     await c2.atualizarFaixaJobs();
+    porIdDe(c2, 'barra-agentes').onclick();
     const grupo2 = porIdDe(c2, 'abas').querySelector('#grupo-jobs');
-    const alternar2 = grupo2?.querySelector('.projeto-alternar');
-    tudoOk &= ok(Boolean(alternar2), 'G2: pré-condição — o grupo tem o botão de recolher');
-    alternar2?.onclick?.();
-    const conteudo2 = grupo2?.querySelector('.projeto-conteudo');
-    tudoOk &= ok(conteudo2?.hidden === true, 'G2: recolher esconde as linhas (conteúdo hidden)');
-    tudoOk &= ok(Boolean(grupo2?.querySelector('.projeto-topo')), 'G2: e o cabeçalho continua de pé');
-    tudoOk &= ok(alternar2?.getAttribute('aria-expanded') === 'false',
-      `G2: aria-expanded vira "false" (${alternar2?.getAttribute('aria-expanded')})`);
+    tudoOk &= ok(Boolean(grupo2), 'G2: pré-condição — o grupo existe');
+    tudoOk &= ok(!grupo2?.querySelector('.projeto-alternar'),
+      'G2: sem `.projeto-alternar` — não há mais o que recolher');
+    tudoOk &= ok(!grupo2?.querySelector('.projeto-topo'),
+      'G2: sem `.projeto-topo` — o cabeçalho é só o `<h2>`');
+    const linhas2 = grupo2?.querySelectorAll('.conversa-linha');
+    tudoOk &= ok((linhas2?.length || 0) > 0,
+      `G2: as linhas estão SEMPRE no DOM (${linhas2?.length})`);
   });
 
-  console.log('\n  · G3: recolhido, o cabeçalho denuncia o que trava (blocked + orfao)');
+  console.log('\n  · G3: a barra denuncia SEMPRE o que trava (blocked + orfao)');
   await rodarGrupo('G3', async () => {
-    const recolhido = async (jobs) => {
+    // Nome trocado (era `recolhido`): não há mais o que recolher, e o nome antigo mentiria
+    // sobre o que a função faz. A notícia migrou do cabeçalho interno (morto na D51) para a
+    // barra — visível nas DUAS vistas, sem precisar de clique.
+    const lerBarra = async (jobs) => {
       const c = carregarCliente({
         aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs } : { abas: [] }),
       });
       await c.carregarAbas();
       await c.atualizarFaixaJobs();
-      const grupo = porIdDe(c, 'abas').querySelector('#grupo-jobs');
-      grupo?.querySelector('.projeto-alternar')?.onclick?.();
+      // A visibilidade agora é por CSS (`:empty`), não por `.hidden` em JS (§4.7 da spec) —
+      // texto vazio É a notícia de que não há nada a denunciar.
       return {
-        aviso: grupo?.querySelector('.projeto-aviso')?.textContent,
-        trabalho: grupo?.querySelector('.projeto-trabalhando')?.textContent,
+        aviso: porIdDe(c, 'barra-agentes-aviso')?.textContent,
+        trabalho: porIdDe(c, 'barra-agentes-trabalho')?.textContent,
       };
     };
-    const a = await recolhido([
+    const a = await lerBarra([
       jobDoTesteG({ id: 'b1', estado: 'blocked', desfecho: 'motivo' }),
       jobDoTesteG({ id: 'o1', estado: 'orfao' }),
       jobDoTesteG({ id: 'd1', estado: 'done', fim: horasAtrasJobs(1) }),
     ]);
     tudoOk &= ok(a.aviso === '2 travados', `G3: blocked + orfao somam "2 travados" (${a.aviso})`);
 
-    const b = await recolhido([
+    const b = await lerBarra([
       jobDoTesteG({ id: 'o1', estado: 'orfao' }),
       jobDoTesteG({ id: 'o2', estado: 'orfao' }),
     ]);
     tudoOk &= ok(b.aviso === '2 travados', `G3: SÓ órfãos (zero blocked) também conta (${b.aviso})`);
 
-    const c3 = await recolhido([
+    const c3 = await lerBarra([
       jobDoTesteG({ id: 'r1', estado: 'running' }),
       jobDoTesteG({ id: 'r2', estado: 'running' }),
       jobDoTesteG({ id: 'r3', estado: 'running' }),
@@ -8228,7 +11116,7 @@ async function parteA() {
     tudoOk &= ok(!c3.aviso, `G3: sem travado, nenhum "N travados" (${c3.aviso})`);
     tudoOk &= ok(c3.trabalho === '3 rodando', `G3: sem travado e 3 rodando, mostra "3 rodando" (${c3.trabalho})`);
 
-    const d = await recolhido([jobDoTesteG({ id: 'd1', estado: 'done', fim: horasAtrasJobs(1) })]);
+    const d = await lerBarra([jobDoTesteG({ id: 'd1', estado: 'done', fim: horasAtrasJobs(1) })]);
     tudoOk &= ok(!d.aviso && !d.trabalho, `G3: sem travado e sem rodando, nenhum aviso (${d.aviso}/${d.trabalho})`);
   });
 
@@ -8241,37 +11129,31 @@ async function parteA() {
     });
     await c3b.carregarAbas();
     await c3b.atualizarFaixaJobs();
+    porIdDe(c3b, 'barra-agentes').onclick();
     const estado3b = porIdDe(c3b, 'abas').querySelector('#grupo-jobs')?.querySelector('.conversa-estado')?.textContent;
     tudoOk &= ok(Boolean(estado3b?.includes('há 5h')), `G3b: usa a IDADE do job — "desde" (${estado3b})`);
     tudoOk &= ok(!estado3b?.includes('há 1h'), `G3b: e NUNCA o "fim" — não inventa o instante da morte (${estado3b})`);
   });
 
-  console.log('\n  · G4: o grupo de jobs não empurra conversa — é o ÚLTIMO filho de #abas');
-  await rodarGrupo('G4', async () => {
-    const abasG4 = [{ chave: 'a1', titulo: 'um', cwd: '/tmp/g4', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
-    const c4 = carregarCliente({
-      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
-        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running' })] }
-        : { abas: abasG4 }),
-    });
-    await c4.carregarAbas();
-    await c4.atualizarFaixaJobs();
-    const filhos4 = porIdDe(c4, 'abas').children;
-    const ultimo4 = filhos4[filhos4.length - 1];
-    tudoOk &= ok(ultimo4?.id === 'grupo-jobs',
-      `G4: o grupo de jobs é o último filho de #abas, depois dos projetos (${ultimo4?.id || ultimo4?.className})`);
-    // A ordem "append antes de restaurar o scrollTop" (§4.8 item 3) é código-revisada: o DOM
-    // de mentira não modela geometria de rolagem (scrollHeight não cresce por posição), então
-    // não há observável aqui além da posição estrutural acima.
-  });
+  // G4 SAIU: "o grupo é o ÚLTIMO filho de #abas, depois dos projetos" media um invariante que
+  // deixou de existir — na vista de agentes ele é o ÚNICO filho, então o assert vira verdadeiro
+  // por vacuidade (as duas listas não dividem mais a tela). Quem cobre a exclusão mútua agora
+  // é o BA-4.
 
-  console.log('\n  · G5: painel fora do ar — o grupo existe e AVISA, inclusive recolhido');
+  console.log('\n  · G5: painel fora do ar — o grupo existe e AVISA, sempre visível');
   await rodarGrupo('G5', async () => {
     const c5 = carregarCliente({
       aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: false } : { abas: [] }),
     });
     await c5.carregarAbas();
     await c5.atualizarFaixaJobs();
+    // A notícia é medida ANTES do clique: é na vista de CONVERSAS que a barra denuncia, porque
+    // é lá que o estado do painel está invisível (BA-9). Depois do clique ela vira a porta de
+    // volta e diz "conversas".
+    const aviso5 = porIdDe(c5, 'barra-agentes-aviso');
+    tudoOk &= ok(aviso5?.textContent === 'sem contato com o painel',
+      `G5: a barra repete a notícia (${aviso5?.textContent})`);
+    porIdDe(c5, 'barra-agentes').onclick();
     const grupo5 = porIdDe(c5, 'abas').querySelector('#grupo-jobs');
     tudoOk &= ok(Boolean(grupo5), 'G5: o grupo existe mesmo com painel fora do ar');
     // A string mudou junto com a fonte dos jobs: era "não deu para falar com o painel" quando
@@ -8279,24 +11161,29 @@ async function parteA() {
     // impede a mensagem de virar outra coisa sem ninguém decidir (D43).
     tudoOk &= ok(Boolean(grupo5 && textoDe(grupo5).includes('não deu para ler os jobs')),
       'G5: e diz "não deu para ler os jobs"');
-    grupo5?.querySelector('.projeto-alternar')?.onclick?.();
-    const aviso5 = grupo5?.querySelector('.projeto-aviso')?.textContent;
-    tudoOk &= ok(aviso5 === 'sem contato com o painel',
-      `G5: recolhido, o cabeçalho repete a notícia (${aviso5})`);
   });
 
-  console.log('\n  · G6 (fronteira): painel true + zero job na janela → o grupo NÃO existe');
+  console.log('\n  · G6 (fronteira): painel true + zero job na janela → vazio, nunca em branco (BA-6)');
   await rodarGrupo('G6', async () => {
     const c6 = carregarCliente({
       aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] } : { abas: [] }),
     });
     await c6.carregarAbas();
     await c6.atualizarFaixaJobs();
+    // Zero job ainda é notícia, e ela é dita na vista de CONVERSAS — "agentes · 0" e não a
+    // barra escondida (§4.6 da D49). Medido antes do clique pelo mesmo motivo do G5.
+    const nome6 = porIdDe(c6, 'barra-agentes-nome')?.textContent;
+    tudoOk &= ok(nome6 === 'agentes · 0', `G6: e a barra segue visível, com "agentes · 0" (${nome6})`);
+    porIdDe(c6, 'barra-agentes').onclick();
     tudoOk &= ok(porIdDe(c6, 'abas').querySelector('#grupo-jobs') === null,
       'G6 (fronteira): sem job na janela, o grupo não existe');
+    // A vista NÃO pode ficar em branco sob o título "agentes" (§4.3.3b da spec): sem este
+    // texto, BA-4 (exclusão mútua) passaria verde numa tela vazia.
+    tudoOk &= ok(textoDe(porIdDe(c6, 'abas')).includes('nenhum agente na janela'),
+      'G6: a vista de agentes vazia diz "nenhum agente na janela"');
   });
 
-  console.log('\n  · G7 (fronteira): antes da primeira leitura, o grupo NÃO existe e não pisca erro');
+  console.log('\n  · G7 (fronteira): antes da primeira leitura, a barra fica hidden e não pisca erro');
   await rodarGrupo('G7', async () => {
     // O CARREGAMENTO do cliente já dispara `atualizarFaixaJobs()` sozinho (app.js, a última
     // linha do arquivo) — sem PRENDER a resposta de `api/jobs`, essa chamada automática
@@ -8312,15 +11199,23 @@ async function parteA() {
       },
     });
     await c7.carregarAbas();
-    tudoOk &= ok(porIdDe(c7, 'abas').querySelector('#grupo-jobs') === null,
-      'G7 (fronteira): antes da primeira leitura, o grupo não existe');
+    // `null` é ignorância, não notícia: a barra — a ÚNICA porta para a vista de agentes —
+    // fica hidden enquanto a primeira leitura não chegou (§4.3.3 da spec).
+    tudoOk &= ok(porIdDe(c7, 'barra-agentes').hidden === true,
+      'G7 (fronteira): antes da primeira leitura, a barra fica hidden');
+    tudoOk &= ok(porIdDe(c7, 'app').dataset.listaVista === 'conversas',
+      'G7: e a vista nasce em conversas — sem porta, não dá para entrar em agentes');
     tudoOk &= ok(!textoDe(porIdDe(c7, 'abas')).includes('não deu para ler os jobs'),
       'G7: e a tela não pisca erro — null é ignorância, não notícia ruim');
     liberar7();
     await new Promise((r) => setTimeout(r, 0));
   });
 
-  console.log('\n  · G8: job sem aba viva não é clicável — inclusive um done DENTRO da janela');
+  // G8 e G9 ENVELHECERAM junto com a decisão do card `ver-a-conversa-do-job` (12/09) — não é
+  // regressão, é o mesmo tipo de atualização que o G12/G18/G23 documentam acima. Antes, um job
+  // só era clicável com aba viva do mesmo projeto e o clique abria a ABA (`abrirAba`); agora o
+  // job tem destino PRÓPRIO (`abrirJob`), sempre clicável, com aba viva ou sem (§6.3 da spec).
+  console.log('\n  · G8: job SEM aba viva (inclusive um done DENTRO da janela) — clicável mesmo assim');
   await rodarGrupo('G8', async () => {
     const c8 = carregarCliente({
       aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
@@ -8329,13 +11224,14 @@ async function parteA() {
     });
     await c8.carregarAbas();
     await c8.atualizarFaixaJobs();
+    porIdDe(c8, 'barra-agentes').onclick();
     const alvo8 = porIdDe(c8, 'abas').querySelector('#grupo-jobs')?.querySelector('.conversa-linha')?.querySelector('.conversa');
     tudoOk &= ok(Boolean(alvo8), 'G8: pré-condição — a linha existe');
-    tudoOk &= ok(alvo8?.tag !== 'button', `G8: job sem aba viva NÃO é <button> (tag=${alvo8?.tag})`);
-    tudoOk &= ok(typeof alvo8?.onclick !== 'function', 'G8: e não tem onclick nenhum — clicar não abre nada');
+    tudoOk &= ok(alvo8?.tag === 'button', `G8: job sem aba viva É <button> (tag=${alvo8?.tag})`);
+    tudoOk &= ok(typeof alvo8?.onclick === 'function', 'G8: e TEM onclick — o job não depende mais de aba viva');
   });
 
-  console.log('\n  · G9: job com aba viva chama abrirAba(chave)');
+  console.log('\n  · G9: o clique chama abrirJob(id), com aba viva ou sem');
   await rodarGrupo('G9', async () => {
     const abasG9 = [{ chave: 'aba-viva', titulo: 'x', cwd: '/tmp/g9', temAgente: true, rodando: false, sessaoId: 's9', atualizadoEm: 1 }];
     const c9 = carregarCliente({
@@ -8345,54 +11241,13 @@ async function parteA() {
     });
     await c9.carregarAbas();
     await c9.atualizarFaixaJobs();
+    porIdDe(c9, 'barra-agentes').onclick();
     let chamada9 = null;
-    c9.abrirAba = (chave) => { chamada9 = chave; };
+    c9.abrirJob = (id) => { chamada9 = id; };
     const botao9 = porIdDe(c9, 'abas').querySelector('#grupo-jobs')?.querySelector('.conversa-linha')?.querySelector('.conversa');
-    tudoOk &= ok(botao9?.tag === 'button', 'G9: pré-condição — job com aba viva É clicável');
+    tudoOk &= ok(botao9?.tag === 'button', 'G9: pré-condição — o job é clicável');
     botao9?.onclick?.();
-    tudoOk &= ok(chamada9 === 'aba-viva', `G9: o clique chama abrirAba(chave) (${chamada9})`);
-  });
-
-  console.log('\n  · G10: o clique da faixa abre o grupo — sem window.open, sem rolar tela escondida');
-  await rodarGrupo('G10', async () => {
-    const abasG10 = [{ chave: 'aba-g10', titulo: 'g10', cwd: '/tmp/g10', temAgente: true, rodando: true, sessaoId: 's-g10', atualizadoEm: 1 }];
-    const c10 = carregarCliente({
-      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
-        ? { painel: true, jobs: [jobDoTesteG({ id: 'j-g10', estado: 'running', abas: ['aba-g10'] })] }
-        : { abas: abasG10 }),
-    });
-    await c10.carregarAbas();
-    await c10.atualizarFaixaJobs();
-    await c10.abrirAba('aba-g10');   // entra na vista 'chat' (celular)
-    const app10 = porIdDe(c10, 'app');
-    tudoOk &= ok(app10.dataset.vista === 'chat', 'G10: pré-condição — a vista está em chat (celular)');
-    // history LOCAL que RETÉM o popstate — o `back()` real do stub dispara na hora, e o
-    // verde disso passaria mesmo com a implementação ERRADA (spec §8, o "verde que não
-    // prova nada"). Aqui ele fica retido até o teste mandar.
-    let retido10 = false;
-    c10.history.back = () => { retido10 = true; };
-    // A faixa deixou de ser um `#faixa-jobs` único do markup: desde a fase 2 do split view
-    // ela nasce em `criarPainel`, uma por painel. Buscar pelo id criaria um nó SOLTO no DOM
-    // de mentira, cujo `onclick` é `undefined` — e o `?.()` engoliria o clique, deixando o
-    // teste verde sem ter clicado em nada. Procurar dentro de `#paineis` clica na de verdade.
-    // Zera o contador ANTES do clique. O que o G10/G24 mede é a rolagem que O CLIQUE causa;
-    // desde a fase 3 do split view, `focar()` também chama `scrollIntoView` para trazer o
-    // painel focado à vista, e essas rolagens de MONTAGEM entrariam na conta. Zerar aqui
-    // mantém a asserção medindo o que ela sempre mediu, em vez de afrouxá-la para um número
-    // maior — que passaria mesmo se o clique rolasse quando não devia.
-    c10.rolagens.length = 0;
-    porIdDe(c10, 'paineis').querySelector('.faixa-jobs').onclick();
-    tudoOk &= ok(c10.chamadasWindowOpen.length === 0, 'G10: clicar na faixa NÃO chama window.open');
-    tudoOk &= ok(c10.rolagens.length === 0,
-      `G10: com a vista ainda em chat, NENHUMA rolagem aconteceu (${c10.rolagens.length})`);
-    tudoOk &= ok(retido10 === true, 'G10: pedirLista() chamou history.back() (retido, não disparado)');
-    // LIBERA o popstate retido — `popstate` é evento de WINDOW: `janela`, não `ouvintes`
-    // (que é do document). O próprio `history.back` do stub usa `janela.get('popstate')`.
-    (c10.janela.get('popstate') || []).forEach((fn) => fn({ state: null }));
-    await new Promise((r) => setTimeout(r, 0));   // o handler repinta de forma assíncrona
-    tudoOk &= ok(app10.dataset.vista === 'lista', 'G10: o popstate devolveu a vista para lista');
-    tudoOk &= ok(c10.rolagens.length === 1, `G10: agora sim, UMA rolagem (${c10.rolagens.length})`);
-    tudoOk &= ok(c10.rolagens[0]?.pai === porIdDe(c10, 'abas'), 'G10: rola o nó que é filho de #abas');
+    tudoOk &= ok(chamada9 === 'j-live', `G9: o clique chama abrirJob(id) — o ID do job, não a chave de uma aba (${chamada9})`);
   });
 
   console.log('\n  · G11: resposta atrasada não sobrescreve estado mais novo');
@@ -8422,6 +11277,7 @@ async function parteA() {
     await c11.carregarAbas();
     const p11 = c11.atualizarFaixaJobs();   // a lenta — parte primeiro, resolve por último
     await c11.atualizarFaixaJobs();          // a rápida — chega primeiro
+    porIdDe(c11, 'barra-agentes').onclick();
     const nomeRapida = porIdDe(c11, 'abas').querySelector('#grupo-jobs')?.querySelector('.conversa-nome')?.textContent;
     tudoOk &= ok(nomeRapida === 'novo', `G11: a leitura rápida (2ª) pinta (${nomeRapida})`);
     liberar11();
@@ -8480,6 +11336,7 @@ async function parteA() {
     });
     await c13.carregarAbas();
     await c13.atualizarFaixaJobs();
+    porIdDe(c13, 'barra-agentes').onclick();
     const linhas13 = [...(porIdDe(c13, 'abas').querySelector('#grupo-jobs')?.querySelectorAll('.conversa-linha') || [])];
     tudoOk &= ok(linhas13.length === 4, `G13: pré-condição — 4 linhas na tela (${linhas13.length})`);
     tudoOk &= ok(linhas13[0]?.dataset.estado === 'bloqueado', `G13: blocked → bloqueado (${linhas13[0]?.dataset.estado})`);
@@ -8530,12 +11387,13 @@ async function parteA() {
     });
     await c15b.carregarAbas();
     await c15b.atualizarFaixaJobs();
+    porIdDe(c15b, 'barra-agentes').onclick();
     const estado15b = porIdDe(c15b, 'abas').querySelector('#grupo-jobs')?.querySelector('.conversa-estado')?.textContent;
     tudoOk &= ok(Boolean(estado15b?.includes('há 4h')), `G15b: fim nulo cai no "desde" (${estado15b})`);
     tudoOk &= ok(!estado15b?.includes('496915'), `G15b: nunca "há 496915h" (${estado15b})`);
   });
 
-  console.log('\n  · G16: pularAba ignora um grupo sem data-cwd (R1)');
+  console.log('\n  · G16: pularAba ignora o que está FORA de #lista-conversas (R1, D63)');
   await rodarGrupo('G16', async () => {
     const abasG16 = [
       { chave: 'aba-1', titulo: 'um', cwd: '/tmp/g16-um', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 },
@@ -8584,11 +11442,20 @@ async function parteA() {
     });
     await c17.carregarAbas();
     await c17.atualizarFaixaJobs();
+    // As duas coisas passam a ser mutuamente exclusivas (BA-4): na vista de conversas
+    // (antes do clique), só os projetos; na de agentes (depois), só o grupo — nunca as duas
+    // ao mesmo tempo, então cada metade se prova na vista dela.
+    tudoOk &= ok(porIdDe(c17, 'abas').querySelector('#grupo-jobs') === null,
+      'G17: na vista de conversas, #grupo-jobs não existe');
+    const lista17 = porIdDe(c17, 'abas').querySelector('#lista-conversas');
+    tudoOk &= ok(Boolean(lista17) && lista17.querySelectorAll('.conversa').length === 2,
+      `G17: na vista de conversas, #lista-conversas tem as 2 abas (${lista17?.querySelectorAll('.conversa').length})`);
+
+    porIdDe(c17, 'barra-agentes').onclick();
     const grupo17 = porIdDe(c17, 'abas').querySelector('#grupo-jobs');
-    tudoOk &= ok(Boolean(grupo17), 'G17: pré-condição — o grupo de jobs existe');
-    tudoOk &= ok(!('cwd' in (grupo17?.dataset || { cwd: 1 })), 'G17: #grupo-jobs NÃO carrega data-cwd');
-    const comCwd17 = porIdDe(c17, 'abas').querySelectorAll('.conversa-grupo[data-cwd]');
-    tudoOk &= ok(comCwd17.length === 2, `G17: [data-cwd] continua contando só os 2 projetos (${comCwd17.length})`);
+    tudoOk &= ok(Boolean(grupo17), 'G17: na vista de agentes, o grupo de jobs existe');
+    tudoOk &= ok(porIdDe(c17, 'abas').querySelector('#lista-conversas') === null,
+      'G17: na vista de agentes, #lista-conversas não existe (o coração do gate, R1/D63)');
   });
 
   console.log('\n  · G18 (preservação): jobsRodando só conta running — resumo não mente');
@@ -8611,63 +11478,105 @@ async function parteA() {
     tudoOk &= ok(!resumo18.includes('4 job'), `G18 (preservação): nunca soma os encerrados (${resumo18})`);
   });
 
-  console.log('\n  · G24: clique com a lateral fechada chama aplicarLateral(false) ANTES de rolar');
-  await rodarGrupo('G24', async () => {
-    const abasG24 = [{ chave: 'aba-g24', titulo: 'g24', cwd: '/tmp/g24', temAgente: true, rodando: true, sessaoId: 's-g24', atualizadoEm: 1 }];
-    const c24 = carregarCliente({
-      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
-        ? { painel: true, jobs: [jobDoTesteG({ id: 'j-g24', estado: 'running', abas: ['aba-g24'] })] }
-        : { abas: abasG24 }),
-    });
-    await c24.carregarAbas();
-    await c24.atualizarFaixaJobs();
-    const app24 = porIdDe(c24, 'app');
-    app24.dataset.lateral = 'fechada';
-    app24.dataset.vista = 'lista';   // desktop — não é o caso do celular (G10)
-    const chamadas24 = [];
-    c24.aplicarLateral = (fechada) => {
-      chamadas24.push({ fechada, rolagensAntes: c24.rolagens.length });
-      app24.dataset.lateral = fechada ? 'fechada' : 'aberta';
-    };
-    // A faixa deixou de ser um `#faixa-jobs` único do markup: desde a fase 2 do split view
-    // ela nasce em `criarPainel`, uma por painel. Buscar pelo id criaria um nó SOLTO no DOM
-    // de mentira, cujo `onclick` é `undefined` — e o `?.()` engoliria o clique, deixando o
-    // teste verde sem ter clicado em nada. Procurar dentro de `#paineis` clica na de verdade.
-    // Zera o contador ANTES do clique. O que o G10/G24 mede é a rolagem que O CLIQUE causa;
-    // desde a fase 3 do split view, `focar()` também chama `scrollIntoView` para trazer o
-    // painel focado à vista, e essas rolagens de MONTAGEM entrariam na conta. Zerar aqui
-    // mantém a asserção medindo o que ela sempre mediu, em vez de afrouxá-la para um número
-    // maior — que passaria mesmo se o clique rolasse quando não devia.
-    c24.rolagens.length = 0;
-    porIdDe(c24, 'paineis').querySelector('.faixa-jobs').onclick();
-    tudoOk &= ok(chamadas24.length === 1 && chamadas24[0]?.fechada === false,
-      `G24: aplicarLateral(false) foi chamado (${JSON.stringify(chamadas24)})`);
-    tudoOk &= ok(chamadas24[0]?.rolagensAntes === 0,
-      'G24: e foi chamado ANTES de qualquer rolagem — lateral fechada rolaria uma coluna de largura zero');
+  // G19 REMOVIDO (era "recolher o grupo de jobs grava 'jobs:' — nunca um projeto real"):
+  // não há mais o que recolher (§4.6), e não há substituto — o comportamento deixou de existir.
+
+  // ── A caixa fixa (Fase 2/3 do plano de 2026-09-13) ─────────────────────────
+  console.log('\n  · CX-1: CSS — a barra existe; a caixa empilhada da D50 morreu por completo');
+  await rodarGrupo('CX-1', async () => {
+    const todosCx = cor.blocos(cssSemComentario) || [];
+    const noCelularCx = todosCx.filter((b) => b.dentroDe === '@media (max-width: 760px)');
+
+    const barraCx = todosCx.find((b) => b.seletor === '.barra-agentes' && b.dentroDe !== '@media (max-width: 760px)');
+    tudoOk &= ok(Boolean(barraCx) && /flex:\s*none/.test(barraCx.corpo) && /border-top/.test(barraCx.corpo),
+      `CX-1: .barra-agentes existe com flex: none + border-top (${barraCx && barraCx.corpo})`);
+    const avisoCx = todosCx.find((b) => b.seletor === '.barra-agentes-aviso');
+    tudoOk &= ok(Boolean(avisoCx) && /var\(--perigo\)/.test(avisoCx.corpo) && /font-weight:\s*650/.test(avisoCx.corpo),
+      `CX-1: .barra-agentes-aviso usa var(--perigo) e font-weight: 650 (${avisoCx && avisoCx.corpo})`);
+
+    // Ausência é metade deste trabalho (D51): sem assert de ausência o CSS morto volta no
+    // primeiro rebase.
+    tudoOk &= ok(!todosCx.some((b) => /--altura-agentes/.test(b.corpo)),
+      'CX-1: nenhum bloco declara --altura-agentes');
+    tudoOk &= ok(!todosCx.some((b) => b.seletor === '#grupo-jobs' && /margin-top:\s*auto/.test(b.corpo)),
+      'CX-1: #grupo-jobs não declara mais margin-top: auto');
+    tudoOk &= ok(!todosCx.some((b) => b.seletor === '.conversas > *'),
+      'CX-1: .conversas > * não existe mais');
+    tudoOk &= ok(!todosCx.some((b) => b.seletor === '.conversas' && /display:\s*flex/.test(b.corpo)),
+      'CX-1: .conversas não é mais display: flex');
+    tudoOk &= ok(!noCelularCx.some((b) => b.seletor.split(',').some((p) => p.trim().startsWith('#grupo-jobs'))),
+      'CX-1: #grupo-jobs não aparece mais dentro do @media (max-width: 760px)');
+
+    const tituloCx = todosCx.find((b) => b.seletor === '.caixa-titulo');
+    tudoOk &= ok(Boolean(tituloCx) && !/text-transform/.test(tituloCx.corpo),
+      `CX-1: .caixa-titulo existe e NÃO tem text-transform — a caixa baixa nasce do JS (${tituloCx && tituloCx.corpo})`);
+
+    // O nome do job em 600 (Passo 2.6) — a única mudança visual que ficaria sem rede.
+    const nomeJob = todosCx.find((b) => /conversa-titulo/.test(b.seletor) && /grupo-jobs/.test(b.seletor)
+      && /font-weight:\s*600/.test(b.corpo));
+    tudoOk &= ok(Boolean(nomeJob), `CX-1: o nome do job declara font-weight: 600 (${JSON.stringify(nomeJob)})`);
   });
 
-  console.log('\n  · G19: recolher o grupo de jobs grava "jobs:" — nunca um projeto real');
-  await rodarGrupo('G19', async () => {
-    const guardado19 = memoria();
-    const abasG19 = [{ chave: 'a1', titulo: 'um', cwd: '/tmp/g19', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
-    const c19 = carregarCliente({
-      guardado: guardado19,
+  console.log('\n  · CX-2: a barra — button#barra-agentes, aria-pressed, "agentes" minúsculo, travado ganha de rodando');
+  await rodarGrupo('CX-2', async () => {
+    // Markup ESTÁTICO (tag, type): o DOM de mentira não espelha o index.html — quem já
+    // existia sem clique (getElementById) nasce `<div>` genérico. Lido do arquivo, como o
+    // #nota-atalhos mais acima.
+    const htmlCx2 = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    tudoOk &= ok(/<button\b[^>]*\bid="barra-agentes"/.test(htmlCx2),
+      'CX-2: #barra-agentes é <button> no markup');
+    tudoOk &= ok(/id="barra-agentes"[^>]*\btype="button"|type="button"[^>]*id="barra-agentes"/.test(htmlCx2),
+      'CX-2: type="button"');
+
+    const c = carregarCliente({
       aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
-        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running' })] }
-        : { abas: abasG19 }),
+        ? { painel: true, jobs: [
+            jobDoTesteG({ id: 'cx2-b', estado: 'blocked' }),
+            jobDoTesteG({ id: 'cx2-o', estado: 'orfao' }),
+            jobDoTesteG({ id: 'cx2-r1', estado: 'running' }),
+            jobDoTesteG({ id: 'cx2-r2', estado: 'running' }),
+            jobDoTesteG({ id: 'cx2-r3', estado: 'running' }),
+          ] }
+        : { abas: [] }),
     });
-    await c19.carregarAbas();
-    await c19.atualizarFaixaJobs();
-    const grupo19 = porIdDe(c19, 'abas').querySelector('#grupo-jobs');
-    grupo19?.querySelector('.projeto-alternar')?.onclick?.();
-    const salvo19 = JSON.parse(guardado19.getItem('cockpit-projetos') || '{}');
-    tudoOk &= ok((salvo19.fechados || []).includes('jobs:'),
-      `G19: recolher grava "jobs:" em cockpit-projetos.fechados (${JSON.stringify(salvo19.fechados)})`);
-    tudoOk &= ok(!(salvo19.fechados || []).includes('/tmp/g19'),
-      'G19: e NÃO recolhe o projeto real — chave própria (R7)');
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const barraCx2 = porIdDe(c, 'barra-agentes');
+    tudoOk &= ok(barraCx2?.getAttribute('aria-pressed') != null, 'CX-2: aria-pressed presente');
+    const nomeCx2 = porIdDe(c, 'barra-agentes-nome')?.textContent;
+    tudoOk &= ok(/^agentes/.test(nomeCx2 || ''), `CX-2: o texto começa com "agentes" minúsculo (${nomeCx2})`);
+    const avisoCx2 = porIdDe(c, 'barra-agentes-aviso')?.textContent;
+    tudoOk &= ok(avisoCx2 === '2 travados', `CX-2: 1 blocked + 1 orfao → "2 travados" (${avisoCx2})`);
+    const trabalhoCx2 = porIdDe(c, 'barra-agentes-trabalho')?.textContent;
+    tudoOk &= ok(!trabalhoCx2, `CX-2: com travado, .barra-agentes-trabalho está vazio — travado ganha de rodando (${trabalhoCx2})`);
   });
 
-  console.log('\n  · G20: sem aba nenhuma no terminal, com job na lista — os DOIS avisos convivem');
+  console.log('\n  · CX-3: a vista sobrevive à repintura, e o scrollTop de #abas também');
+  await rodarGrupo('CX-3', async () => {
+    const dozeJobsCx3 = Array.from({ length: 12 }, (_, i) => jobDoTesteG({ id: `cx3-${i}`, estado: 'running' }));
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: dozeJobsCx3 } : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    porIdDe(c, 'barra-agentes').onclick();
+    porIdDe(c, 'abas').scrollTop = 40;   // simula quem já rolou a lista
+    // `atualizarFaixaJobs()` chama `desenharAbas()`, que recria #abas do ZERO — é exatamente
+    // essa repintura (a cada 15s, na vida real) que perderia a vista e a rolagem sem as
+    // guardas de `vistaDaLateral` (estado de módulo) e do salva-e-restaura do `scrollTop`.
+    await c.atualizarFaixaJobs();
+    await c.atualizarFaixaJobs();
+    tudoOk &= ok(Boolean(porIdDe(c, 'abas').querySelector('#grupo-jobs')),
+      'CX-3: #grupo-jobs continua na tela depois de DUAS repinturas');
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'agentes',
+      'CX-3: e app.dataset.listaVista continua "agentes"');
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.getAttribute('aria-pressed') === 'true',
+      'CX-3: e aria-pressed continua "true"');
+    tudoOk &= ok(porIdDe(c, 'abas').scrollTop === 40,
+      `CX-3: e o scrollTop de #abas sobreviveu às duas repinturas (${porIdDe(c, 'abas').scrollTop})`);
+  });
+
+  console.log('\n  · G20: sem aba nenhuma no terminal, com job na lista — cada aviso na SUA vista');
   await rodarGrupo('G20', async () => {
     const c20 = carregarCliente({
       aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
@@ -8677,13 +11586,25 @@ async function parteA() {
     await c20.carregarAbas();
     await c20.atualizarFaixaJobs();
     const abasEl20 = porIdDe(c20, 'abas');
+    // BA-4 (exclusão mútua): na vista de conversas só o aviso de abas, nunca o grupo de jobs.
     tudoOk &= ok(textoDe(abasEl20).includes('Nenhuma aba aberta'), 'G20: mostra o aviso de nenhuma aba');
-    tudoOk &= ok(Boolean(abasEl20.querySelector('#grupo-jobs')), 'G20: e o grupo de jobs aparece mesmo assim');
+    tudoOk &= ok(!abasEl20.querySelector('#grupo-jobs'), 'G20: e o grupo de jobs NÃO aparece na vista de conversas');
+    tudoOk &= ok(porIdDe(c20, 'barra-agentes-nome')?.textContent === 'agentes · 1',
+      `G20: mas a barra já diz "agentes · 1" (${porIdDe(c20, 'barra-agentes-nome')?.textContent})`);
     tudoOk &= ok(porIdDe(c20, 'vazio-resumo').textContent === '',
       `G20: pintarResumoVazio() não estoura nem escreve resumo sem aba nenhuma (${porIdDe(c20, 'vazio-resumo').textContent})`);
+
+    porIdDe(c20, 'barra-agentes').onclick();
+    tudoOk &= ok(Boolean(abasEl20.querySelector('#grupo-jobs')), 'G20: depois do clique, o grupo de jobs aparece');
+    tudoOk &= ok(!textoDe(abasEl20).includes('Nenhuma aba aberta'),
+      'G20: e o aviso de abas some — ele fala de abas, não de agentes');
   });
 
-  console.log('\n  · G21: aba fechada entre a leitura de jobs e a de abas — a defasagem 15s×5s');
+  // G21 ENVELHECEU junto com G8/G9 (12/09): a defasagem 15s×5s entre a leitura de jobs e de
+  // abas não importa mais para "clicável ou não" — o job tem destino PRÓPRIO e nunca depende
+  // de `j.abas` para abrir. O que continua valendo é o `id` certo indo para `abrirJob`,
+  // mesmo quando `j.abas` está cheio de chaves mortas (a lista não é mais consultada nisso).
+  console.log('\n  · G21: `j.abas` morta/mista/vazia não muda nada — o job sempre abre por ID');
   await rodarGrupo('G21', async () => {
     const abasG21 = [{ chave: 'viva', titulo: 'v', cwd: '/tmp/g21', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
     const jobsG21 = [
@@ -8695,15 +11616,19 @@ async function parteA() {
     });
     await c21.carregarAbas();
     await c21.atualizarFaixaJobs();
+    porIdDe(c21, 'barra-agentes').onclick();
     const linhas21 = [...(porIdDe(c21, 'abas').querySelector('#grupo-jobs')?.querySelectorAll('.conversa-linha') || [])];
     tudoOk &= ok(linhas21.length === 2, `G21: pré-condição — 2 linhas de job (${linhas21.length})`);
     const alvo1 = linhas21[0]?.querySelector('.conversa');
     const alvo2 = linhas21[1]?.querySelector('.conversa');
-    tudoOk &= ok(alvo1?.tag !== 'button', 'G21: job cuja ÚNICA aba fechou não é clicável');
+    tudoOk &= ok(alvo1?.tag === 'button', 'G21: job com a ÚNICA aba morta AINDA é clicável');
     let chamada21 = null;
-    c21.abrirAba = (chave) => { chamada21 = chave; };
+    c21.abrirJob = (id) => { chamada21 = id; };
+    alvo1?.onclick?.();
+    tudoOk &= ok(chamada21 === 'j-morta', `G21: e abre pelo PRÓPRIO id, não por uma chave de aba (${chamada21})`);
+    chamada21 = null;
     alvo2?.onclick?.();
-    tudoOk &= ok(chamada21 === 'viva', `G21: job com abas MISTAS abre a VIVA, não a morta (${chamada21})`);
+    tudoOk &= ok(chamada21 === 'j-mista', `G21: idem para o job de abas MISTAS (${chamada21})`);
   });
 
   console.log('\n  · G22: o clique fantasma logo depois do puxar-para-atualizar não abre job');
@@ -8722,6 +11647,7 @@ async function parteA() {
     });
     await c22.carregarAbas();
     await c22.atualizarFaixaJobs();
+    porIdDe(c22, 'barra-agentes').onclick();
     const lista22 = porIdDe(c22, 'abas');
     const dedo22 = (y) => ({ touches: [{ clientY: y }], preventDefault() {} });
     lista22.scrollTop = 0;
@@ -8759,6 +11685,1175 @@ async function parteA() {
       'G23 (preservação): a aba com job RODANDO ganha a bolinha');
     tudoOk &= ok(!linhaDone23?.querySelector('.conversa-job'),
       'G23 (preservação): a aba cujo job já terminou NÃO ganha bolinha');
+  });
+
+  // ── A barra dos agentes, D51 (2026-09-13): a lista troca de vista no lugar da caixa
+  //    empilhada da D50. Gates novos, além do que G1-G23/CX-1-3 já reescreveram acima. ────
+
+  console.log('\n  · BA-1: o alternador — clique troca a vista, aria-pressed nos dois sentidos');
+  await rodarGrupo('BA-1', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] } : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.getAttribute('aria-pressed') === 'false',
+      'BA-1: nasce em conversas, aria-pressed="false"');
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'agentes', 'BA-1: clique → agentes');
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.getAttribute('aria-pressed') === 'true',
+      'BA-1: e aria-pressed="true"');
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'conversas', 'BA-1: clique de novo → conversas');
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.getAttribute('aria-pressed') === 'false',
+      'BA-1: e aria-pressed volta a "false"');
+  });
+
+  console.log('\n  · BA-2: a vista NASCE em conversas e não é persistida');
+  await rodarGrupo('BA-2', async () => {
+    const chamadasSetItem = [];
+    const guardado = memoria();
+    const setItemOriginal = guardado.setItem;
+    guardado.setItem = (k, v) => { chamadasSetItem.push(k); return setItemOriginal(k, v); };
+    const c = carregarCliente({
+      guardado,
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] } : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    porIdDe(c, 'barra-agentes').onclick();
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(!chamadasSetItem.some((k) => /vista/i.test(k)),
+      `BA-2: nenhum setItem com chave de vista, nos dois cliques (${chamadasSetItem.join(', ') || 'nenhum'})`);
+    // Cliente NOVO, storage COMPARTILHADO: nasce em conversas mesmo assim.
+    const c2 = carregarCliente({
+      guardado,
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] } : { abas: [] }),
+    });
+    await c2.carregarAbas();
+    tudoOk &= ok(porIdDe(c2, 'app').dataset.listaVista === 'conversas',
+      'BA-2: um cliente novo nasce em conversas, mesmo com o storage compartilhado');
+  });
+
+  console.log('\n  · BA-3: o invariante da porta — barra.hidden===false sempre que a vista é agentes');
+  await rodarGrupo('BA-3', async () => {
+    let semContato = false;
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? (semContato ? { painel: false } : { painel: true, jobs: [jobDoTesteG({ estado: 'running' })] })
+        : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'agentes', 'BA-3: pré-condição — entrou em agentes');
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.hidden === false, 'BA-3: a barra está visível em agentes');
+    // Notícia RUIM (painel: false) não é ausência: a barra continua sendo a única porta.
+    semContato = true;
+    await c.atualizarFaixaJobs();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'agentes',
+      'BA-3: uma leitura painel:false NÃO expulsa da vista de agentes');
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.hidden === false,
+      'BA-3: e a barra continua visível — notícia ruim não é ignorância');
+  });
+
+  console.log('\n  · BA-4: exclusão mútua — #grupo-jobs e #lista-conversas nunca juntos');
+  await rodarGrupo('BA-4', async () => {
+    const abasBa4 = [{ chave: 'a1', titulo: 'um', cwd: '/tmp/ba4', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running' })] }
+        : { abas: abasBa4 }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const abasElBa4 = porIdDe(c, 'abas');
+    tudoOk &= ok(!abasElBa4.querySelector('#grupo-jobs'), 'BA-4: em conversas, #grupo-jobs não existe');
+    tudoOk &= ok(Boolean(abasElBa4.querySelector('#lista-conversas')), 'BA-4: e a lista de conversas existe');
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(Boolean(abasElBa4.querySelector('#grupo-jobs')), 'BA-4: em agentes, #grupo-jobs existe');
+    tudoOk &= ok(abasElBa4.querySelector('#lista-conversas') === null,
+      'BA-4: e nenhum #lista-conversas — as conversas não estão ali');
+  });
+
+  console.log('\n  · BA-5: pularAba em agentes é no-op — não lança, não chama abrirAba');
+  await rodarGrupo('BA-5', async () => {
+    const abasBa5 = [{ chave: 'a1', titulo: 'um', cwd: '/tmp/ba5', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running' })] }
+        : { abas: abasBa5 }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    porIdDe(c, 'barra-agentes').onclick();
+    let chamouAbrirAba = false;
+    c.abrirAba = () => { chamouAbrirAba = true; };
+    let estourouBa5 = false;
+    try { c.pularAba(1); c.pularAba(-1); } catch { estourouBa5 = true; }
+    tudoOk &= ok(!estourouBa5, 'BA-5: pularAba(1)/pularAba(-1) na vista de agentes não lançam');
+    tudoOk &= ok(!chamouAbrirAba, 'BA-5: e não chamam abrirAba — no-op declarado');
+  });
+
+  console.log('\n  · BA-7: duas pinturas com dados IGUAIS não recriam o nó de texto do aviso');
+  await rodarGrupo('BA-7', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'blocked' })] }
+        : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const avisoBa7 = porIdDe(c, 'barra-agentes-aviso');
+    // Marca: o setter de `textContent` do DOM de mentira zera o scrollTop ao reconstruir os
+    // filhos (mesmo truque do teste da tela da pane, mais acima). Se sobreviver, o nó não
+    // foi tocado — é o que prova que `pintarRotulo` comparou antes de escrever.
+    avisoBa7.scrollTop = 7;
+    await c.atualizarFaixaJobs();   // dados IDÊNTICOS — segunda pintura, 5s depois na vida real
+    tudoOk &= ok(avisoBa7.scrollTop === 7,
+      'BA-7: dados idênticos não reescrevem o nó de texto do aviso — scrollTop sobreviveu');
+  });
+
+  console.log('\n  · BA-8: a rolagem é POR VISTA — voltar de agentes devolve o scrollTop de conversas');
+  await rodarGrupo('BA-8', async () => {
+    const abasBa8 = [{ chave: 'a1', titulo: 'um', cwd: '/tmp/ba8', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running' })] }
+        : { abas: abasBa8 }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const abasElBa8 = porIdDe(c, 'abas');
+    abasElBa8.scrollTop = 300;                 // rolou a lista de CONVERSAS
+    porIdDe(c, 'barra-agentes').onclick();     // entra em agentes
+    abasElBa8.scrollTop = 80;                  // rola a lista de AGENTES — valor DIFERENTE de
+                                                // propósito: um número só convergiria os três
+                                                // slots e passaria verde com a tela errada.
+    porIdDe(c, 'barra-agentes').onclick();     // volta para conversas
+    tudoOk &= ok(abasElBa8.scrollTop === 300,
+      `BA-8: voltando para conversas, o scrollTop volta a 300, não 80 (${abasElBa8.scrollTop})`);
+  });
+
+  console.log('\n  · BA-9: a barra diz o DESTINO — em agentes vira "conversas", sem contador nem aviso');
+  await rodarGrupo('BA-9', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'blocked' }), jobDoTesteG({ estado: 'running' })] }
+        : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const nomeBa9 = () => porIdDe(c, 'barra-agentes-nome')?.textContent;
+    const avisoBa9 = () => porIdDe(c, 'barra-agentes-aviso')?.textContent;
+
+    // Na vista de conversas o contador e o aviso DENUNCIAM o que está invisível — continuam.
+    tudoOk &= ok(nomeBa9() === 'agentes · 2', `BA-9: em conversas a barra diz "agentes · 2" (${nomeBa9()})`);
+    tudoOk &= ok(avisoBa9() === '1 travado', `BA-9: e denuncia "1 travado" (${avisoBa9()})`);
+
+    porIdDe(c, 'barra-agentes').onclick();     // entra em agentes
+    tudoOk &= ok(nomeBa9() === 'conversas',
+      `BA-9: na vista de agentes a barra diz para onde o clique leva: "conversas" (${nomeBa9()})`);
+    // O travado está À VISTA na lista aqui — repetir na barra seria contar duas vezes, e o
+    // aviso vermelho ao lado de "conversas" leria como se a CONVERSA estivesse travada.
+    tudoOk &= ok(!avisoBa9(), `BA-9: e o aviso de travado sai junto (${avisoBa9()})`);
+
+    porIdDe(c, 'barra-agentes').onclick();     // volta para conversas
+    tudoOk &= ok(nomeBa9() === 'agentes · 2', `BA-9: voltando, o contador reaparece (${nomeBa9()})`);
+    tudoOk &= ok(avisoBa9() === '1 travado', `BA-9: e o aviso também (${avisoBa9()})`);
+  });
+
+  // ── A 3ª vista, leituras (D59, card leituras-trilhas, 02/10/2026) ──────────────────────
+
+  // Flush de verdade (event loop real, FORA do VM): `trocarVistaDaLateral('leituras')` dispara
+  // `carregarLeituras()` sem `await` (fire-and-forget, como o resto do boot) — um `setTimeout`
+  // de 0ms deixa o fetch de mentira e o `.json()` dele resolverem antes do próximo assert.
+  const tickLT = () => new Promise((r) => setTimeout(r, 0));
+
+  // O estado padrão dos LT-*: 2 trilhas, mesma forma da spec §5.1. `ia` com `proximo: 'ia-1'`
+  // (ia-0 já terminado), `ia-2.opcional`, `eco-0.gratis`, `ia-1.na_estante`.
+  const estadoLT = () => ({
+    catalogo: { ok: true, caminho: '/x/trilhas.json' },
+    progresso: { ok: true },
+    trilhas: [
+      { id: 'ia', titulo: 'IA', feitos: 1, total: 3, proximo: 'ia-1', livros: [
+        { id: 'ia-0', n: '0', titulo: 'Cointeligência', autor: 'Ethan Mollick', opcional: false, gratis: false, na_estante: false, terminado_em: '2026-10-01T15:00:00.000Z' },
+        { id: 'ia-1', n: '1', titulo: 'A Era da IA', autor: 'Kissinger, Schmidt, Huttenlocher', opcional: false, gratis: false, na_estante: true, terminado_em: null },
+        { id: 'ia-2', n: '2', titulo: 'Superinteligência', autor: 'Nick Bostrom', opcional: true, gratis: false, na_estante: false, terminado_em: null },
+      ] },
+      { id: 'economia', titulo: 'Economia', feitos: 0, total: 2, proximo: 'eco-0', livros: [
+        { id: 'eco-0', n: '0', titulo: 'Economia Básica', autor: 'Thomas Sowell', opcional: false, gratis: true, na_estante: false, terminado_em: null },
+        { id: 'eco-1', n: '1', titulo: 'Rápido e Devagar', autor: 'Daniel Kahneman', opcional: false, gratis: false, na_estante: false, terminado_em: null },
+      ] },
+    ],
+  });
+
+  /** O stub padrão: api/jobs → 1 blocked, api/leituras GET → `estadoLT()`, POST → grava o
+   *  corpo num array e devolve `{ livroId, terminado_em }`. `opcoes.body` é string JSON
+   *  (molde `api()`, `app.js:149-157`) — mesmo jeito do caso de `api/lidas` (`:1464`). */
+  function stubLT(postsCapturados) {
+    return (rota, opcoes = {}) => {
+      const r = String(rota);
+      if (/api\/jobs/.test(r)) return { painel: true, jobs: [jobDoTesteG({ estado: 'blocked' })] };
+      if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+        const corpo = JSON.parse(opcoes.body);
+        postsCapturados.push(corpo);
+        return { livroId: corpo.livroId, terminado_em: '2026-10-02T12:00:00.000Z' };
+      }
+      if (r.startsWith('api/leituras')) return estadoLT();
+      return { abas: [] };
+    };
+  }
+
+  console.log('\n  · LT-1: o alternador nas TRÊS vistas — rótulo = destino, aria-pressed');
+  await rodarGrupo('LT-1', async () => {
+    const c = carregarCliente({ aoBuscar: stubLT([]) });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+
+    tudoOk &= ok(porIdDe(c, 'barra-leituras-nome')?.textContent === 'leituras',
+      `LT-1: em conversas, #barra-leituras-nome diz "leituras" (${porIdDe(c, 'barra-leituras-nome')?.textContent})`);
+    tudoOk &= ok(porIdDe(c, 'barra-leituras')?.getAttribute('aria-pressed') === 'false',
+      'LT-1: e aria-pressed="false"');
+
+    porIdDe(c, 'barra-leituras').onclick();
+    await tickLT();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'leituras', 'LT-1: clique → listaVista "leituras"');
+    tudoOk &= ok(porIdDe(c, 'titulo-lista')?.textContent === 'leituras',
+      `LT-1: #titulo-lista = "leituras" (${porIdDe(c, 'titulo-lista')?.textContent})`);
+    tudoOk &= ok(porIdDe(c, 'barra-leituras-nome')?.textContent === 'conversas',
+      `LT-1: barra-leituras passa a dizer "conversas" (${porIdDe(c, 'barra-leituras-nome')?.textContent})`);
+    tudoOk &= ok(porIdDe(c, 'barra-leituras')?.getAttribute('aria-pressed') === 'true', 'LT-1: aria-pressed="true"');
+    tudoOk &= ok(porIdDe(c, 'barra-agentes-nome')?.textContent === 'agentes · 1',
+      `LT-1: barra-agentes continua dizendo "agentes · 1" (${porIdDe(c, 'barra-agentes-nome')?.textContent})`);
+    tudoOk &= ok(porIdDe(c, 'barra-agentes-aviso')?.textContent === '1 travado',
+      `LT-1: e o aviso "1 travado" (${porIdDe(c, 'barra-agentes-aviso')?.textContent})`);
+    tudoOk &= ok(porIdDe(c, 'barra-agentes')?.getAttribute('aria-pressed') === 'false',
+      'LT-1: aria-pressed do barra-agentes continua "false"');
+
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'agentes',
+      'LT-1: clique em barra-agentes estando em leituras → agentes');
+    tudoOk &= ok(porIdDe(c, 'barra-leituras-nome')?.textContent === 'leituras',
+      'LT-1: e barra-leituras volta a dizer "leituras"');
+
+    porIdDe(c, 'barra-leituras').onclick();
+    await tickLT();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'leituras', 'LT-1: clique em barra-leituras → leituras');
+
+    porIdDe(c, 'barra-leituras').onclick();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.listaVista === 'conversas', 'LT-1: clique de novo → conversas');
+  });
+
+  console.log('\n  · LT-2: render da fixture — contador, próximo, etiquetas, data');
+  await rodarGrupo('LT-2', async () => {
+    const c = carregarCliente({ aoBuscar: stubLT([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+
+    const abasEl = porIdDe(c, 'abas');
+    tudoOk &= ok(abasEl.querySelectorAll('.leituras-trilha').length === 2,
+      `LT-2: 2 .leituras-trilha dentro de #abas (veio ${abasEl.querySelectorAll('.leituras-trilha').length})`);
+
+    const trilhaIa = abasEl.querySelector('[data-trilha="ia"]');
+    tudoOk &= ok(trilhaIa?.querySelector('.leituras-contador')?.textContent === '1/3',
+      `LT-2: contador da ia = "1/3" (veio ${trilhaIa?.querySelector('.leituras-contador')?.textContent})`);
+
+    const ia1 = abasEl.querySelector('[data-livro="ia-1"]');
+    tudoOk &= ok(ia1?.dataset.proximo === '1', 'LT-2: ia-1 tem data-proximo="1"');
+    tudoOk &= ok(Boolean(ia1?.querySelector('.etiqueta-proximo')), 'LT-2: e uma .etiqueta-proximo');
+    tudoOk &= ok(trilhaIa.querySelectorAll('[data-proximo="1"]').length === 1,
+      `LT-2: só UM [data-proximo="1"] na trilha ia (veio ${trilhaIa.querySelectorAll('[data-proximo="1"]').length})`);
+
+    const ia0 = abasEl.querySelector('[data-livro="ia-0"]');
+    tudoOk &= ok(Boolean(ia0?.querySelector('.livro-data')?.textContent), 'LT-2: ia-0 tem .livro-data não vazia');
+    // `querySelector`/`querySelectorAll` de mentira só casam #id/.classe/[attr] — tag nua
+    // ("input") não entra (§8 do cabeçalho do arquivo): `achar()` busca por TAG.
+    tudoOk &= ok(achar(ia0, 'input')[0]?.checked === true, 'LT-2: e a caixa de ia-0 nasce checked');
+
+    const ia2 = abasEl.querySelector('[data-livro="ia-2"]');
+    tudoOk &= ok(ia2?.querySelector('.etiqueta')?.textContent === 'opcional',
+      `LT-2: ia-2 tem etiqueta "opcional" (veio ${ia2?.querySelector('.etiqueta')?.textContent})`);
+    const eco0 = abasEl.querySelector('[data-livro="eco-0"]');
+    tudoOk &= ok(eco0?.querySelector('.etiqueta')?.textContent === 'grátis',
+      `LT-2: eco-0 tem etiqueta "grátis" (veio ${eco0?.querySelector('.etiqueta')?.textContent})`);
+    tudoOk &= ok(ia1?.querySelector('.etiqueta')?.textContent === 'na estante',
+      `LT-2: ia-1 tem etiqueta "na estante" (veio ${ia1?.querySelector('.etiqueta')?.textContent})`);
+  });
+
+  console.log('\n  · LT-3: checkbox — o clique manda o POST certo e recarrega');
+  await rodarGrupo('LT-3', async () => {
+    const posts = [];
+    let gets = 0;
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        const r = String(rota);
+        if (/api\/jobs/.test(r)) return { painel: true, jobs: [] };
+        if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+          posts.push(JSON.parse(opcoes.body));
+          return { livroId: JSON.parse(opcoes.body).livroId, terminado_em: '2026-10-02T12:00:00.000Z' };
+        }
+        if (r.startsWith('api/leituras')) { gets += 1; return estadoLT(); }
+        return { abas: [] };
+      },
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const getsAntes = gets;
+
+    const caixaIa1 = achar(porIdDe(c, 'abas').querySelector('[data-livro="ia-1"]'), 'input')[0];
+    caixaIa1.checked = true;   // #55: o DOM falso não alterna sozinho
+    await caixaIa1.onchange({ currentTarget: caixaIa1 });
+
+    tudoOk &= ok(posts.length === 1 && posts[0].livroId === 'ia-1' && posts[0].terminado === true,
+      `LT-3: o POST capturado é { livroId: 'ia-1', terminado: true } (veio ${JSON.stringify(posts[0])})`);
+    tudoOk &= ok(gets > getsAntes, 'LT-3: depois do await, houve um GET novo de api/leituras');
+  });
+
+  console.log('\n  · LT-4: durante o POST a caixa fica disabled, mas com o valor PRETENDIDO (R4)');
+  await rodarGrupo('LT-4', async () => {
+    let resolverPost = null;
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        const r = String(rota);
+        if (/api\/jobs/.test(r)) return { painel: true, jobs: [] };
+        if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+          return new Promise((resolve) => { resolverPost = () => resolve({ livroId: JSON.parse(opcoes.body).livroId, terminado_em: '2026-10-02T12:00:00.000Z' }); });
+        }
+        if (r.startsWith('api/leituras')) return estadoLT();
+        return { abas: [] };
+      },
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+
+    const caixaIa1 = achar(porIdDe(c, 'abas').querySelector('[data-livro="ia-1"]'), 'input')[0];
+    caixaIa1.checked = true;
+    const promessa = caixaIa1.onchange({ currentTarget: caixaIa1 });
+    await tickLT();   // deixa o `marcarLivro` chegar no `await api(...)` e `desenharAbas()` repintar
+
+    const caixaRepintada = achar(porIdDe(c, 'abas').querySelector('[data-livro="ia-1"]'), 'input')[0];
+    tudoOk &= ok(caixaRepintada.disabled === true, 'LT-4: repintada em voo, a caixa nasce disabled');
+    tudoOk &= ok(caixaRepintada.checked === true,
+      'LT-4: e CHECKED — o valor pretendido, não o do cache (senão ela desmarcaria sozinha)');
+
+    resolverPost();
+    await promessa;
+    await tickLT();
+    const caixaFinal = achar(porIdDe(c, 'abas').querySelector('[data-livro="ia-1"]'), 'input')[0];
+    tudoOk &= ok(caixaFinal.disabled === false, 'LT-4: resolvido o POST, disabled volta a false');
+  });
+
+  console.log('\n  · LT-5: catálogo ausente/inválido — texto + caminho (+ detalhe)');
+  await rodarGrupo('LT-5', async () => {
+    const cAusente = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] }
+        : (String(rota).startsWith('api/leituras')
+          ? { catalogo: { ok: false, motivo: 'ausente', caminho: '/x/trilhas.json' }, progresso: { ok: true }, trilhas: [] }
+          : { abas: [] })),
+    });
+    cAusente.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const textoAusente = porIdDe(cAusente, 'abas').textContent;
+    tudoOk &= ok(textoAusente.includes('catálogo não encontrado') && textoAusente.includes('/x/trilhas.json'),
+      `LT-5: catálogo ausente ⇒ texto + caminho (veio ${JSON.stringify(textoAusente)})`);
+
+    const cInvalido = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] }
+        : (String(rota).startsWith('api/leituras')
+          ? { catalogo: { ok: false, motivo: 'invalido', caminho: '/x/trilhas.json', detalhe: 'livro id duplicado: ia-0' }, progresso: { ok: true }, trilhas: [] }
+          : { abas: [] })),
+    });
+    cInvalido.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const textoInvalido = porIdDe(cInvalido, 'abas').textContent;
+    tudoOk &= ok(textoInvalido.includes('catálogo inválido') && textoInvalido.includes('livro id duplicado: ia-0'),
+      `LT-5: catálogo inválido ⇒ texto + detalhe (veio ${JSON.stringify(textoInvalido)})`);
+  });
+
+  console.log('\n  · LT-6: sequência — a resposta mais nova vence, mesmo chegando por último');
+  await rodarGrupo('LT-6', async () => {
+    const resolvers = [];
+    let modoControlado = false;
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] }
+        : (String(rota).startsWith('api/leituras')
+          ? (modoControlado ? new Promise((resolve) => resolvers.push(resolve)) : estadoLT())
+          : { abas: [] })),
+    });
+    c.trocarVistaDaLateral('leituras');   // entra na vista — senão desenharAbas() nem chama grupoDeLeituras()
+    await tickLT();
+
+    modoControlado = true;
+    const p1 = c.carregarLeituras();
+    const p2 = c.carregarLeituras();
+    // O 1º a CHAMAR é o 2º a RESPONDER — resolve a 2ª chamada primeiro.
+    resolvers[1]({ catalogo: { ok: true, caminho: '/x.json' }, progresso: { ok: true },
+      trilhas: [{ id: 'segunda', titulo: 'Segunda', feitos: 0, total: 0, proximo: null, livros: [] }] });
+    await p2;
+    resolvers[0]({ catalogo: { ok: true, caminho: '/x.json' }, progresso: { ok: true },
+      trilhas: [{ id: 'primeira', titulo: 'Primeira', feitos: 0, total: 0, proximo: null, livros: [] }] });
+    await p1;
+    c.desenharAbas();
+    const abasEl = porIdDe(c, 'abas');
+    tudoOk &= ok(Boolean(abasEl.querySelector('[data-trilha="segunda"]')) && !abasEl.querySelector('[data-trilha="primeira"]'),
+      'LT-6: a tela fica com o estado da resposta mais NOVA, mesmo chegando antes');
+  });
+
+  console.log('\n  · LT-7: progresso ilegível — aviso visível e TODAS as caixas desabilitadas');
+  await rodarGrupo('LT-7', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] }
+        : (String(rota).startsWith('api/leituras')
+          ? { catalogo: { ok: true, caminho: '/x.json' },
+              progresso: { ok: false, detalhe: 'JSON corrompido' },
+              trilhas: estadoLT().trilhas }
+          : { abas: [] })),
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const abasEl = porIdDe(c, 'abas');
+    // O detalhe do stub é o que `lib/leituras.js` devolve de verdade (só a causa); o prefixo
+    // vem da tela, UMA vez — antes ele saía duplicado (painel de execução, Claude).
+    tudoOk &= ok(abasEl.textContent.includes('progresso ilegível: JSON corrompido')
+      && !abasEl.textContent.includes('progresso ilegível: progresso ilegível'),
+      `LT-7: aviso visível com o detalhe, prefixo uma vez só (veio ${JSON.stringify(abasEl.textContent)})`);
+    const caixas = abasEl.querySelectorAll('.livro').map((l) => achar(l, 'input')[0]);
+    tudoOk &= ok(caixas.length > 0 && caixas.every((cx) => cx.disabled === true),
+      'LT-7: e TODAS as caixas nascem disabled');
+  });
+
+  console.log('\n  · LT-8: a vista NÃO persiste — nenhum setItem com chave de vista');
+  await rodarGrupo('LT-8', async () => {
+    const guardado = memoria();
+    const c = carregarCliente({ guardado, aoBuscar: stubLT([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const chavesDeVista = [...guardado._dados.keys()].filter((k) => /vista/i.test(k));
+    tudoOk &= ok(chavesDeVista.length === 0,
+      `LT-8: nenhuma chave de vista foi persistida (veio ${JSON.stringify(chavesDeVista)})`);
+  });
+
+  console.log('\n  · LT-9: fonte — public/app.js não ganhou innerHTML');
+  await rodarGrupo('LT-9', () => {
+    // Número CRAVADO, medido na develop de 02/10/2026 (`git show develop:public/app.js | grep
+    // -o innerHTML | wc -l` → 4) — todas em comentários que PROÍBEM o uso (veja :9). Comparar
+    // com o HEAD do git era tautologia: com tudo commitado, antes === depois sempre (painel de
+    // execução, Claude). Se um dia um comentário novo citar a palavra, atualizar o número AQUI,
+    // conscientemente.
+    const fonte = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const depois = (fonte.match(/innerHTML/g) || []).length;
+    tudoOk &= ok(depois === 4,
+      `LT-9: ocorrências de innerHTML (texto) continuam 4, todas em comentário (agora ${depois})`);
+  });
+
+  console.log('\n  · LT-10: markup e CSS — barra-leituras, barra-vistas, faixa segura');
+  await rodarGrupo('LT-10', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    tudoOk &= ok(/<button[^>]*id="barra-leituras"[^>]*type="button"/.test(html),
+      'LT-10: index.html tem <button … id="barra-leituras" … type="button"');
+    tudoOk &= ok(!/id="barra-leituras"[^>]*hidden/.test(html) && !/hidden[^>]*id="barra-leituras"/.test(html),
+      'LT-10: sem hidden no botão');
+    tudoOk &= ok(/class="barra-vistas"[\s\S]{0,1200}id="barra-leituras"/.test(html),
+      'LT-10: #barra-leituras mora dentro de class="barra-vistas"');
+
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'estilo.css'), 'utf8');
+    tudoOk &= ok(/\.barra-vistas\s*\{[^}]*flex:\s*none/.test(css), 'LT-10: .barra-vistas tem flex: none');
+    const media760 = css.slice(css.indexOf('@media (max-width: 760px)'));
+    tudoOk &= ok(/\.barra-leituras\s*\{[^}]*safe-area-inset-bottom/.test(media760),
+      'LT-10: @media (max-width: 760px) tem .barra-leituras com safe-area-inset-bottom');
+  });
+
+  // ── "Lendo agora", botão lendo e filtro (D61, card leituras-v2) ────────────────────────
+
+  // Cópia de `estadoLT()`: ia-1 e eco-1 lendo, os outros `lendo_desde: null`. Com ia-1 lendo
+  // (e ia-2 opcional), a trilha `ia` fica sem próximo — só sobra gente que não conta (S6).
+  const estadoLV = () => {
+    const base = estadoLT();
+    const ia = base.trilhas.find((t) => t.id === 'ia');
+    ia.proximo = null;
+    ia.livros.find((l) => l.id === 'ia-0').original = 'Co-Intelligence';   // LV-9: busca por `original`
+    for (const l of ia.livros) l.lendo_desde = l.id === 'ia-1' ? '2026-10-03T12:00:00.000Z' : null;
+    const economia = base.trilhas.find((t) => t.id === 'economia');
+    economia.proximo = 'eco-0';
+    for (const l of economia.livros) l.lendo_desde = l.id === 'eco-1' ? '2026-10-04T08:00:00.000Z' : null;
+    return base;
+  };
+
+  /** Molde de `stubLT`: POST devolve `{ livroId, lendo_desde }` quando o corpo tem `lendo`. */
+  function stubLV(postsCapturados) {
+    return (rota, opcoes = {}) => {
+      const r = String(rota);
+      if (/api\/jobs/.test(r)) return { painel: true, jobs: [jobDoTesteG({ estado: 'blocked' })] };
+      if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+        const corpo = JSON.parse(opcoes.body);
+        postsCapturados.push(corpo);
+        if ('lendo' in corpo) return { livroId: corpo.livroId, lendo_desde: corpo.lendo ? '2026-10-04T09:00:00.000Z' : null };
+        return { livroId: corpo.livroId, terminado_em: '2026-10-02T12:00:00.000Z' };
+      }
+      if (r.startsWith('api/leituras')) return estadoLV();
+      return { abas: [] };
+    };
+  }
+
+  console.log('\n  · LV-1: "Lendo agora" — seção fixa no topo, nome da trilha, não é trilha');
+  await rodarGrupo('LV-1', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const abasEl = porIdDe(c, 'abas');
+
+    const secaoLendo = abasEl.querySelector('.leituras-lendo-agora');
+    tudoOk &= ok(Boolean(secaoLendo), 'LV-1: a seção "Lendo agora" existe');
+    const livrosNaSecao = secaoLendo.querySelectorAll('.livro');
+    tudoOk &= ok(livrosNaSecao.length === 2
+        && livrosNaSecao[0].dataset.lendoAgora === 'ia-1'
+        && livrosNaSecao[1].dataset.lendoAgora === 'eco-1',
+      `LV-1: 2 livros, ia-1 antes de eco-1 (veio ${livrosNaSecao.map((l) => l.dataset.lendoAgora).join(',')})`);
+    tudoOk &= ok(secaoLendo.textContent.includes('IA') && secaoLendo.textContent.includes('Economia'),
+      `LV-1: o texto da seção cita as duas trilhas (veio ${JSON.stringify(secaoLendo.textContent)})`);
+    tudoOk &= ok(abasEl.querySelectorAll('.leituras-trilha').length === 2,
+      'LV-1: a seção "Lendo agora" não é .leituras-trilha');
+    const unicoIa1 = abasEl.querySelectorAll('[data-livro="ia-1"]');
+    tudoOk &= ok(unicoIa1.length === 1 && unicoIa1[0].dataset.lendo === '1',
+      `LV-1: [data-livro="ia-1"] é único e tem data-lendo="1" (veio ${unicoIa1.length})`);
+  });
+
+  console.log('\n  · LV-2: botão lendo — aria-pressed, ausente em terminado, clique manda POST');
+  await rodarGrupo('LV-2', async () => {
+    const posts = [];
+    let gets = 0;
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        const r = String(rota);
+        if (/api\/jobs/.test(r)) return { painel: true, jobs: [] };
+        if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+          const corpo = JSON.parse(opcoes.body);
+          posts.push(corpo);
+          return { livroId: corpo.livroId, lendo_desde: corpo.lendo ? '2026-10-04T09:00:00.000Z' : null };
+        }
+        if (r.startsWith('api/leituras')) { gets += 1; return estadoLV(); }
+        return { abas: [] };
+      },
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const abasEl = porIdDe(c, 'abas');
+
+    const botaoIa1 = achar(abasEl.querySelector('[data-livro="ia-1"]'), 'button')[0];
+    tudoOk &= ok(botaoIa1?.getAttribute('aria-pressed') === 'true',
+      `LV-2: o botão de ia-1 (lendo) nasce aria-pressed="true" (veio ${botaoIa1?.getAttribute('aria-pressed')})`);
+
+    const botoesIa0 = achar(abasEl.querySelector('[data-livro="ia-0"]'), 'button');
+    tudoOk &= ok(botoesIa0.length === 0, `LV-2: ia-0 (terminado) não tem botão de lendo (veio ${botoesIa0.length})`);
+
+    const getsAntes = gets;
+    const botaoEco0 = achar(abasEl.querySelector('[data-livro="eco-0"]'), 'button')[0];
+    await botaoEco0.onclick();
+    tudoOk &= ok(posts.length === 1 && posts[0].livroId === 'eco-0' && posts[0].lendo === true,
+      `LV-2: o POST capturado é { livroId: 'eco-0', lendo: true } (veio ${JSON.stringify(posts[0])})`);
+    tudoOk &= ok(gets > getsAntes, 'LV-2: houve um GET novo depois do POST');
+  });
+
+  console.log('\n  · LV-3: em voo — botão disabled e pressed com o valor pretendido, some ao resolver');
+  await rodarGrupo('LV-3', async () => {
+    let resolverPost = null;
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        const r = String(rota);
+        if (/api\/jobs/.test(r)) return { painel: true, jobs: [] };
+        if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+          return new Promise((resolve) => { resolverPost = () => resolve({ livroId: 'eco-0', lendo_desde: '2026-10-04T09:00:00.000Z' }); });
+        }
+        if (r.startsWith('api/leituras')) return estadoLV();
+        return { abas: [] };
+      },
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+
+    const botaoEco0 = achar(porIdDe(c, 'abas').querySelector('[data-livro="eco-0"]'), 'button')[0];
+    const promessa = botaoEco0.onclick();
+    await tickLT();   // deixa `marcarLendo` chegar no `await api(...)` e `desenharAbas()` repintar
+
+    const abasRepintada = porIdDe(c, 'abas');
+    const botaoRepintado = achar(abasRepintada.querySelector('[data-livro="eco-0"]'), 'button')[0];
+    tudoOk &= ok(botaoRepintado.disabled === true, 'LV-3: em voo, o botão nasce disabled');
+    tudoOk &= ok(botaoRepintado.getAttribute('aria-pressed') === 'true',
+      'LV-3: e aria-pressed="true" — o valor pretendido');
+    tudoOk &= ok(Boolean(abasRepintada.querySelector('[data-lendo-agora="eco-0"]')),
+      'LV-3: eco-0 já aparece em "Lendo agora", em voo');
+
+    resolverPost();
+    await promessa;
+    await tickLT();
+    const botaoFinal = achar(porIdDe(c, 'abas').querySelector('[data-livro="eco-0"]'), 'button')[0];
+    tudoOk &= ok(botaoFinal.disabled === false, 'LV-3: resolvido o POST, disabled volta a false');
+  });
+
+  console.log('\n  · LV-4: POST de lendo falha — "não salvou:" sobrevive ao GET seguinte');
+  await rodarGrupo('LV-4', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        const r = String(rota);
+        if (/api\/jobs/.test(r)) return { painel: true, jobs: [] };
+        if (r.startsWith('api/leituras') && opcoes.method === 'POST') {
+          return { __status: 500, erro: 'progresso ilegível: JSON corrompido' };
+        }
+        if (r.startsWith('api/leituras')) return estadoLV();
+        return { abas: [] };
+      },
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const botaoEco0 = achar(porIdDe(c, 'abas').querySelector('[data-livro="eco-0"]'), 'button')[0];
+    await botaoEco0.onclick();
+    await tickLT();
+    tudoOk &= ok(porIdDe(c, 'abas').textContent.includes('não salvou:'),
+      `LV-4: o aviso "não salvou:" sobrevive ao GET bem-sucedido seguinte (veio ${JSON.stringify(porIdDe(c, 'abas').textContent)})`);
+  });
+
+  console.log('\n  · LV-5: progresso ilegível — todo .livro-lendo nasce disabled');
+  await rodarGrupo('LV-5', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] }
+        : (String(rota).startsWith('api/leituras')
+          ? { catalogo: { ok: true, caminho: '/x.json' },
+              progresso: { ok: false, detalhe: 'JSON corrompido' },
+              trilhas: estadoLV().trilhas }
+          : { abas: [] })),
+    });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const abasEl = porIdDe(c, 'abas');
+    // SEM a tag `button` — o DOM falso não casa `button.x` (#55); `.livro-lendo` casa igual.
+    const botoesLendo = abasEl.querySelectorAll('.livro-lendo');
+    tudoOk &= ok(botoesLendo.length === 6,
+      `LV-5: 6 botões "lendo" — 4 livros não terminados nas trilhas + 2 no "Lendo agora" (veio ${botoesLendo.length})`);
+    tudoOk &= ok(botoesLendo.every((b) => b.disabled === true), 'LV-5: todos disabled');
+  });
+
+  console.log('\n  · LV-6: contador k/N não muda com "lendo"');
+  await rodarGrupo('LV-6', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const trilhaIa = porIdDe(c, 'abas').querySelector('[data-trilha="ia"]');
+    tudoOk &= ok(trilhaIa?.querySelector('.leituras-contador')?.textContent === '1/3',
+      `LV-6: contador da ia continua "1/3" (veio ${trilhaIa?.querySelector('.leituras-contador')?.textContent})`);
+  });
+
+  console.log('\n  · LV-7: filtro por status — cada chip isola lendo / a-ler / lidos / todos');
+  await rodarGrupo('LV-7', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    // DOIS passos (#8 do cabeçalho do arquivo): `.leituras-trilha .livro` não existe no DOM
+    // falso (combinador por espaço devolve vazio sem erro).
+    const idsVisiveis = () => porIdDe(c, 'abas').querySelectorAll('.leituras-trilha')
+      .flatMap((sec) => sec.querySelectorAll('.livro').map((l) => l.dataset.livro));
+    const clicarStatus = (s) => porIdDe(c, 'filtro-status').querySelector(`[data-filtro-status="${s}"]`).onclick();
+
+    clicarStatus('lendo');
+    tudoOk &= ok(JSON.stringify(idsVisiveis().sort()) === JSON.stringify(['eco-1', 'ia-1']),
+      `LV-7: status "lendo" ⇒ só ia-1 e eco-1 (veio ${JSON.stringify(idsVisiveis())})`);
+
+    clicarStatus('a-ler');
+    tudoOk &= ok(JSON.stringify(idsVisiveis().sort()) === JSON.stringify(['eco-0', 'ia-2']),
+      `LV-7: status "a-ler" ⇒ ia-2 e eco-0 (veio ${JSON.stringify(idsVisiveis())})`);
+
+    clicarStatus('lidos');
+    tudoOk &= ok(JSON.stringify(idsVisiveis()) === JSON.stringify(['ia-0']),
+      `LV-7: status "lidos" ⇒ só ia-0 (veio ${JSON.stringify(idsVisiveis())})`);
+
+    clicarStatus('todos');
+    tudoOk &= ok(idsVisiveis().length === 5, `LV-7: status "todos" ⇒ os 5 (veio ${idsVisiveis().length})`);
+  });
+
+  // O seletor de trilha (ajuste 05/10) é um `<select>` nativo: no DOM falso, escolher é escrever o
+  // `value` e chamar o `onchange` — como o navegador faz quando o dedo escolhe a opção.
+  const escolherTrilha = (c, id) => {
+    const seletor = porIdDe(c, 'filtro-trilha');
+    seletor.value = id;
+    seletor.onchange({ currentTarget: seletor });
+  };
+
+  console.log('\n  · LV-8: seletor de trilha — só a trilha escolhida, value certo, 3 opções sempre');
+  await rodarGrupo('LV-8', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    escolherTrilha(c, 'economia');
+    const abasEl = porIdDe(c, 'abas');
+    tudoOk &= ok(abasEl.querySelectorAll('.leituras-trilha').length === 1
+        && Boolean(abasEl.querySelector('[data-trilha="economia"]')),
+      'LV-8: só a trilha economia é desenhada');
+    tudoOk &= ok(porIdDe(c, 'filtro-trilha').value === 'economia', 'LV-8: o seletor fica com value "economia"');
+    tudoOk &= ok(porIdDe(c, 'filtro-trilha').children.length === 3,
+      `LV-8: #filtro-trilha continua com 3 opções (veio ${porIdDe(c, 'filtro-trilha').children.length})`);
+    escolherTrilha(c, '');   // "todas as trilhas"
+    tudoOk &= ok(porIdDe(c, 'abas').querySelectorAll('.leituras-trilha').length === 2,
+      'LV-8: escolher "todas as trilhas" volta às 2 trilhas');
+  });
+
+  console.log('\n  · LV-9: filtro por texto — título, original, autor, sem diferenciar acento/caixa');
+  await rodarGrupo('LV-9', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const idsVisiveis = () => porIdDe(c, 'abas').querySelectorAll('.leituras-trilha')
+      .flatMap((sec) => sec.querySelectorAll('.livro').map((l) => l.dataset.livro));
+    const digitar = (v) => { const campo = porIdDe(c, 'filtro-texto'); campo.value = v; campo.oninput({ currentTarget: campo }); };
+
+    digitar('rapido');
+    tudoOk &= ok(JSON.stringify(idsVisiveis()) === JSON.stringify(['eco-1']),
+      `LV-9: "rapido" casa o título "Rápido e Devagar" (veio ${JSON.stringify(idsVisiveis())})`);
+
+    digitar('KAHNEMAN');
+    tudoOk &= ok(JSON.stringify(idsVisiveis()) === JSON.stringify(['eco-1']),
+      `LV-9: "KAHNEMAN" casa o autor (veio ${JSON.stringify(idsVisiveis())})`);
+
+    digitar('co-intel');
+    tudoOk &= ok(JSON.stringify(idsVisiveis()) === JSON.stringify(['ia-0']),
+      `LV-9: "co-intel" casa o título original (veio ${JSON.stringify(idsVisiveis())})`);
+
+    digitar('  bostrom ');
+    tudoOk &= ok(JSON.stringify(idsVisiveis()) === JSON.stringify(['ia-2']),
+      `LV-9: "  bostrom  " (com espaço) casa o autor de ia-2 (veio ${JSON.stringify(idsVisiveis())})`);
+  });
+
+  console.log('\n  · LV-10: combinação — status + trilha + texto, em E; contador inalterado');
+  await rodarGrupo('LV-10', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    porIdDe(c, 'filtro-status').querySelector('[data-filtro-status="a-ler"]').onclick();
+    escolherTrilha(c, 'ia');
+    const campo = porIdDe(c, 'filtro-texto');
+    campo.value = 'super';
+    campo.oninput({ currentTarget: campo });
+
+    const abasEl = porIdDe(c, 'abas');
+    const idsVisiveis = abasEl.querySelectorAll('.leituras-trilha')
+      .flatMap((sec) => sec.querySelectorAll('.livro').map((l) => l.dataset.livro));
+    tudoOk &= ok(JSON.stringify(idsVisiveis) === JSON.stringify(['ia-2']),
+      `LV-10: a-ler + ia + "super" ⇒ só ia-2 (veio ${JSON.stringify(idsVisiveis)})`);
+    const contadorIa = abasEl.querySelector('[data-trilha="ia"]')?.querySelector('.leituras-contador')?.textContent;
+    tudoOk &= ok(contadorIa === '1/3', `LV-10: contador da ia continua "1/3" (veio ${contadorIa})`);
+  });
+
+  console.log('\n  · LV-11: vazio — "nenhum livro", nenhuma trilha, e "Lendo agora" some junto (S9 revogada 06/10)');
+  await rodarGrupo('LV-11', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const campo = porIdDe(c, 'filtro-texto');
+    campo.value = 'zzz';
+    campo.oninput({ currentTarget: campo });
+    const abasEl = porIdDe(c, 'abas');
+    tudoOk &= ok(abasEl.querySelectorAll('.leituras-trilha').length === 0, 'LV-11: nenhuma .leituras-trilha');
+    tudoOk &= ok(abasEl.textContent.includes('nenhum livro'),
+      `LV-11: texto "nenhum livro" presente (veio ${JSON.stringify(abasEl.textContent)})`);
+    tudoOk &= ok(!abasEl.querySelector('.leituras-lendo-agora'),
+      'LV-11: "Lendo agora" some — nunca "Lendo agora" + "nenhum livro" juntos (ajuste 06/10)');
+  });
+
+  console.log('\n  · LV-12: persistência — filtro salvo no aparelho, cliente novo nasce filtrado');
+  await rodarGrupo('LV-12', async () => {
+    const guardado = memoria();
+    const c = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    porIdDe(c, 'filtro-status').querySelector('[data-filtro-status="a-ler"]').onclick();
+    escolherTrilha(c, 'ia');
+    const campo = porIdDe(c, 'filtro-texto');
+    campo.value = 'super';
+    campo.oninput({ currentTarget: campo });
+
+    const salvo = JSON.parse(guardado.getItem('cockpit-leituras-filtro'));
+    tudoOk &= ok(salvo.status === 'a-ler' && salvo.trilha === 'ia' && salvo.texto === 'super',
+      `LV-12: localStorage grava { status: 'a-ler', trilha: 'ia', texto: 'super' } (veio ${JSON.stringify(salvo)})`);
+
+    const c2 = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c2.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const idsVisiveis2 = porIdDe(c2, 'abas').querySelectorAll('.leituras-trilha')
+      .flatMap((sec) => sec.querySelectorAll('.livro').map((l) => l.dataset.livro));
+    tudoOk &= ok(JSON.stringify(idsVisiveis2) === JSON.stringify(['ia-2']),
+      `LV-12: cliente novo com o mesmo guardado nasce filtrado (veio ${JSON.stringify(idsVisiveis2)})`);
+    tudoOk &= ok(porIdDe(c2, 'filtro-texto').value === 'super',
+      `LV-12: e o campo de busca já nasce com "super" (veio ${porIdDe(c2, 'filtro-texto').value})`);
+
+    const guardadoRuim1 = memoria();
+    guardadoRuim1.setItem('cockpit-leituras-filtro', JSON.stringify({ status: 'x', trilha: 5 }));
+    const cRuim1 = carregarCliente({ aoBuscar: stubLV([]), guardado: guardadoRuim1 });
+    cRuim1.trocarVistaDaLateral('leituras');
+    await tickLT();
+    tudoOk &= ok(porIdDe(cRuim1, 'abas').querySelectorAll('.leituras-trilha').length === 2,
+      'LV-12: valor salvo com lixo de tipo ⇒ nasce sem filtro');
+
+    const guardadoRuim2 = memoria();
+    guardadoRuim2.setItem('cockpit-leituras-filtro', 'nao json');
+    const cRuim2 = carregarCliente({ aoBuscar: stubLV([]), guardado: guardadoRuim2 });
+    cRuim2.trocarVistaDaLateral('leituras');
+    await tickLT();
+    tudoOk &= ok(porIdDe(cRuim2, 'abas').querySelectorAll('.leituras-trilha').length === 2,
+      'LV-12: valor salvo "nao json" ⇒ nasce sem filtro');
+  });
+
+  console.log('\n  · LV-13: o campo de busca não é recriado em desenharAbas()');
+  await rodarGrupo('LV-13', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const antes = porIdDe(c, 'filtro-texto');
+    c.desenharAbas();
+    c.desenharAbas();
+    tudoOk &= ok(porIdDe(c, 'filtro-texto') === antes, 'LV-13: o mesmo nó depois de 2 desenharAbas()');
+    const inputsDeBusca = achar(porIdDe(c, 'abas'), 'input').filter((i) => i.type === 'search');
+    tudoOk &= ok(inputsDeBusca.length === 0, 'LV-13: #abas não ganhou nenhum input type="search"');
+  });
+
+  console.log('\n  · LV-14: visibilidade — some fora de leituras, aparece com catálogo ok, some sem catálogo');
+  await rodarGrupo('LV-14', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    await c.carregarAbas();
+    tudoOk &= ok(porIdDe(c, 'leituras-filtro').hidden === true, 'LV-14: em conversas, hidden === true');
+
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    tudoOk &= ok(porIdDe(c, 'leituras-filtro').hidden === false, 'LV-14: em leituras com catálogo ok, hidden === false');
+
+    const cAusente = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] }
+        : (String(rota).startsWith('api/leituras')
+          ? { catalogo: { ok: false, motivo: 'ausente', caminho: '/x.json' }, progresso: { ok: true }, trilhas: [] }
+          : { abas: [] })),
+    });
+    cAusente.trocarVistaDaLateral('leituras');
+    await tickLT();
+    tudoOk &= ok(porIdDe(cAusente, 'leituras-filtro').hidden === true, 'LV-14: catálogo ausente ⇒ hidden === true');
+  });
+
+  console.log('\n  · LV-16: #filtro-status nasce com 4 chips e não dobra em repinturas');
+  await rodarGrupo('LV-16', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    c.desenharAbas();
+    c.desenharAbas();
+    tudoOk &= ok(porIdDe(c, 'filtro-status').children.length === 4,
+      `LV-16: 4 filhos depois de desenharAbas() repetido (veio ${porIdDe(c, 'filtro-status').children.length})`);
+  });
+
+  console.log('\n  · LV-15: contraste — fonte usa os tokens medidos (molde LT-10)');
+  await rodarGrupo('LV-15', () => {
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'estilo.css'), 'utf8');
+    tudoOk &= ok(/\.livro-autor\s*\{[^}]*color:\s*var\(--texto-2\)/.test(css),
+      'LV-15: .livro-autor declara color: var(--texto-2)');
+    tudoOk &= ok(/\.livro-n\s*\{[^}]*color:\s*var\(--texto-2\)/.test(css),
+      'LV-15: .livro-n declara color: var(--texto-2)');
+    tudoOk &= ok(/\.livro-data\s*\{[^}]*color:\s*var\(--texto-2\)/.test(css),
+      'LV-15: .livro-data declara color: var(--texto-2)');
+    tudoOk &= ok(/\.leituras-contador\s*\{[^}]*color:\s*var\(--texto-2\)/.test(css),
+      'LV-15: .leituras-contador declara color: var(--texto-2)');
+    tudoOk &= ok(/\.livro\[data-proximo="1"\]\s*\{[^}]*var\(--accent-suave\)/.test(css),
+      'LV-15: .livro[data-proximo="1"] declara var(--accent-suave)');
+    tudoOk &= ok(/\.livro\[data-terminado="1"\]\s*\.livro-titulo\s*\{[^}]*line-through/.test(css),
+      'LV-15: o título terminado declara line-through');
+    const inicio = css.indexOf('.leituras-trilha {');
+    const fim = css.indexOf('.livro-data {');
+    tudoOk &= ok(inicio !== -1 && fim !== -1 && !css.slice(inicio, fim).includes('--texto-3'),
+      'LV-15: nenhuma ocorrência de --texto-3 entre .leituras-trilha { e .livro-data {');
+  });
+
+  // ── Ajuste 05/10: seletor de trilha, trilha recolhível, sem etiqueta "lendo" na linha ────
+
+  const secaoDe = (c, id) => porIdDe(c, 'abas').querySelector(`.leituras-trilha[data-trilha="${id}"]`);
+  const livrosDe = (secao) => (secao ? secao.querySelectorAll('.livro').map((l) => l.dataset.livro) : null);
+  const alternarDe = (secao) => (secao ? secao.querySelector('.leituras-alternar') : null);
+
+  console.log('\n  · LV-17: seletor — opções do catálogo, rótulo, não recriadas na repintura, value salvo');
+  await rodarGrupo('LV-17', async () => {
+    const guardado = memoria();
+    const c = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const seletor = porIdDe(c, 'filtro-trilha');
+    const opcoes = seletor.children;
+    tudoOk &= ok(JSON.stringify(opcoes.map((o) => o.value)) === JSON.stringify(['', 'ia', 'economia']),
+      `LV-17: opções = todas + ia + economia (veio ${JSON.stringify(opcoes.map((o) => o.value))})`);
+    tudoOk &= ok(opcoes[0].textContent === 'todas as trilhas' && opcoes[2].textContent === 'Economia',
+      `LV-17: rótulos "todas as trilhas" e o título do catálogo (veio ${JSON.stringify(opcoes.map((o) => o.textContent))})`);
+    tudoOk &= ok(seletor.value === '', 'LV-17: nasce em "todas as trilhas"');
+    tudoOk &= ok(String(seletor.getAttribute('aria-label')) === 'filtrar por trilha',
+      `LV-17: aria-label "filtrar por trilha" (veio ${seletor.getAttribute('aria-label')})`);
+    const opcaoIa = opcoes[1];
+    escolherTrilha(c, 'ia');
+    c.desenharAbas();
+    c.desenharAbas();
+    tudoOk &= ok(porIdDe(c, 'filtro-trilha').children[1] === opcaoIa,
+      'LV-17: a opção é o MESMO nó depois de escolher e repintar (não recriada)');
+    tudoOk &= ok(porIdDe(c, 'filtro-trilha').value === 'ia', 'LV-17: e o value continua "ia" depois da repintura');
+    tudoOk &= ok(JSON.parse(guardado.getItem('cockpit-leituras-filtro')).trilha === 'ia',
+      'LV-17: a trilha escolhida vai para cockpit-leituras-filtro');
+    tudoOk &= ok(achar(porIdDe(c, 'abas'), 'select').length === 0, 'LV-17: #abas não ganhou nenhum <select>');
+  });
+
+  console.log('\n  · LV-18: trilha salva que sumiu do catálogo ⇒ seletor em "todas", 2 trilhas na tela');
+  await rodarGrupo('LV-18', async () => {
+    const guardado = memoria();
+    guardado.setItem('cockpit-leituras-filtro', JSON.stringify({ status: 'todos', trilha: 'filosofia', texto: '' }));
+    const c = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    tudoOk &= ok(porIdDe(c, 'filtro-trilha').value === '',
+      `LV-18: o seletor mostra "todas" (veio ${JSON.stringify(porIdDe(c, 'filtro-trilha').value)})`);
+    tudoOk &= ok(porIdDe(c, 'abas').querySelectorAll('.leituras-trilha').length === 2, 'LV-18: as 2 trilhas aparecem');
+  });
+
+  console.log('\n  · LV-19: recolher/expandir — botão no cabeçalho, aria-expanded, seta, contador à vista');
+  await rodarGrupo('LV-19', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const botaoIa = alternarDe(secaoDe(c, 'ia'));
+    tudoOk &= ok(Boolean(botaoIa) && botaoIa.type === 'button' && botaoIa.getAttribute('aria-expanded') === 'true',
+      'LV-19: a trilha nasce aberta, com <button type=button aria-expanded="true">');
+    tudoOk &= ok(botaoIa.querySelector('.leituras-seta')?.textContent === '▾', 'LV-19: aberta mostra ▾');
+    botaoIa.onclick();
+    const ia = secaoDe(c, 'ia');
+    tudoOk &= ok(alternarDe(ia).getAttribute('aria-expanded') === 'false' && ia.dataset.recolhida === '1',
+      'LV-19: tocar recolhe — aria-expanded="false" e data-recolhida="1"');
+    tudoOk &= ok(alternarDe(ia).querySelector('.leituras-seta')?.textContent === '▸', 'LV-19: recolhida mostra ▸');
+    tudoOk &= ok(livrosDe(ia).length === 0, `LV-19: recolhida não tem livro (veio ${JSON.stringify(livrosDe(ia))})`);
+    tudoOk &= ok(ia.querySelector('.leituras-contador')?.textContent === '1/3', 'LV-19: o contador 1/3 continua no cabeçalho');
+    tudoOk &= ok(livrosDe(secaoDe(c, 'economia')).length === 2, 'LV-19: a economia continua aberta');
+    const lendoAgora = porIdDe(c, 'abas').querySelector('.leituras-lendo-agora');
+    tudoOk &= ok(lendoAgora.querySelectorAll('.leituras-alternar').length === 0
+        && lendoAgora.querySelectorAll('.livro').length === 2,
+      'LV-19: "Lendo agora" não tem botão de recolher e mostra os 2 livros');
+    alternarDe(secaoDe(c, 'ia')).onclick();
+    tudoOk &= ok(livrosDe(secaoDe(c, 'ia')).length === 3 && alternarDe(secaoDe(c, 'ia')).getAttribute('aria-expanded') === 'true',
+      'LV-19: tocar de novo abre — 3 livros, aria-expanded="true"');
+  });
+
+  console.log('\n  · LV-20: recolhido sobrevive à repintura (batida de 5 s e nova carga)');
+  await rodarGrupo('LV-20', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    alternarDe(secaoDe(c, 'ia')).onclick();
+    c.desenharAbas();
+    await c.carregarAbas();
+    await c.carregarLeituras();
+    await tickLT();
+    tudoOk &= ok(secaoDe(c, 'ia')?.dataset.recolhida === '1' && livrosDe(secaoDe(c, 'ia')).length === 0,
+      'LV-20: depois de desenharAbas + carregarAbas + carregarLeituras, ia continua recolhida');
+  });
+
+  console.log('\n  · LV-21: persistência do recolhido — chave própria, cliente novo nasce recolhido, lixo ⇒ abertas');
+  await rodarGrupo('LV-21', async () => {
+    const guardado = memoria();
+    const c = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    alternarDe(secaoDe(c, 'economia')).onclick();
+    tudoOk &= ok(guardado.getItem('cockpit-leituras-recolhidas') === JSON.stringify(['economia']),
+      `LV-21: cockpit-leituras-recolhidas = ["economia"] (veio ${guardado.getItem('cockpit-leituras-recolhidas')})`);
+    tudoOk &= ok(!/recolhid/.test(String(guardado.getItem('cockpit-leituras-filtro') || '')),
+      'LV-21: o filtro salvo não ganhou nada de recolhido (chave própria)');
+    const c2 = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c2.trocarVistaDaLateral('leituras');
+    await tickLT();
+    tudoOk &= ok(secaoDe(c2, 'economia')?.dataset.recolhida === '1' && livrosDe(secaoDe(c2, 'ia')).length === 3,
+      'LV-21: cliente novo com o mesmo guardado nasce com economia recolhida e ia aberta');
+    for (const lixo of ['nao json', '{"ia":true}', '[5,null]']) {
+      const g = memoria();
+      g.setItem('cockpit-leituras-recolhidas', lixo);
+      const cl = carregarCliente({ aoBuscar: stubLV([]), guardado: g });
+      cl.trocarVistaDaLateral('leituras');
+      await tickLT();
+      tudoOk &= ok(livrosDe(secaoDe(cl, 'ia')).length === 3 && livrosDe(secaoDe(cl, 'economia')).length === 2,
+        `LV-21: valor salvo ${JSON.stringify(lixo)} ⇒ todas abertas`);
+    }
+  });
+
+  console.log('\n  · LV-22: busca abre a trilha recolhida sem gravar; limpar volta ao salvo; status não abre');
+  await rodarGrupo('LV-22', async () => {
+    const guardado = memoria();
+    const c = carregarCliente({ aoBuscar: stubLV([]), guardado });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    alternarDe(secaoDe(c, 'ia')).onclick();   // ia recolhida e SALVA
+    const salvoAntes = guardado.getItem('cockpit-leituras-recolhidas');
+
+    porIdDe(c, 'filtro-status').querySelector('[data-filtro-status="a-ler"]').onclick();
+    tudoOk &= ok(secaoDe(c, 'ia')?.dataset.recolhida === '1' && livrosDe(secaoDe(c, 'ia')).length === 0,
+      'LV-22: filtro de status sozinho NÃO abre a trilha recolhida');
+    porIdDe(c, 'filtro-status').querySelector('[data-filtro-status="todos"]').onclick();
+
+    const campo = porIdDe(c, 'filtro-texto');
+    campo.value = 'super';
+    campo.oninput({ currentTarget: campo });
+    tudoOk &= ok(JSON.stringify(livrosDe(secaoDe(c, 'ia'))) === JSON.stringify(['ia-2'])
+        && alternarDe(secaoDe(c, 'ia')).getAttribute('aria-expanded') === 'true',
+      `LV-22: com busca "super", a ia aparece ABERTA com ia-2 (veio ${JSON.stringify(livrosDe(secaoDe(c, 'ia')))})`);
+    tudoOk &= ok(guardado.getItem('cockpit-leituras-recolhidas') === salvoAntes,
+      'LV-22: e a preferência salva NÃO mudou');
+
+    alternarDe(secaoDe(c, 'ia')).onclick();   // recolher DURANTE a busca: só em memória
+    tudoOk &= ok(secaoDe(c, 'ia')?.dataset.recolhida === '1', 'LV-22: tocar durante a busca recolhe');
+    tudoOk &= ok(guardado.getItem('cockpit-leituras-recolhidas') === salvoAntes,
+      'LV-22: … sem gravar (salvo intacto)');
+    c.desenharAbas();
+    tudoOk &= ok(secaoDe(c, 'ia')?.dataset.recolhida === '1', 'LV-22: o recolhido da busca sobrevive à repintura');
+
+    campo.value = 'superi';
+    campo.oninput({ currentTarget: campo });
+    tudoOk &= ok(secaoDe(c, 'ia')?.dataset.recolhida !== '1', 'LV-22: mudar a busca reabre a trilha com resultado');
+
+    campo.value = '';
+    campo.oninput({ currentTarget: campo });
+    tudoOk &= ok(secaoDe(c, 'ia')?.dataset.recolhida === '1' && livrosDe(secaoDe(c, 'ia')).length === 0,
+      'LV-22: limpar a busca volta ao recolhido salvo');
+    tudoOk &= ok(livrosDe(secaoDe(c, 'economia')).length === 2, 'LV-22: e a economia (aberta) continua aberta');
+  });
+
+  console.log('\n  · LV-23: sem etiqueta "lendo" na linha; "Lendo agora" mantém o nome da trilha');
+  await rodarGrupo('LV-23', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const abasEl = porIdDe(c, 'abas');
+    tudoOk &= ok(abasEl.querySelectorAll('.etiqueta-lendo').length === 0, 'LV-23: nenhuma .etiqueta-lendo na vista');
+    const textosDeEtiqueta = abasEl.querySelectorAll('.etiqueta').map((e) => e.textContent);
+    tudoOk &= ok(!textosDeEtiqueta.includes('lendo'),
+      `LV-23: nenhuma etiqueta com o texto "lendo" (veio ${JSON.stringify(textosDeEtiqueta)})`);
+    const linhaIa1 = abasEl.querySelector('[data-livro="ia-1"]');
+    tudoOk &= ok(linhaIa1?.dataset.lendo === '1'
+        && linhaIa1.querySelector('.livro-lendo')?.getAttribute('aria-pressed') === 'true',
+      'LV-23: ia-1 continua data-lendo="1" com o botão pressionado');
+    const trilhasNoLendo = abasEl.querySelector('.leituras-lendo-agora').querySelectorAll('.etiqueta-trilha').map((e) => e.textContent);
+    tudoOk &= ok(JSON.stringify(trilhasNoLendo) === JSON.stringify(['IA', 'Economia']),
+      `LV-23: "Lendo agora" mostra o nome da trilha (veio ${JSON.stringify(trilhasNoLendo)})`);
+  });
+
+  // Ajuste 06/10 (D61 item 8): "Lendo agora" passa pelo MESMO predicado das linhas das trilhas
+  // (status + trilha + texto). O dono escolheu Economia e um livro de IA seguia no topo — parecia
+  // que o filtro não funcionou. Estado LV: ia-1 (IA) e eco-1 (Economia) lendo.
+  console.log('\n  · LV-24: "Lendo agora" respeita o filtro — trilha, texto, status; some vazio; sem filtro como antes');
+  await rodarGrupo('LV-24', async () => {
+    const c = carregarCliente({ aoBuscar: stubLV([]) });
+    c.trocarVistaDaLateral('leituras');
+    await tickLT();
+    const abasEl = () => porIdDe(c, 'abas');
+    const noLendoAgora = () => {
+      const secao = abasEl().querySelector('.leituras-lendo-agora');
+      return secao ? secao.querySelectorAll('.livro').map((l) => l.dataset.lendoAgora) : null;   // null = sem seção
+    };
+    const digitar = (v) => { const campo = porIdDe(c, 'filtro-texto'); campo.value = v; campo.oninput({ currentTarget: campo }); };
+    const clicarStatus = (s) => porIdDe(c, 'filtro-status').querySelector(`[data-filtro-status="${s}"]`).onclick();
+    const temNenhumLivro = () => abasEl().textContent.includes('nenhum livro');
+
+    tudoOk &= ok(JSON.stringify(noLendoAgora()) === JSON.stringify(['ia-1', 'eco-1']),
+      `LV-24: sem filtro, "Lendo agora" tem ia-1 e eco-1 (veio ${JSON.stringify(noLendoAgora())})`);
+
+    escolherTrilha(c, 'economia');
+    tudoOk &= ok(JSON.stringify(noLendoAgora()) === JSON.stringify(['eco-1']),
+      `LV-24: trilha Economia ⇒ só eco-1 no "Lendo agora", ia-1 (IA) some (veio ${JSON.stringify(noLendoAgora())})`);
+    tudoOk &= ok(abasEl().querySelector('.leituras-lendo-agora')?.querySelectorAll('.livro').length === 1
+        && abasEl().querySelectorAll('.leituras-trilha').length === 1, 'LV-24: e a lista mostra só a trilha Economia');
+    escolherTrilha(c, '');
+
+    digitar('era da ia');
+    tudoOk &= ok(JSON.stringify(noLendoAgora()) === JSON.stringify(['ia-1']),
+      `LV-24: texto "era da ia" ⇒ só ia-1 no "Lendo agora" (veio ${JSON.stringify(noLendoAgora())})`);
+    digitar('');
+
+    clicarStatus('lidos');
+    tudoOk &= ok(noLendoAgora() === null, 'LV-24: status "lidos" ⇒ a seção "Lendo agora" some (cabeçalho junto)');
+    tudoOk &= ok(!temNenhumLivro() && abasEl().querySelectorAll('.leituras-trilha').length === 1,
+      'LV-24: … e a trilha IA continua (ia-0 lido) — sem "nenhum livro"');
+    clicarStatus('lendo');
+    tudoOk &= ok(JSON.stringify(noLendoAgora()) === JSON.stringify(['ia-1', 'eco-1']),
+      `LV-24: status "lendo" ⇒ os dois continuam no "Lendo agora" (veio ${JSON.stringify(noLendoAgora())})`);
+    clicarStatus('todos');
+
+    escolherTrilha(c, 'economia');
+    digitar('era da ia');   // ia-1 casa o texto mas não a trilha; eco-1 casa a trilha mas não o texto
+    tudoOk &= ok(noLendoAgora() === null && abasEl().querySelectorAll('.leituras-trilha').length === 0 && temNenhumLivro(),
+      `LV-24: nada casa em lugar nenhum ⇒ só "nenhum livro", sem seção (veio ${JSON.stringify(noLendoAgora())})`);
+    tudoOk &= ok(abasEl().querySelectorAll('.lista-vazia').length === 1, 'LV-24: um único "nenhum livro"');
+    escolherTrilha(c, '');
+    digitar('');
+    tudoOk &= ok(JSON.stringify(noLendoAgora()) === JSON.stringify(['ia-1', 'eco-1'])
+        && abasEl().querySelectorAll('.leituras-trilha').length === 2 && !temNenhumLivro(),
+      'LV-24: filtro limpo ⇒ tudo como antes (2 no "Lendo agora", 2 trilhas)');
+  });
+
+  console.log('\n  · PA-1: os DOIS caminhos de recarga (↻ e puxar) seguem a vista à mostra');
+  await rodarGrupo('PA-1', async () => {
+    const numeroNaFontePA1 = (nome) => {
+      const achado = new RegExp(`const ${nome} = (\\d+)`)
+        .exec(fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8'));
+      return achado ? Number(achado[1]) : 0;
+    };
+    const LIMIAR_PA1 = numeroNaFontePA1('PUXAR_LIMIAR');
+    const abasPA1 = [{ chave: 'a1', titulo: 'um', cwd: '/tmp/pa1', temAgente: true, rodando: false, sessaoId: 's1', atualizadoEm: 1 }];
+    const contagemPA1 = { abas: 0, jobs: 0 };
+    const c = carregarCliente({
+      aoBuscar: (rota) => {
+        if (/api\/jobs/.test(String(rota))) { contagemPA1.jobs += 1; return { painel: true, jobs: [] }; }
+        contagemPA1.abas += 1;
+        return { abas: abasPA1 };
+      },
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    contagemPA1.abas = 0;
+    contagemPA1.jobs = 0;
+
+    // O ↻, em conversas: recarrega abas.
+    const btnRecPA1 = porIdDe(c, 'btn-recarregar');
+    await btnRecPA1.onclick({ currentTarget: btnRecPA1 });
+    tudoOk &= ok(contagemPA1.abas === 1 && contagemPA1.jobs === 0,
+      `PA-1: o ↻ em conversas busca abas, não jobs (${JSON.stringify(contagemPA1)})`);
+
+    // Troca para agentes; o ↻ passa a buscar jobs.
+    porIdDe(c, 'barra-agentes').onclick();
+    contagemPA1.abas = 0;
+    contagemPA1.jobs = 0;
+    await btnRecPA1.onclick({ currentTarget: btnRecPA1 });
+    tudoOk &= ok(contagemPA1.jobs === 1 && contagemPA1.abas === 0,
+      `PA-1: o ↻ em agentes busca jobs, não abas (${JSON.stringify(contagemPA1)})`);
+
+    // O gesto de puxar, ainda em agentes: mesmo caminho, mesma regra.
+    contagemPA1.abas = 0;
+    contagemPA1.jobs = 0;
+    const listaPA1 = porIdDe(c, 'abas');
+    const dedoPA1 = (y) => ({ touches: [{ clientY: y }], preventDefault() {} });
+    listaPA1.scrollTop = 0;
+    listaPA1.disparar('touchstart', dedoPA1(100));
+    listaPA1.disparar('touchmove', dedoPA1(100 + LIMIAR_PA1));
+    listaPA1.disparar('touchend', {});
+    await new Promise((r) => setTimeout(r, 0));
+    tudoOk &= ok(contagemPA1.jobs === 1 && contagemPA1.abas === 0,
+      `PA-1: o puxar em agentes também busca jobs (${JSON.stringify(contagemPA1)})`);
+  });
+
+  console.log('\n  · TL-1: #titulo-lista diz "conversas" ou "agentes" conforme a vista');
+  await rodarGrupo('TL-1', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] } : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    tudoOk &= ok(porIdDe(c, 'titulo-lista')?.textContent === 'conversas · 0',
+      `TL-1: nasce dizendo "conversas · 0" — D63: o título conta as abas, e aqui são zero (${porIdDe(c, 'titulo-lista')?.textContent})`);
+    porIdDe(c, 'barra-agentes').onclick();
+    tudoOk &= ok(porIdDe(c, 'titulo-lista')?.textContent === 'agentes',
+      `TL-1: e depois do clique diz "agentes" (${porIdDe(c, 'titulo-lista')?.textContent})`);
   });
 
   // ── Split view, fase 3 (docs/superpowers/plans/2026-09-08-split-view-plano.md, §3.4/§5.5
@@ -8886,17 +12981,19 @@ async function parteA() {
   });
 
   await rodarGrupo('S5: turno_fim carimba lido em TODOS os painéis abertos (Fase 0 item 4 / R38)', async () => {
-    const guardado = memoria();
     let atualizadoAba1 = 1000;
     const atualizadoAba2 = 2000;
+    const posts = [];
     const cli = carregarCliente({
-      guardado,
-      aoBuscar: (rota) => (String(rota).startsWith('api/abas')
-        ? { abas: [
-            { chave: 'aba-1', titulo: 'um', cwd: '/p1', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: atualizadoAba1 },
-            { chave: 'aba-2', titulo: 'dois', cwd: '/p2', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: atualizadoAba2 },
-          ] }
-        : { painel: true, jobs: [] }),
+      aoBuscar: (rota, opcoes) => {
+        if (String(rota).startsWith('api/lidas')) { posts.push(JSON.parse(opcoes.body)); return {}; }
+        return String(rota).startsWith('api/abas')
+          ? { abas: [
+              { chave: 'aba-1', titulo: 'um', cwd: '/p1', temClaude: true, rodando: false, sessaoId: 's1', atualizadoEm: atualizadoAba1 },
+              { chave: 'aba-2', titulo: 'dois', cwd: '/p2', temClaude: true, rodando: false, sessaoId: 's2', atualizadoEm: atualizadoAba2 },
+            ] }
+          : { painel: true, jobs: [] };
+      },
     });
     await cli.carregarAbas();
     await cli.abrirAba('aba-1');
@@ -8906,10 +13003,14 @@ async function parteA() {
     mandarEvento(es, { tipo: 'turno_fim' }, 'aba-1');
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
-    const lidas = JSON.parse(guardado.getItem('cockpit-lidas'));
-    tudoOk &= ok(lidas.s1 === 9000, 'S5: a conversa que terminou o turno é marcada lida');
-    tudoOk &= ok(lidas.s2 === 2000,
-      `S5: e a OUTRA aba aberta TAMBÉM — "aberto" é "lido", não só quem terminou o turno (${JSON.stringify(lidas)})`);
+    // O ÚLTIMO post por sessaoId, nunca "o post que o turno_fim disparou": este mock NÃO tem
+    // memória (o `aoBuscar` acima não devolve `lidoEm`), então `s2` posta 2000 na ABERTURA e
+    // de novo no `turno_fim` — os dois idênticos, sem reacender. Com memória postaria uma vez
+    // só. "O último POST" é verdade nos dois casos, e é por isso que é essa a régua.
+    const ultimoPor = (sessaoId) => [...posts].reverse().find((p) => p.sessaoId === sessaoId);
+    tudoOk &= ok(ultimoPor('s1')?.carimbo === 9000, 'S5: a conversa que terminou o turno é marcada lida');
+    tudoOk &= ok(ultimoPor('s2')?.carimbo === 2000,
+      `S5: e a OUTRA aba aberta TAMBÉM — "aberto" é "lido", não só quem terminou o turno (${JSON.stringify(posts)})`);
   });
 
   await rodarGrupo('S6: o ✕/Parar/as teclas de B agem só sobre B, nunca sobre o foco (R14)', async () => {
@@ -8958,7 +13059,11 @@ async function parteA() {
     const es = cli.fluxos.at(-1);
     const btnA = () => painelDe(cli, 0).querySelector('.btn-enviar');
     const btnB = () => painelDe(cli, 1).querySelector('.btn-enviar');
-    mandarEvento(es, { tipo: 'esperando', valor: true }, 'aba-1');   // A pergunta, B não
+    // `motivo: 'pre-sessao'`, não `'menu'` (card escrever-texto-na-pergunta-aberta destrava
+    // o Enviar com `menu` — quem ainda trava é o `pre-sessao`): este teste prova ISOLAMENTO
+    // por painel, e precisa de um motivo que continue desabilitando A para provar que B
+    // não segue junto.
+    mandarEvento(es, { tipo: 'esperando', valor: true, motivo: 'pre-sessao' }, 'aba-1');   // A pergunta, B não
     tudoOk &= ok(btnA().disabled === true && btnB().disabled === false,
       'S7: A trava pelo PRÓPRIO perguntando; B (não perguntando) continua livre');
     porIdDe(cli, 'paineis').disparar('pointerdown', { target: painelDe(cli, 1) });   // foca B
@@ -9464,6 +13569,1650 @@ async function parteA() {
       'S24(b): o value do input reseta — sem isto, escolher o MESMO arquivo de novo não dispara evento');
   });
 
+  // ── AR1…AR15: arrastar a linha da conversa para a área dos painéis (D73, card
+  //    `arrastar-a-linha-da-caixa-de-agentes`). Borda de um painel abre AO LADO dele, centro TROCA a
+  //    conversa dele, conversa já aberta MUDA de lugar. O DOM de mentira não faz layout: a geometria
+  //    é escrita pelo teste (`posicionar`), 400px por painel, e re-medida depois de cada `dragover`
+  //    — que é quando a coluna fantasma entra e empurra os outros. ─────────────────────────────
+  console.log('\n  · AR1…AR15: arrastar a aba para o split (D73)');
+
+  const TIPO_ABA = 'application/x-cockpit-aba';
+  const transferencia = (types = [TIPO_ABA], files = []) => ({
+    types, files, dados: {}, effectAllowed: 'none', dropEffect: 'none',
+    setData(t, v) { this.dados[t] = String(v); },
+    getData(t) { return this.dados[t] || ''; },
+  });
+  const evArrasto = (extra = {}) => {
+    const ev = { clientY: 500, ...extra };
+    ev.preventDefault = () => { ev.impedido = true; };
+    return ev;
+  };
+  const botaoDe = (cli, chave) => linhaDe(cli, chave).querySelector('.conversa');
+  const ehPainel = (n) => String(n.className || '').split(/\s+/).includes('painel');
+  /** A ordem dos painéis NO DOM, pela chave gravada no `raiz` (`data-chave`, D73). */
+  const ordemDom = (cli) => porIdDe(cli, 'paineis').children.filter(ehPainel).map((n) => n.dataset.chave);
+  /** A ordem do `Map` — `paineis` é `const` de módulo, o vm não o expõe; o `Alt+J` anda por ela. */
+  const ordemMapa = (cli) => {
+    const n = contarPaineis(cli);
+    cli.pularAba(-99);
+    const chaves = [cli.painelAtual().chave];
+    for (let i = 1; i < n; i += 1) { cli.pularAba(1); chaves.push(cli.painelAtual().chave); }
+    return chaves;
+  };
+  const posicionar = (cli) => {
+    let x = 0;
+    for (const filho of porIdDe(cli, 'paineis').children) {
+      const largura = filho.dataset.arrastoOrigem === 'colapsa' ? 0 : 400;
+      filho.retangulo = { left: x, right: x + largura, top: 0, bottom: 1000, width: largura, height: 1000 };
+      x += largura;
+    }
+    porIdDe(cli, 'chat').retangulo = { left: 0, right: Math.max(x, 1600), top: 0, bottom: 1000, width: 1600, height: 1000 };
+  };
+  const fantasma = (cli) => porIdDe(cli, 'paineis').querySelector('.fantasma-painel');
+  /** O gesto inteiro: dragstart na linha → dragover no #chat em `x` → drop (opcional) → dragend. */
+  const arrastar = async (cli, chave, x, { soltar = true } = {}) => {
+    const dt = transferencia();
+    const origem = botaoDe(cli, chave);
+    origem.disparar('dragstart', evArrasto({ dataTransfer: dt }));
+    posicionar(cli);
+    const sobre = evArrasto({ dataTransfer: dt, clientX: x, target: painelDe(cli, 0) });
+    porIdDe(cli, 'chat').disparar('dragover', sobre);
+    posicionar(cli);
+    if (!soltar) return { origem, sobre, dt };
+    porIdDe(cli, 'chat').disparar('drop', evArrasto({ dataTransfer: dt, clientX: x, target: painelDe(cli, 0) }));
+    origem.disparar('dragend', evArrasto({ dataTransfer: dt }));
+    await new Promise((r) => setImmediate(r));
+    return { origem, sobre, dt };
+  };
+  /** Cliente com A=aba-1 e B=aba-2 abertos, lado a lado (x: A 0-400, B 400-800). */
+  const comAB = async (registro = []) => {
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        registro.push({ rota: String(rota), metodo: opcoes.method || 'GET' });
+        return String(rota).startsWith('api/abas') && !(opcoes.method && opcoes.method !== 'GET')
+          ? { abas: tresAbas() } : { painel: true, jobs: [] };
+      },
+    });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    await cli.abrirAba('aba-2', { aoLado: true });
+    return cli;
+  };
+
+  await rodarGrupo('AR1: alvoDoSolto — zonas, fim, vazio, fora e a própria posição (S4)', async () => {
+    const cli = carregarCliente();
+    const f = [{ chave: 'a', left: 0, right: 400 }, { chave: 'b', left: 400, right: 800 }];
+    const j = (v) => JSON.stringify(v);
+    tudoOk &= ok(j(cli.alvoDoSolto(450, f, 'x')) === j({ tipo: 'inserir', antesDe: 'b' }), 'AR1: borda esquerda de B → inserir antes de B');
+    tudoOk &= ok(j(cli.alvoDoSolto(790, f, 'x')) === j({ tipo: 'inserir', antesDe: null }), 'AR1: borda direita do último → inserir no fim');
+    tudoOk &= ok(j(cli.alvoDoSolto(390, f, 'x')) === j({ tipo: 'inserir', antesDe: 'b' }), 'AR1: borda direita de A = antes de B (a mesma posição)');
+    tudoOk &= ok(j(cli.alvoDoSolto(600, f, 'x')) === j({ tipo: 'trocar', chave: 'b' }), 'AR1: centro de B → trocar B');
+    tudoOk &= ok(j(cli.alvoDoSolto(100, [], 'x')) === j({ tipo: 'vazio' }), 'AR1: sem painel nenhum → vazio');
+    tudoOk &= ok(cli.alvoDoSolto(900, f, 'x') === null, 'AR1: fora de todo painel → null');
+    tudoOk &= ok(cli.alvoDoSolto(600, f, 'b') === null, 'AR1: o próprio centro → null (S4)');
+    tudoOk &= ok(cli.alvoDoSolto(450, f, 'b') === null && cli.alvoDoSolto(790, f, 'b') === null
+      && cli.alvoDoSolto(390, f, 'b') === null, 'AR1: as bordas que dão na posição que B já ocupa → null (S4)');
+    tudoOk &= ok(j(cli.alvoDoSolto(10, f, 'b')) === j({ tipo: 'inserir', antesDe: 'a' }), 'AR1: B na borda esquerda de A → inserir antes de A');
+  });
+
+  await rodarGrupo('AR2: borda DIREITA de B com conversa nova → A,B,X (DOM e Map), foco em X, cano com as 3', async () => {
+    const cli = await comAB();
+    await arrastar(cli, 'aba-3', 780);
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-2,aba-3', `AR2: DOM A,B,X (${ordemDom(cli).join()})`);
+    tudoOk &= ok(cli.painelAtual().chave === 'aba-3', 'AR2: X ganhou o foco');
+    tudoOk &= ok(/abas=aba-1,aba-2,aba-3(&|$)/.test(cli.fluxos.at(-1).rota), `AR2: cano religado com as 3 (${cli.fluxos.at(-1).rota})`);
+    tudoOk &= ok(ordemMapa(cli).join() === 'aba-1,aba-2,aba-3', `AR2: o Map na ordem da tela (${ordemMapa(cli).join()})`);
+  });
+
+  await rodarGrupo('AR3: borda ESQUERDA de B → A,X,B (DOM e Map)', async () => {
+    const cli = await comAB();
+    await arrastar(cli, 'aba-3', 420);
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-3,aba-2', `AR3: DOM A,X,B (${ordemDom(cli).join()})`);
+    tudoOk &= ok(ordemMapa(cli).join() === 'aba-1,aba-3,aba-2', `AR3: Map A,X,B (${ordemMapa(cli).join()})`);
+    // O `fecharPainel` escolhe o vizinho da DIREITA pelo Map: fechar X (foco) passa o foco para B.
+    await cli.abrirAba('aba-3');   // o `ordemMapa` andou o foco; devolve a X
+    cli.fecharPainel('aba-3');
+    tudoOk &= ok(cli.painelAtual().chave === 'aba-2', 'AR3: fechar X entrega o foco ao vizinho da DIREITA na tela (B)');
+  });
+
+  await rodarGrupo('AR4: CENTRO de B → A,X; B sai da tela sem matar a aba; rascunho de B volta', async () => {
+    const registro = [];
+    const cli = await comAB(registro);
+    painelDe(cli, 1).querySelector('.entrada').value = 'rascunho de B';
+    painelDe(cli, 1).querySelector('.entrada').disparar('input', {});
+    registro.length = 0;
+    await arrastar(cli, 'aba-3', 600);
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-3', `AR4: DOM A,X — X no lugar de B (${ordemDom(cli).join()})`);
+    tudoOk &= ok(ordemMapa(cli).join() === 'aba-1,aba-3', 'AR4: Map A,X');
+    tudoOk &= ok(!registro.some((r) => r.metodo === 'DELETE'), 'AR4: nenhum DELETE — a aba de B continua viva no tmux');
+    tudoOk &= ok(/abas=aba-1,aba-3(&|$)/.test(cli.fluxos.at(-1).rota), 'AR4: cano religado sem B');
+    await cli.abrirAba('aba-2', { aoLado: true });
+    tudoOk &= ok(painelDe(cli, 2).querySelector('.entrada').value === 'rascunho de B', 'AR4: reabrir B devolve o rascunho (R28)');
+  });
+
+  await rodarGrupo('AR5: X JÁ aberta muda de lugar — sem duplicar, sem religar, rolagem restaurada', async () => {
+    const cli = await comAB();
+    await cli.abrirAba('aba-3', { aoLado: true });           // A,B,X
+    // Põe X no meio para movê-la para o fim depois: A,X,B
+    await arrastar(cli, 'aba-3', 420);
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-3,aba-2', `AR5 pré: A,X,B (${ordemDom(cli).join()})`);
+    const caixaX = painelDe(cli, 1).querySelector('.mensagens');
+    caixaX.scrollHeight = 4000; caixaX.clientHeight = 400; caixaX.scrollTop = 1000;   // lendo o meio
+    const canos = cli.fluxos.length;
+    await arrastar(cli, 'aba-3', 1150);                      // borda direita de B (800-1200)
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-2,aba-3', `AR5: A,B,X (${ordemDom(cli).join()})`);
+    tudoOk &= ok(contarPaineis(cli) === 3, 'AR5: três painéis — mover não duplica');
+    tudoOk &= ok(cli.fluxos.length === canos, `AR5: nenhum EventSource novo (${cli.fluxos.length - canos})`);
+    tudoOk &= ok(caixaX.scrollTop === 1000, `AR5: a rolagem de X sobreviveu à mudança de lugar (${caixaX.scrollTop})`);
+    tudoOk &= ok(ordemMapa(cli).join() === 'aba-1,aba-2,aba-3', 'AR5: Map A,B,X');
+  });
+
+  await rodarGrupo('AR5b: moverPainel devolve rolagem, cursor e seleção (R2 — o rabo de abrirAba não mascara aqui)', async () => {
+    const cli = await comAB();
+    await cli.abrirAba('aba-3', { aoLado: true });           // A,B,X
+    const raizX = painelDe(cli, 2);
+    const entradaX = raizX.querySelector('.entrada');
+    const caixaX = raizX.querySelector('.mensagens');
+    caixaX.scrollHeight = 4000; caixaX.clientHeight = 400; caixaX.scrollTop = 1000;
+    entradaX.value = 'texto em andamento';
+    entradaX.focus();
+    entradaX.setSelectionRange(3, 7);
+    cli.moverPainel(cli.painelAtual(), painelDe(cli, 0));     // X para antes de A, direto
+    tudoOk &= ok(porIdDe(cli, 'paineis').children.filter(ehPainel)[0] === raizX, 'AR5b: X foi para o começo');
+    tudoOk &= ok(caixaX.scrollTop === 1000, `AR5b: rolagem devolvida (${caixaX.scrollTop})`);
+    tudoOk &= ok(cli.document.activeElement === entradaX, 'AR5b: o cursor voltou para a caixa de X');
+    tudoOk &= ok(entradaX.selectionStart === 3 && entradaX.selectionEnd === 7, 'AR5b: a seleção voltou');
+  });
+
+  await rodarGrupo('AR6: X aberta solta no CENTRO de B → A,X; cano religado', async () => {
+    const cli = await comAB();
+    await cli.abrirAba('aba-3', { aoLado: true });           // A,B,X
+    await arrastar(cli, 'aba-3', 600);                       // centro de B
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-3', `AR6: A,X (${ordemDom(cli).join()})`);
+    tudoOk &= ok(/abas=aba-1,aba-3(&|$)/.test(cli.fluxos.at(-1).rota), 'AR6: cano religado sem B');
+  });
+
+  await rodarGrupo('AR7: arrastar ARQUIVO continua anexando — nenhum painel, nenhuma coluna fantasma', async () => {
+    const cli = carregarCliente({
+      aoBuscar: (rota) => {
+        const r = String(rota);
+        if (r.startsWith('api/abas/') && r.includes('/anexos')) return { arquivo: 'inbox/nota.txt', nome: 'nota.txt' };
+        if (r.startsWith('api/abas')) return { abas: tresAbas() };
+        return { painel: true, jobs: [] };
+      },
+    });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    await cli.abrirAba('aba-2', { aoLado: true });
+    posicionar(cli);
+    const dt = transferencia(['Files'], [{ name: 'nota.txt', type: 'text/plain' }]);
+    const sobre = evArrasto({ dataTransfer: dt, clientX: 780, target: painelDe(cli, 1) });
+    porIdDe(cli, 'chat').disparar('dragover', sobre);
+    tudoOk &= ok(!fantasma(cli) && painelDe(cli, 1).dataset.arrasto === '1', 'AR7: arquivo acende a moldura de anexo, não a coluna fantasma');
+    porIdDe(cli, 'chat').disparar('drop', evArrasto({ dataTransfer: dt, clientX: 780, target: painelDe(cli, 1) }));
+    await new Promise((r) => setImmediate(r));
+    tudoOk &= ok(contarPaineis(cli) === 2, 'AR7: nenhum painel novo');
+    tudoOk &= ok(cli.painelAtual().anexos.some((a) => a.nome === 'nota.txt'), 'AR7: o arquivo entrou como anexo no painel debaixo do cursor');
+  });
+
+  await rodarGrupo('AR8: celular — linha não arrastável, dragstart cancelado, dragover/drop não fazem nada', async () => {
+    const cli = await comAB();
+    cli.midia['(max-width: 760px)'] = true;
+    cli.desenharAbas();
+    tudoOk &= ok(botaoDe(cli, 'aba-3').draggable === false, 'AR8: no celular a linha nem é arrastável');
+    const inicio = evArrasto({ dataTransfer: transferencia() });
+    botaoDe(cli, 'aba-3').disparar('dragstart', inicio);
+    tudoOk &= ok(inicio.impedido === true, 'AR8: dragstart cancelado');
+    posicionar(cli);
+    const sobre = evArrasto({ dataTransfer: transferencia(), clientX: 780, target: painelDe(cli, 0) });
+    porIdDe(cli, 'chat').disparar('dragover', sobre);
+    porIdDe(cli, 'chat').disparar('drop', evArrasto({ dataTransfer: transferencia(), clientX: 780, target: painelDe(cli, 0) }));
+    tudoOk &= ok(!sobre.impedido && !fantasma(cli) && contarPaineis(cli) === 2, 'AR8: nada muda');
+  });
+
+  await rodarGrupo('AR9: preview — coluna fantasma na borda, destaque no centro; some no dragleave/drop/dragend', async () => {
+    const cli = await comAB();
+    const { origem, dt } = await arrastar(cli, 'aba-3', 780, { soltar: false });
+    const f = fantasma(cli);
+    tudoOk &= ok(Boolean(f) && porIdDe(cli, 'paineis').children.at(-1) === f, 'AR9: na borda direita do último, a coluna fantasma é o último filho');
+    tudoOk &= ok(textoDe(f).includes('três'), `AR9: com o nome da conversa (${textoDe(f || { filhos: [] })})`);
+    // Muda para o centro de B (x 400-800 → agora B tem 400px de 400 a 800, a fantasma de 800 a 1200)
+    porIdDe(cli, 'chat').disparar('dragover', evArrasto({ dataTransfer: dt, clientX: 600, target: painelDe(cli, 1) }));
+    tudoOk &= ok(!fantasma(cli) && painelDe(cli, 1).dataset.alvoTroca === '1'
+      && textoDe(painelDe(cli, 1).querySelector('.rotulo-troca')).includes('três'), 'AR9: no centro, B destacado com o nome de quem entra');
+    // dragleave DENTRO do #chat não apaga; para FORA apaga.
+    porIdDe(cli, 'chat').disparar('dragleave', evArrasto({ dataTransfer: dt, clientX: 600, clientY: 500 }));
+    tudoOk &= ok(painelDe(cli, 1).dataset.alvoTroca === '1', 'AR9: dragleave entre filhos não apaga');
+    porIdDe(cli, 'chat').disparar('dragleave', evArrasto({ dataTransfer: dt, clientX: 2000, clientY: 500 }));
+    tudoOk &= ok(painelDe(cli, 1).dataset.alvoTroca === undefined && !painelDe(cli, 1).querySelector('.rotulo-troca'), 'AR9: dragleave para fora apaga');
+    porIdDe(cli, 'chat').disparar('dragover', evArrasto({ dataTransfer: dt, clientX: 780, target: painelDe(cli, 1) }));
+    tudoOk &= ok(Boolean(fantasma(cli)), 'AR9: voltar para a área redesenha');
+    origem.disparar('dragend', evArrasto({ dataTransfer: dt }));
+    tudoOk &= ok(!fantasma(cli) && contarPaineis(cli) === 2, 'AR9: dragend (Esc) apaga e não abre nada');
+  });
+
+  await rodarGrupo('AR10: área vazia (zero painéis) → abre normal', async () => {
+    const cli = carregarCliente({ semPainel: true, aoBuscar: comAbas(tresAbas()) });
+    await cli.carregarAbas();
+    await arrastar(cli, 'aba-3', 300);
+    tudoOk &= ok(contarPaineis(cli) === 1 && cli.painelAtual().chave === 'aba-3', 'AR10: X abriu como no clique');
+  });
+
+  await rodarGrupo('AR11: a lista não se repinta no meio do arrasto; dragend repinta; pointerdown é a rede', async () => {
+    const cli = await comAB();
+    const { origem, dt } = await arrastar(cli, 'aba-3', 780, { soltar: false });
+    await cli.carregarAbas();
+    tudoOk &= ok(botaoDe(cli, 'aba-3') === origem, 'AR11: o nó da linha arrastada continua o mesmo (repintura adiada)');
+    origem.disparar('dragend', evArrasto({ dataTransfer: dt }));
+    tudoOk &= ok(botaoDe(cli, 'aba-3') !== origem, 'AR11: dragend repinta');
+    const outro = await arrastar(cli, 'aba-3', 780, { soltar: false });
+    await cli.carregarAbas();   // a batida de 5 s chega no meio do gesto: repintura adiada
+    // dragend PERDIDO: nada o dispara. O primeiro pointerdown no document encerra.
+    for (const fn of cli.ouvintes.get('pointerdown') || []) fn({ target: porIdDe(cli, 'app') });
+    tudoOk &= ok(!fantasma(cli) && botaoDe(cli, 'aba-3') !== outro.origem, 'AR11: com o dragend perdido, o pointerdown encerra e repinta');
+  });
+
+  await rodarGrupo('AR12: clique, Ctrl+clique e ⧉ continuam iguais', async () => {
+    const cli = await comAB();
+    botaoDe(cli, 'aba-3').onclick({ ctrlKey: true });
+    await new Promise((r) => setImmediate(r));
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1,aba-2,aba-3', 'AR12: Ctrl+clique abre ao lado, no fim');
+    linhaDe(cli, 'aba-1').querySelector('.abrir-ao-lado').onclick({ stopPropagation() {} });
+    await new Promise((r) => setImmediate(r));
+    tudoOk &= ok(contarPaineis(cli) === 3 && cli.painelAtual().chave === 'aba-1', 'AR12: ⧉ numa conversa já aberta só foca');
+    botaoDe(cli, 'aba-2').onclick({});
+    await new Promise((r) => setImmediate(r));
+    tudoOk &= ok(contarPaineis(cli) === 3 && cli.painelAtual().chave === 'aba-2', 'AR12: clique simples numa conversa JÁ aberta só foca (como hoje)');
+    cli.fecharPainel('aba-3');
+    botaoDe(cli, 'aba-3').onclick({});
+    await new Promise((r) => setImmediate(r));
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-3', `AR12: clique simples numa conversa FECHADA troca o conjunto inteiro (${ordemDom(cli).join()})`);
+  });
+
+  await rodarGrupo('AR13: âncora some entre o preview e o drop → nada muda, nenhuma leitura gravada', async () => {
+    const registro = [];
+    const cli = await comAB(registro);
+    const { origem, dt } = await arrastar(cli, 'aba-3', 600, { soltar: false });   // centro de B
+    cli.fecharPainel('aba-2');                                                    // o tmux fechou B
+    registro.length = 0;
+    porIdDe(cli, 'chat').disparar('drop', evArrasto({ dataTransfer: dt, clientX: 600, target: painelDe(cli, 0) }));
+    origem.disparar('dragend', evArrasto({ dataTransfer: dt }));
+    await new Promise((r) => setImmediate(r));
+    tudoOk &= ok(ordemDom(cli).join() === 'aba-1', `AR13: nenhum painel novo (${ordemDom(cli).join()})`);
+    tudoOk &= ok(!registro.some((r) => r.rota.startsWith('api/lidas')), 'AR13: nenhum POST api/lidas');
+  });
+
+  await rodarGrupo('AR14: MOVE — na borda a origem colapsa (mesmo nº de colunas); no centro ela esmaece', async () => {
+    const cli = await comAB();
+    await cli.abrirAba('aba-3', { aoLado: true });           // A,B,X (X 800-1200)
+    const { origem, dt } = await arrastar(cli, 'aba-3', 20, { soltar: false });    // borda esquerda de A
+    const raizX = painelDe(cli, 2);
+    const visiveis = porIdDe(cli, 'paineis').children.filter((n) => ehPainel(n) && n.dataset.arrastoOrigem !== 'colapsa').length
+      + (fantasma(cli) ? 1 : 0);
+    tudoOk &= ok(raizX.dataset.arrastoOrigem === 'colapsa' && visiveis === 3, `AR14: origem colapsada, 3 colunas no preview (${visiveis})`);
+    porIdDe(cli, 'chat').disparar('dragover', evArrasto({ dataTransfer: dt, clientX: 600, target: painelDe(cli, 1) }));
+    tudoOk &= ok(raizX.dataset.arrastoOrigem === 'esmaece', 'AR14: no centro de outro painel, a origem esmaece');
+    origem.disparar('dragend', evArrasto({ dataTransfer: dt }));
+    tudoOk &= ok(raizX.dataset.arrastoOrigem === undefined, 'AR14: dragend devolve a origem');
+  });
+
+  await rodarGrupo('AR15: janela estreita no meio do arrasto → o dragover limpa e não aceita', async () => {
+    const cli = await comAB();
+    const { origem, dt } = await arrastar(cli, 'aba-3', 780, { soltar: false });
+    cli.midia['(max-width: 760px)'] = true;
+    const sobre = evArrasto({ dataTransfer: dt, clientX: 780, target: painelDe(cli, 0) });
+    porIdDe(cli, 'chat').disparar('dragover', sobre);
+    tudoOk &= ok(!fantasma(cli) && !sobre.impedido, 'AR15: preview limpo, sem preventDefault');
+    origem.disparar('dragend', evArrasto({ dataTransfer: dt }));
+  });
+
+  // ── F1…F8: a faixa de jobs volta ao cabeçalho da conversa (D56, 2026-09-15) ─────────────
+  //
+  // A barra CONTA (rodapé da lateral, D51/D52 — G1-G24/BA-*/CX-* acima, intocados); a faixa
+  // NOMEIA (cabeçalho de CADA painel, este bloco). A fixture de job é a MESMA `jobDoTesteG`
+  // (:9007) que os testes G usam — o servidor já casa job↔aba, então aqui só se compara
+  // CHAVE com CHAVE (nunca `projeto` cru). Achada por `.faixa-jobs`, nunca `porIdDe`: o id
+  // não está em `IDS_DO_PAINEL` (§5 da spec) e `porIdDe` cairia num `getElementById` que
+  // CRIA o nó no DOM de mentira, mentindo verde sem a faixa existir.
+  console.log('\n  · F1…F8: a faixa de jobs no cabeçalho do painel (D56)');
+
+  console.log('\n  · F3: conversa de projeto SEM job — a faixa fica AUSENTE, nunca vazia');
+  await rodarGrupo('F3', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota)) ? { painel: true, jobs: [] } : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const faixaF3 = painelDe(c, 0).querySelector('.faixa-jobs');
+    tudoOk &= ok(Boolean(faixaF3) && faixaF3.hidden === true,
+      'F3: sem job do projeto, .faixa-jobs existe no DOM mas fica hidden');
+    tudoOk &= ok(!faixaF3.querySelector('.faixa-conta').textContent
+      && !faixaF3.querySelector('.faixa-titulos').textContent
+      && !faixaF3.querySelector('.faixa-etapa').textContent,
+      'F3: e os três nós ficam vazios — ausência, não afirmação de "zero jobs"');
+  });
+
+  console.log('\n  · F1: conversa de projeto COM 1 job — a faixa aparece com a conta e o nome');
+  await rodarGrupo('F1', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running', titulo: 'editando exemplo.js', abas: ['aba-7'] })] }
+        : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const faixaF1 = painelDe(c, 0).querySelector('.faixa-jobs');
+    tudoOk &= ok(Boolean(faixaF1) && faixaF1.hidden === false, 'F1: com job do projeto, a faixa aparece');
+    const contaF1 = faixaF1.querySelector('.faixa-conta').textContent;
+    tudoOk &= ok(contaF1 === '1 job rodando', `F1: a conta diz "1 job rodando" (${contaF1})`);
+    const titulosF1 = faixaF1.querySelector('.faixa-titulos').textContent;
+    tudoOk &= ok(titulosF1 === 'editando exemplo.js', `F1: os títulos mostram o nome do job (${titulosF1})`);
+  });
+
+  console.log('\n  · F2: 2 jobs do MESMO projeto — a conta pluraliza e os DOIS nomes aparecem');
+  await rodarGrupo('F2', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? {
+          painel: true,
+          jobs: [
+            jobDoTesteG({ id: 'f2-1', estado: 'running', titulo: 'editando exemplo.js', abas: ['aba-7'] }),
+            jobDoTesteG({ id: 'f2-2', estado: 'running', titulo: 'rodando os gates', abas: ['aba-7'] }),
+          ],
+        }
+        : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const faixaF2 = painelDe(c, 0).querySelector('.faixa-jobs');
+    const contaF2 = faixaF2.querySelector('.faixa-conta').textContent;
+    tudoOk &= ok(contaF2 === '2 jobs rodando', `F2: a conta pluraliza (${contaF2})`);
+    const titulosF2 = faixaF2.querySelector('.faixa-titulos').textContent;
+    tudoOk &= ok(titulosF2 === 'editando exemplo.js, rodando os gates', `F2: os dois nomes aparecem (${titulosF2})`);
+  });
+
+  // F4 — a ORDEM importa (achado do painel): B nasce ANTES da leitura de jobs (nada a
+  // provar — um painel sem job já nasce hidden por natureza) e A nasce DEPOIS dela, direto
+  // por `criarPainel` (sem `abrirAba`, sem rede nova) — é a ÚNICA ordem que falha sem
+  // `pintarFaixaDe` dentro de `criarPainel`.
+  console.log('\n  · F4: dois painéis — a faixa de quem TEM job pinta na hora, sem esperar o próximo tique');
+  await rodarGrupo('F4', async () => {
+    const c = carregarCliente({
+      semPainel: true,
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running', titulo: 'editando exemplo.js', abas: ['aba-a'] })] }
+        : { abas: [] }),
+    });
+    const painelB = c.criarPainel('aba-b', {});   // SEM job do seu projeto, nasce primeiro
+    await c.atualizarFaixaJobs();                 // a leitura de jobs já sabe do job de A
+    const painelA = c.criarPainel('aba-a', {});   // nasce DEPOIS da leitura, sem rede nova
+    tudoOk &= ok(painelA.faixa.el.hidden === false,
+      'F4: a faixa de A (com job) aparece NA HORA — pintarFaixaDe dentro de criarPainel');
+    tudoOk &= ok(painelB.faixa.el.hidden === true,
+      'F4: a faixa de B (sem job do SEU projeto) continua ausente — R9/P4');
+  });
+
+  console.log('\n  · F7: painel:false (sem contato) — a faixa some em TODOS os painéis abertos');
+  await rodarGrupo('F7', async () => {
+    let semRedeF7 = false;
+    const c = carregarCliente({
+      semPainel: true,
+      aoBuscar: (rota) => {
+        if (!/api\/jobs/.test(String(rota))) return { abas: [] };
+        if (semRedeF7) return { __status: 500, erro: 'sem rede' };
+        return { painel: true, jobs: [jobDoTesteG({ estado: 'running', abas: ['aba-x', 'aba-y'] })] };
+      },
+    });
+    const painelX = c.criarPainel('aba-x', {});
+    const painelY = c.criarPainel('aba-y', {});
+    await c.atualizarFaixaJobs();
+    tudoOk &= ok(painelX.faixa.el.hidden === false && painelY.faixa.el.hidden === false,
+      'F7: pré-condição — os dois painéis mostram a faixa com o painel respondendo');
+    semRedeF7 = true;
+    await c.atualizarFaixaJobs();
+    tudoOk &= ok(painelX.faixa.el.hidden === true && painelY.faixa.el.hidden === true,
+      'F7: sem notícia é ignorância — a faixa some nos dois, não só no focado (§4.4)');
+  });
+
+  // F5 — pré-condição do `history` de mentira (achado do painel): `pedirLista()` é só
+  // `history.back()`, e o `back()` do gate só dispara `popstate` se houver PILHA
+  // (`gate-ui.js:422`). Escrever `app.dataset.vista = 'chat'` na mão, sem empilhar antes,
+  // faria o `back()` voltar cedo — o assert ficaria vermelho SEM bug. `abrirAba` empilha de
+  // verdade (`empilharConversa`), então é o caminho normal que se usa aqui.
+  console.log('\n  · F5: o clique na faixa leva à vista de agentes, sai do chat e reabre a lateral');
+  await rodarGrupo('F5', async () => {
+    const abasF5 = [{ chave: 'aba-f5', titulo: 'F5', cwd: '/tmp/f5', temAgente: true, rodando: false, sessaoId: 'sf5', atualizadoEm: 1 }];
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running', abas: ['aba-f5'] })] }
+        : { abas: abasF5 }),
+    });
+    await c.carregarAbas();
+    await c.abrirAba('aba-f5');       // empilha de verdade e põe a vista em 'chat'
+    await c.atualizarFaixaJobs();     // garante painelDosJobs/jobsDaLista antes do clique
+    const appF5 = porIdDe(c, 'app');
+    tudoOk &= ok(appF5.dataset.vista === 'chat', 'F5: pré-condição — a conversa está aberta (chat)');
+    appF5.dataset.lateral = 'fechada';   // simula o desktop com a lateral fechada pelo ☰
+    const abasElF5 = porIdDe(c, 'abas');
+    tudoOk &= ok(!abasElF5.querySelector('#grupo-jobs'),
+      'F5: pré-condição — em conversas, #grupo-jobs ainda não existe');
+    painelDe(c, 0).querySelector('.faixa-jobs').onclick();
+    tudoOk &= ok(Boolean(abasElF5.querySelector('#grupo-jobs')),
+      'F5: depois do clique, #grupo-jobs aparece dentro de #abas — foi para a vista de agentes');
+    tudoOk &= ok(appF5.dataset.vista !== 'chat',
+      `F5: e o chat fecha (celular) via pedirLista → history.back → popstate (${appF5.dataset.vista})`);
+    tudoOk &= ok(appF5.dataset.lateral === 'aberta',
+      'F5: e a lateral reabre (desktop) — aplicarLateral(false) grava a preferência');
+  });
+
+  console.log('\n  · F6: no celular, a base da faixa é ZERO — nunca `auto` (armadilha #43)');
+  await rodarGrupo('F6', async () => {
+    const todosF6 = cor.blocos(css);
+    const faixaCelularF6 = todosF6.find((b) => b.seletor === '.faixa-jobs' && b.dentroDe === '@media (max-width: 760px)');
+    tudoOk &= ok(Boolean(faixaCelularF6), 'F6: .faixa-jobs existe dentro do @media (max-width: 760px)');
+    tudoOk &= ok(/flex:\s*1 1 0\b/.test(faixaCelularF6?.corpo || ''),
+      `F6: a base é ZERO — "flex: 1 1 0" (${faixaCelularF6?.corpo})`);
+    tudoOk &= ok(!/flex:\s*1 1 auto/.test(faixaCelularF6?.corpo || ''),
+      'F6: nunca "flex: 1 1 auto" — é a armadilha #43 mordendo de novo');
+    tudoOk &= ok(/flex-wrap:\s*nowrap/.test(faixaCelularF6?.corpo || ''),
+      'F6: flex-wrap: nowrap — a faixa não repete o truque da quebra com os próprios filhos');
+  });
+
+  console.log('\n  · F8: trocar o idioma retraduz a faixa NA HORA, sem esperar o próximo tique');
+  await rodarGrupo('F8', async () => {
+    const c = carregarCliente({
+      aoBuscar: (rota) => (/api\/jobs/.test(String(rota))
+        ? { painel: true, jobs: [jobDoTesteG({ estado: 'running', abas: ['aba-7'] })] }
+        : { abas: [] }),
+    });
+    await c.carregarAbas();
+    await c.atualizarFaixaJobs();
+    const faixaF8 = painelDe(c, 0).querySelector('.faixa-jobs');
+    const contaAntesF8 = faixaF8.querySelector('.faixa-conta').textContent;
+    const etapaAntesF8 = faixaF8.querySelector('.faixa-etapa').textContent;
+    tudoOk &= ok(contaAntesF8 === '1 job rodando', `F8: pré-condição — a conta nasce em pt-BR (${contaAntesF8})`);
+    tudoOk &= ok(etapaAntesF8.includes('sem sinal ainda'), `F8: pré-condição — a etapa nasce em pt-BR (${etapaAntesF8})`);
+    try {
+      c.cockpitI18n.definir('en');
+      const contaDepoisF8 = faixaF8.querySelector('.faixa-conta').textContent;
+      const etapaDepoisF8 = faixaF8.querySelector('.faixa-etapa').textContent;
+      tudoOk &= ok(contaDepoisF8 === '1 running job', `F8: a conta retraduz na hora (${contaDepoisF8})`);
+      tudoOk &= ok(etapaDepoisF8.includes('no signal yet'), `F8: e a etapa também, sem esperar o tique (${etapaDepoisF8})`);
+    } finally {
+      c.cockpitI18n.definir('pt-BR');
+    }
+  });
+
+  // ── Envio recuperável (card menu-da-tui-do-codex-na-tela, Fase 5, R11): o selo e a
+  //    gaveta. `aoBuscar` é a costura — é DENTRO dela que se mexe na composição DURANTE o
+  //    request, porque é o único ponto que roda no meio do `await api(...)`. ──────────────
+  console.log('\n  · envio recuperável (R11) — o selo e a gaveta');
+
+  // Erro fabricado com `__status`/`colado`, do jeito que `api()` os lê de volta
+  // (`public/app.js`): sem `colado` no corpo, o cliente enxerga o "ausente" do contrato.
+  const erroRecusa = (colado) => ({
+    __status: 409, erro: 'o terminal está com uma pergunta aberta', ...(colado ? { colado: true } : {}),
+  });
+  const anexoPronto = (nome) => ({ nome, caminho: `inbox/${nome}`, estado: 'pronto', url: null });
+  // `url` de verdade só nos casos que precisam provar a REVOGAÇÃO — este DOM de mentira não
+  // tem `URL.createObjectURL` (por isso o resto do arquivo usa `text/plain`), então quem
+  // precisa da revogação espiona `URL.revokeObjectURL` na mão (abaixo).
+  const anexoComUrl = (nome) => ({ nome, caminho: `inbox/${nome}`, estado: 'pronto', url: `blob:${nome}` });
+
+  /** Espiona `URL.revokeObjectURL` (que este DOM de mentira não tem) e restaura no fim. */
+  function espiaoRevogacao() {
+    const revogadas = [];
+    const tinhaAntes = Object.prototype.hasOwnProperty.call(URL, 'revokeObjectURL');
+    const original = URL.revokeObjectURL;
+    URL.revokeObjectURL = (u) => revogadas.push(u);
+    return {
+      revogadas,
+      restaurar: () => { if (tinhaAntes) URL.revokeObjectURL = original; else delete URL.revokeObjectURL; },
+    };
+  }
+
+  await rodarGrupo('R11-a: nada muda durante o request; 409 sem colado ⇒ volta NA HORA e a gaveta fica vazia', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) return erroRecusa(false);
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'oi, tudo bem?';
+    painel.anexos = [anexoPronto('x.png')];
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === 'oi, tudo bem?' && painel.anexos.length === 1 && painel.anexos[0].nome === 'x.png',
+      'R11-a: texto E anexo voltam para a caixa NA HORA');
+    // gaveta vazia: esvaziar a caixa e reabrir do zero não traz nada a mais.
+    cli.escreverNaCaixa(painel, '');
+    painel.anexos = [];
+    cli.tirarPainel('aba-1');
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === '' && reaberto.anexos.length === 0,
+      'R11-a: e a gaveta ficou VAZIA — nada sobra para a reabertura seguinte');
+  });
+
+  await rodarGrupo('R11-b: digitou texto NOVO durante o request; 409 sem colado ⇒ a caixa fica com o texto novo, o par recusado vai para a gaveta', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        cli.escreverNaCaixa(painel, 'texto novo, digitado com o POST no ar');
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'texto original recusado';
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === 'texto novo, digitado com o POST no ar',
+      'R11-b: a caixa NÃO foi sobrescrita — o texto novo do usuário continua lá');
+    cli.escreverNaCaixa(painel, '');
+    cli.tirarPainel('aba-1');
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'texto original recusado',
+      'R11-b: e o par ORIGINAL (o recusado) volta na reabertura seguinte, com a caixa vazia');
+  });
+
+  await rodarGrupo('R11-c: anexo NOVO adicionado durante o request; 409 sem colado ⇒ o anexo novo não casa com o texto antigo', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        // O que `subirArquivo` faria de verdade: empilha o anexo e sobe o selo.
+        painel.anexos.push(anexoPronto('novo-durante-o-request.png'));
+        painel.seloComposicao += 1;
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'texto do envio recusado';
+    painel.anexos = [anexoPronto('antigo.png')];
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === '' && painel.anexos.length === 1
+      && painel.anexos[0].nome === 'novo-durante-o-request.png',
+    'R11-c: a caixa fica só com o anexo NOVO — nada se mistura com o par recusado');
+    // limpa o resíduo do anexo novo (o usuário terminou de mexer nele) e confirma que o par
+    // da gaveta é o ORIGINAL — texto e anexo antigos, sem o novo grudado.
+    painel.anexos = [];
+    cli.tirarPainel('aba-1');
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'texto do envio recusado'
+      && reaberto.anexos.length === 1 && reaberto.anexos[0].nome === 'antigo.png',
+    'R11-c: o par guardado é o ORIGINAL — o anexo novo não entrou na gaveta');
+  });
+
+  await rodarGrupo('R11-c2: subirArquivo() REAL — o selo sobe e o anexo entra (não é mais simulado)', async () => {
+    // R11-c acima SIMULA o que `subirArquivo` faria (`push` + `seloComposicao += 1` à mão).
+    // Este caso chama a função REAL — `carregarCliente` devolve o contexto do `vm`, então
+    // `cli.subirArquivo` é a mesma função de `public/app.js` — para provar que o incremento
+    // do selo não é um comportamento que o teste está inventando.
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/anexos\?/.test(String(rota))) return { arquivo: 'inbox/real.txt', nome: 'real.txt' };
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    const seloAntes = painel.seloComposicao;
+    // `text/plain`: tipo ACEITO (TIPOS_ACEITOS) que não passa por `URL.createObjectURL` —
+    // este DOM de mentira não o tem (mesmo motivo do resto do arquivo, ver `anexoPronto`).
+    await cli.subirArquivo(painel, { name: 'real.txt', type: 'text/plain' });
+    tudoOk &= ok(painel.seloComposicao > seloAntes,
+      'R11-c2: painel.seloComposicao subiu — o `push` e o incremento acontecem ANTES do `await` do upload, mesmo se o fetch falhar');
+    tudoOk &= ok(painel.anexos.some((a) => a.nome === 'real.txt'),
+      'R11-c2: e o anexo entrou em painel.anexos');
+  });
+
+  await rodarGrupo('R11-d: erro de REDE (sem status) ⇒ nada restaurado, nada na gaveta, objectURL revogadas', async () => {
+    const espiao = espiaoRevogacao();
+    try {
+      let painel;
+      const cli = carregarCliente({ aoBuscar: (rota) => {
+        if (/\/turnos$/.test(String(rota))) throw new Error('rede caiu');
+        return comAbas(duasAbas())(rota);
+      } });
+      await cli.carregarAbas();
+      await cli.abrirAba('aba-1');
+      painel = cli.painelAtual();
+      painel.entrada.value = 'rede caiu no meio';
+      painel.anexos = [anexoComUrl('rede.png')];
+      await cli.enviar(painel);
+      tudoOk &= ok(painel.entrada.value === '' && painel.anexos.length === 0,
+        'R11-d: nada restaurado na hora');
+      tudoOk &= ok(espiao.revogadas.includes('blob:rede.png'), 'R11-d: a objectURL foi revogada');
+      cli.tirarPainel('aba-1');
+      const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+      tudoOk &= ok(reaberto.entrada.value === '', 'R11-d: e nada foi para a gaveta');
+    } finally { espiao.restaurar(); }
+  });
+
+  await rodarGrupo('R11-e: 500 ⇒ nada restaurado, nada na gaveta, objectURL revogadas', async () => {
+    const espiao = espiaoRevogacao();
+    try {
+      let painel;
+      const cli = carregarCliente({ aoBuscar: (rota) => {
+        if (/\/turnos$/.test(String(rota))) return { __status: 500, erro: 'falha interna' };
+        return comAbas(duasAbas())(rota);
+      } });
+      await cli.carregarAbas();
+      await cli.abrirAba('aba-1');
+      painel = cli.painelAtual();
+      painel.entrada.value = '500 no meio';
+      painel.anexos = [anexoComUrl('quinhentos.png')];
+      await cli.enviar(painel);
+      tudoOk &= ok(painel.entrada.value === '' && painel.anexos.length === 0,
+        'R11-e: nada restaurado na hora');
+      tudoOk &= ok(espiao.revogadas.includes('blob:quinhentos.png'), 'R11-e: a objectURL foi revogada');
+      cli.tirarPainel('aba-1');
+      const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+      tudoOk &= ok(reaberto.entrada.value === '', 'R11-e: e nada foi para a gaveta');
+    } finally { espiao.restaurar(); }
+  });
+
+  await rodarGrupo('R11-f: 409 COM colado ⇒ nada restaurado, nada na gaveta, objectURL revogadas (senão o reenvio duplica, #21)', async () => {
+    const espiao = espiaoRevogacao();
+    try {
+      let painel;
+      const cli = carregarCliente({ aoBuscar: (rota) => {
+        if (/\/turnos$/.test(String(rota))) return erroRecusa(true);
+        return comAbas(duasAbas())(rota);
+      } });
+      await cli.carregarAbas();
+      await cli.abrirAba('aba-1');
+      painel = cli.painelAtual();
+      painel.entrada.value = 'já colado na TUI';
+      painel.anexos = [anexoComUrl('colado.png')];
+      await cli.enviar(painel);
+      tudoOk &= ok(painel.entrada.value === '' && painel.anexos.length === 0,
+        'R11-f: a caixa NÃO recebeu o texto de volta — ele já está no composer da TUI');
+      tudoOk &= ok(espiao.revogadas.includes('blob:colado.png'), 'R11-f: e a objectURL foi revogada');
+      cli.tirarPainel('aba-1');
+      const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+      tudoOk &= ok(reaberto.entrada.value === '', 'R11-f: nada na gaveta — reabrir não traz o texto de volta');
+    } finally { espiao.restaurar(); }
+  });
+
+  await rodarGrupo('R11-g: fecha o painel DURANTE o request; 409 sem colado ⇒ nada estoura, e o par vai para a gaveta', async () => {
+    let painel; let estourou = null;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) { cli.tirarPainel('aba-1'); return erroRecusa(false); }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'fechei no meio do envio';
+    try { await cli.enviar(painel); } catch (e) { estourou = e; }
+    tudoOk &= ok(estourou === null, `R11-g: enviar() não estoura com o painel fechado (${estourou ? estourou.message : ''})`);
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'fechei no meio do envio',
+      'R11-g: e o par foi para a gaveta — volta na reabertura');
+  });
+
+  await rodarGrupo('R11-i: recarregarPainel() DURANTE o request; 409 sem colado ⇒ não restaura na hora (selo mudou), o par vai para a gaveta', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        painel.seloComposicao += 1;   // o efeito de `recarregarPainel` sobre a composição
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'recarreguei no meio';
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === '', 'R11-i: a caixa NÃO recebeu o texto de volta na hora — o selo mudou');
+    cli.tirarPainel('aba-1');
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'recarreguei no meio',
+      'R11-i: e o par recusado está na gaveta — volta na reabertura');
+  });
+
+  await rodarGrupo('R11-j: 409 com o painel fechado → reabre com a caixa vazia ⇒ texto e anexos voltam JUNTOS, e a gaveta fica vazia depois', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) { cli.tirarPainel('aba-1'); return erroRecusa(false); }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'texto do j';
+    painel.anexos = [anexoPronto('j.png')];
+    await cli.enviar(painel);
+    const reaberto1 = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto1.entrada.value === 'texto do j' && reaberto1.anexos.length === 1
+      && reaberto1.anexos[0].nome === 'j.png',
+    'R11-j: texto E anexo voltam JUNTOS na reabertura');
+    cli.escreverNaCaixa(reaberto1, '');
+    reaberto1.anexos = [];
+    cli.tirarPainel('aba-1');
+    const reaberto2 = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto2.entrada.value === '' && reaberto2.anexos.length === 0,
+      'R11-j: e a gaveta ficou VAZIA depois — não volta uma segunda vez');
+  });
+
+  await rodarGrupo('R11-k: reabre com um RASCUNHO ÓRFÃO na caixa ⇒ o órfão tem precedência, o par recusado continua na gaveta e volta na reabertura SEGUINTE, com a caixa vazia', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        cli.escreverNaCaixa(painel, 'x'); cli.escreverNaCaixa(painel, '');   // vai reto pra gaveta, painel continua vivo
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'texto do k, recusado';
+    await cli.enviar(painel);   // vai para a gaveta, painel ainda VIVO (não fechou ainda)
+
+    // AINDA no mesmo painel vivo, o usuário escreve um rascunho DIFERENTE e fecha a aba — é
+    // esse rascunho que vira o ÓRFÃO (fechar DEPOIS de já estar na gaveta, não antes: reabrir
+    // com a caixa vazia no meio consumiria a gaveta cedo demais e o teste provaria outra coisa).
+    cli.escreverNaCaixa(painel, 'rascunho órfão, não é o recusado');
+    cli.tirarPainel('aba-1');
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'rascunho órfão, não é o recusado',
+      'R11-k: a caixa mostra o ÓRFÃO — ele é a composição de AGORA, tem precedência');
+    cli.escreverNaCaixa(reaberto, '');   // o usuário termina de olhar o órfão e esvazia
+    cli.tirarPainel('aba-1');
+    const reabertoDeNovo = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reabertoDeNovo.entrada.value === 'texto do k, recusado',
+      'R11-k: e o par recusado continuava na gaveta — volta na reabertura SEGUINTE, com a caixa vazia');
+  });
+
+  await rodarGrupo('R11-l: digitou e depois ESVAZIOU a caixa (sem fechar) durante o request ⇒ nada volta sozinho', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        cli.escreverNaCaixa(painel, 'digitando...');
+        cli.escreverNaCaixa(painel, '');   // esvaziou de novo, sem fechar a aba
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'texto recusado do l';
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === '',
+      'R11-l: nada voltou sozinho — não existe um terceiro gancho no `input` da caixa');
+  });
+
+  await rodarGrupo('R11-l2: o mesmo do l, e então fecha e reabre a aba ⇒ aí sim o par volta inteiro', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        cli.escreverNaCaixa(painel, 'digitando...');
+        cli.escreverNaCaixa(painel, '');
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'texto recusado do l2';
+    await cli.enviar(painel);
+    cli.tirarPainel('aba-1');
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'texto recusado do l2',
+      'R11-l2: fechar e reabrir traz o par de volta inteiro');
+  });
+
+  await rodarGrupo('R11-l3: com um par já na gaveta, um envio NOVO (que limpa a caixa) não deixa o par antigo invadir no meio dele', async () => {
+    let painel; let fase = 'primeiro';
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        if (fase === 'primeiro') {
+          cli.escreverNaCaixa(painel, 'x'); cli.escreverNaCaixa(painel, '');   // vai reto para a gaveta
+          return erroRecusa(false);
+        }
+        tudoOk &= ok(painel.entrada.value === '',
+          'R11-l3: no MEIO do segundo envio a caixa está vazia, sem o par antigo grudado');
+        return { enviado: true };
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'primeiro, recusado';
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === '', 'R11-l3 pré-condição: o primeiro foi para a gaveta, não para a caixa');
+
+    fase = 'segundo';
+    painel.entrada.value = 'segundo envio';
+    await cli.enviar(painel);
+    tudoOk &= ok(painel.entrada.value === '',
+      'R11-l3: depois do segundo envio a caixa continua vazia — o par da gaveta não apareceu no meio dele');
+  });
+
+  await rodarGrupo('R11-m: dois 409 seguidos sem esvaziar a caixa entre eles ⇒ só o ÚLTIMO fica na gaveta; a objectURL do primeiro é revogada', async () => {
+    const espiao = espiaoRevogacao();
+    try {
+      let painel;
+      const cli = carregarCliente({ aoBuscar: (rota) => {
+        if (/\/turnos$/.test(String(rota))) {
+          cli.escreverNaCaixa(painel, 'x'); cli.escreverNaCaixa(painel, '');   // nunca restaura na hora
+          return erroRecusa(false);
+        }
+        return comAbas(duasAbas())(rota);
+      } });
+      await cli.carregarAbas();
+      await cli.abrirAba('aba-1');
+      painel = cli.painelAtual();
+
+      painel.entrada.value = 'primeiro recusado';
+      painel.anexos = [anexoComUrl('primeiro.png')];
+      await cli.enviar(painel);
+
+      painel.entrada.value = 'segundo recusado';
+      painel.anexos = [anexoComUrl('segundo.png')];
+      await cli.enviar(painel);
+
+      tudoOk &= ok(espiao.revogadas.includes('blob:primeiro.png'),
+        `R11-m: a objectURL do PRIMEIRO par foi revogada ao ser substituído (revogadas: ${JSON.stringify(espiao.revogadas)})`);
+
+      cli.tirarPainel('aba-1');
+      const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+      tudoOk &= ok(reaberto.entrada.value === 'segundo recusado' && reaberto.anexos[0]?.nome === 'segundo.png',
+        'R11-m: só o SEGUNDO (o último) fica guardado na gaveta');
+    } finally { espiao.restaurar(); }
+  });
+
+  await rodarGrupo('R11-n: 409 na aba A ⇒ reabrir a aba B com a caixa vazia não traz NADA — a gaveta é por CHAVE de aba', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) {
+        cli.escreverNaCaixa(painel, 'x'); cli.escreverNaCaixa(painel, '');
+        return erroRecusa(false);
+      }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'recusado em A';
+    await cli.enviar(painel);
+    await cli.abrirAba('aba-2', { aoLado: true });
+    const painelB = cli.painelAtual();
+    tudoOk &= ok(painelB.entrada.value === '', 'R11-n: nada vazou para a aba B — a gaveta é por chave de aba');
+  });
+
+  await rodarGrupo('R11-o: 409 recusado, painel fechado e REABERTO ⇒ o historicoEntrada do painel NOVO segue vazio (a seta para cima não é rede de segurança)', async () => {
+    let painel;
+    const cli = carregarCliente({ aoBuscar: (rota) => {
+      if (/\/turnos$/.test(String(rota))) { cli.tirarPainel('aba-1'); return erroRecusa(false); }
+      return comAbas(duasAbas())(rota);
+    } });
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-1');
+    painel = cli.painelAtual();
+    painel.entrada.value = 'recusado, sem historico';
+    await cli.enviar(painel);
+    const reaberto = cli.criarPainel('aba-1', duasAbas()[0]);
+    tudoOk &= ok(reaberto.entrada.value === 'recusado, sem historico',
+      'R11-o pré-condição: o texto de fato voltou pela gaveta');
+    tudoOk &= ok(reaberto.historicoEntrada.length === 0,
+      'R11-o: o painel NOVO nasce com historicoEntrada vazio — não é a seta para cima quem traz o texto de volta');
+  });
+
+  await rodarGrupo('R11-p3: painel.selo CONTINUA sendo o elemento DOM do gesto de puxar — o contador do envio recuperável é painel.seloComposicao', async () => {
+    const cli = carregarCliente();
+    const painel = cli.painelAtual();
+    tudoOk &= ok(Boolean(painel.selo) && typeof painel.selo === 'object' && 'dataset' in painel.selo,
+      'R11-p3: painel.selo é o elemento com `dataset` do gesto de puxar-para-recarregar, não um número');
+    tudoOk &= ok(typeof painel.seloComposicao === 'number',
+      'R11-p3: o contador do envio recuperável mora em painel.seloComposicao, à parte');
+  });
+
+  console.log('\n  · AE1…AE7: o Enviar com anexo nunca fica calado (card foto-some-entre-upload-e-envio)');
+
+  // Deixa o `enviar()` que está esperando os anexos (ou o `×` que o libera) rodar até o
+  // próximo ponto de parada — sem isto os asserts "antes" dos casos abaixo leriam um estado
+  // que o motor ainda não pintou.
+  const respirarAE = () => new Promise((r) => setImmediate(r));
+
+  // O item `.anexo` carrega o botão `.anexo-tira` como FILHO (não é o próprio `anexosEl`) —
+  // procura em todos os itens, como o usuário acharia o × na tela.
+  const acharTiraAE = (painel) => painel.anexosEl.filhos
+    .flatMap((item) => item.filhos)
+    .find((f) => String(f.className).includes('anexo-tira'));
+
+  // Um `cli` com o upload SEGURADO: o teste solta cada `/anexos?nome=` na hora que escolher,
+  // em vez do `aoBuscar` devolver na hora (mesmo desenho do `comEspiao`, adaptado para o
+  // upload). `segurar(promessa)` trava o GET `api/abas` também — é o que o AE6 usa para
+  // pendurar o `recarregarPainel` no meio da espera do anexo.
+  const montarAE = () => {
+    const turnos = [];
+    const uploads = [];
+    let segurarAbas = null;
+    const cli = carregarCliente({ aoBuscar: async (rota, opcoes) => {
+      const r = String(rota);
+      if (r.includes('/anexos?nome=')) {
+        const nome = decodeURIComponent(r.split('nome=')[1]);
+        const ok = await new Promise((soltar) => uploads.push({ nome, soltar }));
+        return ok ? { arquivo: `/fixture/anexos/${nome}`, nome } : { __status: 500, erro: 'falhou (fixture)' };
+      }
+      if (/\/turnos$/.test(r)) { turnos.push(JSON.parse(opcoes.body)); return { enviado: true }; }
+      if (r.startsWith('api/abas')) {
+        if (segurarAbas) await segurarAbas;
+        return { abas: [{ chave: 'aba-ae', titulo: 'ae', cwd: '/fixture', temClaude: true, temAgente: true, rodando: false, sessaoId: 'sess-ae', atualizadoEm: 1 }] };
+      }
+      return { painel: true, jobs: [] };
+    } });
+    return { cli, turnos, uploads, segurar: (p) => { segurarAbas = p; } };
+  };
+
+  await rodarGrupo('AE1: dois anexos subindo + texto — o Enviar ESPERA e manda os dois quando os dois terminam', async () => {
+    const { cli, turnos, uploads } = montarAE();
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-ae');
+    const painel = cli.painelAtual();
+    painel.entrada.value = 'com duas';
+    cli.subirArquivo(painel, { name: 'a.txt', type: 'text/plain' });
+    cli.subirArquivo(painel, { name: 'b.txt', type: 'text/plain' });
+    await respirarAE();
+    const p = cli.enviar(painel);
+    await respirarAE();
+    tudoOk &= ok(turnos.length === 0, `AE1: nenhum turno ainda — o Enviar está esperando os dois anexos (achei ${turnos.length})`);
+    const avisosAntes = painel.fita.filhos.filter((x) => String(x.className).includes('bolha-aviso'));
+    tudoOk &= ok(avisosAntes.length === 1, `AE1: exatamente 1 bolha-aviso enquanto espera (achei ${avisosAntes.length})`);
+    uploads[0].soltar(true);
+    uploads[1].soltar(true);
+    await p;
+    tudoOk &= ok(turnos.length === 1, `AE1: o turno saiu depois que os dois terminaram (achei ${turnos.length})`);
+    const anexosDoTurno = (turnos[0] && turnos[0].anexos) || [];
+    tudoOk &= ok(anexosDoTurno.length === 2 && anexosDoTurno[0] === '/fixture/anexos/a.txt' && anexosDoTurno[1] === '/fixture/anexos/b.txt',
+      `AE1: os 2 caminhos corretos no turno, na ordem (achei ${JSON.stringify(anexosDoTurno)})`);
+    const avisosDepois = painel.fita.filhos.filter((x) => String(x.className).includes('bolha-aviso'));
+    tudoOk &= ok(avisosDepois.length === 0, 'AE1: nenhuma bolha-aviso sobrou na fita');
+    tudoOk &= ok(painel.esperandoAnexo == null, 'AE1: painel.esperandoAnexo voltou a null');
+  });
+
+  await rodarGrupo('AE2: dois toques em Enviar durante a espera não duplicam o turno', async () => {
+    const { cli, turnos, uploads } = montarAE();
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-ae');
+    const painel = cli.painelAtual();
+    painel.entrada.value = 'um anexo so';
+    cli.subirArquivo(painel, { name: 'a.txt', type: 'text/plain' });
+    await respirarAE();
+    const p1 = cli.enviar(painel);
+    await respirarAE();
+    const p2 = cli.enviar(painel);
+    await respirarAE();
+    uploads[0].soltar(true);
+    await Promise.all([p1, p2]);
+    tudoOk &= ok(turnos.length === 1, `AE2: um único turno mesmo com dois toques durante a espera (achei ${turnos.length})`);
+  });
+
+  await rodarGrupo('AE3: o upload falha DURANTE a espera — recusa visível, nada se perde; depois do × o texto sai sozinho', async () => {
+    const { cli, turnos, uploads } = montarAE();
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-ae');
+    const painel = cli.painelAtual();
+    painel.entrada.value = 'nao sai';
+    cli.subirArquivo(painel, { name: 'c.txt', type: 'text/plain' });
+    await respirarAE();
+    const p = cli.enviar(painel);
+    await respirarAE();
+    uploads[0].soltar(false);
+    await p;
+    tudoOk &= ok(turnos.length === 0, `AE3: nenhum turno com o upload falho (achei ${turnos.length})`);
+    const errosDepois = painel.fita.filhos.filter((x) => String(x.className).includes('bolha-erro'));
+    tudoOk &= ok(errosDepois.some((x) => /não subiu/.test(x.textContent)), 'AE3: bolha-erro avisando que o anexo não subiu');
+    tudoOk &= ok(painel.anexos[0]?.estado === 'erro', `AE3: o anexo ficou em erro (achei ${painel.anexos[0]?.estado})`);
+    tudoOk &= ok(painel.entrada.value === 'nao sai', 'AE3: o texto continua na caixa');
+    tudoOk &= ok(painel.esperandoAnexo == null, 'AE3: painel.esperandoAnexo voltou a null');
+
+    acharTiraAE(painel)?.onclick();
+    await cli.enviar(painel);
+    tudoOk &= ok(turnos.length === 1 && !((turnos[0] || {}).anexos || []).length,
+      `AE3: depois do × um novo Enviar manda o texto, sem anexo (achei ${JSON.stringify(turnos[0])})`);
+  });
+
+  await rodarGrupo('AE4: caixa vazia — com anexo pronto avisa; sem anexo nenhum continua sem fazer nada (comportamento de hoje)', async () => {
+    const a = montarAE();
+    await a.cli.carregarAbas();
+    await a.cli.abrirAba('aba-ae');
+    const painelA = a.cli.painelAtual();
+    const subida = a.cli.subirArquivo(painelA, { name: 'd.txt', type: 'text/plain' });
+    await respirarAE();
+    a.uploads[0].soltar(true);
+    await subida;
+    await a.cli.enviar(painelA);
+    tudoOk &= ok(a.turnos.length === 0, `AE4(a): nenhum turno com a caixa vazia (achei ${a.turnos.length})`);
+    const errosA = painelA.fita.filhos.filter((x) => String(x.className).includes('bolha-erro'));
+    tudoOk &= ok(errosA.some((x) => /Escreva uma mensagem/.test(x.textContent)), 'AE4(a): bolha-erro pedindo o texto');
+    tudoOk &= ok(painelA.anexos.length === 1, 'AE4(a): o anexo continua na caixa');
+
+    const b = montarAE();
+    await b.cli.carregarAbas();
+    await b.cli.abrirAba('aba-ae');
+    const painelB = b.cli.painelAtual();
+    const filhosAntes = painelB.fita.filhos.length;
+    await b.cli.enviar(painelB);
+    tudoOk &= ok(b.turnos.length === 0, `AE4(b): nenhum turno com a caixa vazia e sem anexo (achei ${b.turnos.length})`);
+    tudoOk &= ok(painelB.fita.filhos.length === filhosAntes, 'AE4(b): o número de filhos da fita não mudou');
+  });
+
+  await rodarGrupo('AE5: o × durante a espera CANCELA o envio automático — não dispara o texto sem avisar', async () => {
+    const { cli, turnos, uploads } = montarAE();
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-ae');
+    const painel = cli.painelAtual();
+    painel.entrada.value = 'desisto da foto';
+    cli.subirArquivo(painel, { name: 'e.txt', type: 'text/plain' });   // nunca solto
+    await respirarAE();
+    let resolveu = false;
+    const p = cli.enviar(painel);
+    p.then(() => { resolveu = true; });
+    await respirarAE();
+    const avisosAntes = painel.fita.filhos.filter((x) => String(x.className).includes('bolha-aviso'));
+    tudoOk &= ok(avisosAntes.length === 1, `AE5: a bolha-aviso existe ANTES do × (achei ${avisosAntes.length})`);
+    tudoOk &= ok(resolveu === false, 'AE5: o enviar() ainda está esperando — não voltou na hora (o código antigo voltaria direto)');
+
+    acharTiraAE(painel)?.onclick();
+    await p;
+    tudoOk &= ok(turnos.length === 0, `AE5: nenhum turno saiu — o × foi desistência, não "manda sem ela" (achei ${turnos.length})`);
+    const avisosDepois = painel.fita.filhos.filter((x) => String(x.className).includes('bolha-aviso'));
+    tudoOk &= ok(avisosDepois.length === 0, 'AE5: a bolha-aviso some depois do ×');
+    tudoOk &= ok(painel.entrada.value === 'desisto da foto', 'AE5: o texto continua na caixa');
+    tudoOk &= ok(painel.esperandoAnexo == null, 'AE5: painel.esperandoAnexo voltou a null');
+
+    await cli.enviar(painel);
+    tudoOk &= ok(turnos.length === 1 && turnos[0].texto === 'desisto da foto' && !((turnos[0].anexos || []).length),
+      `AE5: o próximo Enviar manda o texto sozinho, sem anexo (achei ${JSON.stringify(turnos[0])})`);
+  });
+
+  await rodarGrupo('AE6: recarregar no meio da espera não esvazia os anexos — o turno sai com a foto quando o upload termina', async () => {
+    const montado = montarAE();
+    const { cli, turnos, uploads } = montado;
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-ae');
+    const painel = cli.painelAtual();
+    painel.entrada.value = 'reload no meio';
+    cli.subirArquivo(painel, { name: 'f.txt', type: 'text/plain' });
+    await respirarAE();
+    const p = cli.enviar(painel);
+    await respirarAE();
+    let soltarAbas;
+    montado.segurar(new Promise((r) => { soltarAbas = r; }));
+    const selo0 = painel.seloComposicao;
+    const rec = cli.recarregarPainel(painel);
+    const selo1 = painel.seloComposicao;   // medido JÁ — antes de soltar o upload, que também mexe no selo
+    await respirarAE();
+    uploads[0].soltar(true);
+    await p;   // o reenvio acontece com o reload ainda pendurado
+    soltarAbas();
+    await rec;
+    tudoOk &= ok(turnos.length === 1, `AE6: o turno saiu com a foto, mesmo com o reload no meio (achei ${turnos.length})`);
+    tudoOk &= ok(((turnos[0] && turnos[0].anexos) || []).length === 1, `AE6: com 1 anexo (achei ${JSON.stringify(turnos[0])})`);
+    tudoOk &= ok(selo1 > selo0, `AE6: painel.seloComposicao subiu já na chamada de recarregarPainel (${selo0} → ${selo1})`);
+  });
+
+  await rodarGrupo('AE7: × numa de duas fotos e Enviar de novo — o toque novo DECIDE, a outra foto vai (painel de execução, Codex)', async () => {
+    // O furo que o AE5 (um anexo só) não via: o 2º toque caía no ramo "já esperando" e só
+    // redesenhava o aviso; quando a outra foto terminava, a espera antiga via o anexo tirado e
+    // cancelava — o toque que veio DEPOIS do × era engolido. Vale a última ação do usuário.
+    const { cli, turnos, uploads } = montarAE();
+    await cli.carregarAbas();
+    await cli.abrirAba('aba-ae');
+    const painel = cli.painelAtual();
+    painel.entrada.value = 'fica so a segunda';
+    cli.subirArquivo(painel, { name: 'g1.txt', type: 'text/plain' });   // vai ser tirada, nunca solta
+    cli.subirArquivo(painel, { name: 'g2.txt', type: 'text/plain' });
+    await respirarAE();
+    const p1 = cli.enviar(painel);
+    await respirarAE();
+    acharTiraAE(painel)?.onclick();                 // tira a PRIMEIRA (g1)
+    await respirarAE();
+    const p2 = cli.enviar(painel);                  // e toca Enviar de novo
+    await respirarAE();
+    tudoOk &= ok(turnos.length === 0, `AE7: nada sai antes da g2 terminar (achei ${turnos.length})`);
+    uploads.find((u) => u.nome === 'g2.txt').soltar(true);
+    await Promise.all([p1, p2]);
+    const anexos7 = (turnos[0] && turnos[0].anexos) || [];
+    tudoOk &= ok(turnos.length === 1 && turnos[0].texto === 'fica so a segunda'
+      && anexos7.length === 1 && anexos7[0] === '/fixture/anexos/g2.txt',
+      `AE7: um turno, com o texto e SÓ a g2 (achei ${JSON.stringify(turnos)})`);
+    tudoOk &= ok(painel.esperandoAnexo == null, 'AE7: painel.esperandoAnexo voltou a null');
+  });
+
+  // ── Responder a pergunta pelo TECLADO FÍSICO (card responder-a-pergunta-pelo-teclado) ──
+  //
+  // Spec: docs/superpowers/specs/2026-09-18-responder-a-pergunta-pelo-teclado-design.md.
+  // Ouvinte NOVO, irmão do "atalhos de teclado — o motor" acima — não compartilha o
+  // `dispararTecla` daquele grupo: aqui o `target` é PARÂMETRO OBRIGATÓRIO, nunca o default
+  // `porIdDe(cli, 'entrada')` (que seria um `<div>` fantasma do `getElementById` do molde,
+  // fora da árvore — e com ele T3/T10 passariam mesmo sem a guarda existir).
+  //
+  // (d) A guarda 8 do ouvinte novo começa LIGADA no DOM de mentira: `app` nasce `<div>`
+  // vazio (`dataset.vista` undefined) enquanto o painel É criado por `criarPainel` direto
+  // (sem passar por `abrirAba`, que é quem escreve `app.dataset.vista = 'chat'`). Por isso
+  // TODO caso T0…T10 monta `app.dataset.vista = 'chat'` explicitamente antes de disparar;
+  // só T11a/T11b mexem nisso de propósito.
+  const dispararTeclaFisica = (cli, propriedades) => {
+    if (!propriedades || !propriedades.target) {
+      throw new Error('dispararTeclaFisica: target é obrigatório — sem isso T3/T10 passariam sem a guarda');
+    }
+    const evento = {
+      key: '', code: '', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+      repeat: false, isComposing: false, getModifierState() { return false; },
+      chamouPreventDefault: false,
+      ...propriedades,
+    };
+    evento.preventDefault = () => { evento.chamouPreventDefault = true; };
+    for (const fn of cli.ouvintes.get('keydown') || []) fn(evento);
+    return evento;
+  };
+
+  await rodarGrupo('T0: o molde do DOM de mentira responde tagName (R2 — sem isto as guardas de campo/botão ficam verde mentiroso)', async () => {
+    tudoOk &= ok(criarElemento('textarea').tagName === 'TEXTAREA', 'T0: textarea → TEXTAREA');
+    tudoOk &= ok(criarElemento('div').tagName === 'DIV', 'T0: div → DIV');
+  });
+
+  await rodarGrupo('T1/T2: o mapa é FECHADO — as seis teclas viram POST, o resto não vira nada (D-A)', async () => {
+    const teclasPedidas = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (/\/teclas$/.test(String(rota))) {
+          teclasPedidas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    const corpo = criarElemento('div');   // "alvo no body": fora de qualquer painel, não é campo de escrita
+
+    for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape']) {
+      dispararTeclaFisica(cli, { key, target: corpo });
+    }
+    tudoOk &= ok(JSON.stringify(teclasPedidas) === JSON.stringify(['Up', 'Down', 'Left', 'Right', 'Enter', 'Escape']),
+      `T1: as seis teclas viram POST com o valor certo, na ordem (${teclasPedidas.join(', ')})`);
+
+    for (const key of ['a', 'Tab', 'F5', 'PageDown']) {
+      dispararTeclaFisica(cli, { key, target: corpo });
+    }
+    tudoOk &= ok(teclasPedidas.length === 6,
+      `T2: tecla fora das seis não gera requisição — zero POST a mais (${teclasPedidas.length})`);
+  });
+
+  // T3 — a caixa de escrita e o teclado, POR PAINEL. A régua não é "é campo de escrita?", é
+  // "essa caixa está utilizável?": com a pergunta aberta o envio é recusado (`lib/abas.js`) e
+  // o Enviar está travado, então a seta ali é do MENU, não do histórico.
+  //
+  // A primeira versão parava em T3a e ficava verde — enquanto o teclado não respondia NADA no
+  // navegador real, porque `abrirAba()` foca a `.entrada` (`public/app.js:1806`) e toda seta
+  // morria na guarda. Quem pegou foi o smoke (`testes/smoke-teclado-pergunta.py`), não o gate.
+  // T3b é esse buraco virado assert.
+  await rodarGrupo('T3: a caixa só é dona do teclado enquanto ela é utilizável (D-C, por painel)', async () => {
+    const chamadas = [];
+    const cli = carregarCliente({
+      semPainel: true,
+      aoBuscar: (rota, opcoes = {}) => {
+        const m = String(rota).match(/^api\/abas\/([\w-]+)\/teclas$/);
+        if (m) {
+          chamadas.push({ chave: m[1], tecla: JSON.parse(String(opcoes.body || '{}')).tecla });
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const semMenu = cli.criarPainel('t3-sem-menu', {});
+    const comMenu = cli.criarPainel('t3-com-menu', {});
+    comMenu.perguntando = true;
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    tudoOk &= ok(semMenu.entrada.tagName === 'TEXTAREA', 'T3 pré-condição: a .entrada é mesmo um TEXTAREA');
+
+    // T3a — cursor na caixa de um painel SEM menu: a seta é da navegação de histórico dele.
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: semMenu.entrada });
+    tudoOk &= ok(chamadas.length === 0,
+      'T3a: cursor na caixa de um painel SEM pergunta — zero POST, a seta é do histórico da caixa');
+
+    // T3b — cursor na caixa do painel COM menu aberto: essa caixa está travada, a seta é do menu.
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: comMenu.entrada });
+    tudoOk &= ok(chamadas.length === 1 && chamadas[0].chave === 't3-com-menu',
+      `T3b: cursor na caixa do painel COM pergunta — a seta responde o MENU (${JSON.stringify(chamadas)})`);
+
+    // T3c — e continua por painel: escrever em A enquanto B pergunta segue protegido.
+    dispararTeclaFisica(cli, { key: 'ArrowUp', target: semMenu.entrada });
+    tudoOk &= ok(chamadas.length === 1,
+      'T3c: com B perguntando, o cursor na caixa de A continua protegido — zero POST a mais');
+  });
+
+  await rodarGrupo('T4: quem responde é o painel do CURSOR, e na falta dele o SELECIONADO (D-B)', async () => {
+    const chamadas = [];
+    const cli = carregarCliente({
+      semPainel: true,
+      aoBuscar: (rota, opcoes = {}) => {
+        const m = String(rota).match(/^api\/abas\/([\w-]+)\/teclas$/);
+        if (m) {
+          chamadas.push({ chave: m[1], tecla: JSON.parse(String(opcoes.body || '{}')).tecla });
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painelA = cli.criarPainel('t4-painel-a', {});
+    const painelB = cli.criarPainel('t4-painel-b', {});
+    painelB.perguntando = true;   // a pergunta está em B
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    const corpo = criarElemento('div');
+    // O botão de B pescado do PRÓPRIO painel — `painel.pergunta.querySelector(...)`, o
+    // caminho do fato (a): `painel.perguntaTeclas` não existe fora do closure de `criarPainel`.
+    const botaoDownDeB = painelB.pergunta.querySelector('[data-tecla="Down"]');
+    tudoOk &= ok(Boolean(botaoDownDeB), 'T4 pré-condição: o botão ↓ de B foi encontrado por painel.pergunta.querySelector');
+
+    // T4a — A selecionado, alvo fora de qualquer painel: zero POST (não responde o painel errado)
+    cli.focar(painelA);
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo });
+    tudoOk &= ok(chamadas.length === 0, 'T4a: pergunta em B, A selecionado, alvo no corpo — zero POST');
+
+    // T4b — A selecionado, alvo = botão de B: POST com a chave de B (o ramo painelDoAlvo)
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: botaoDownDeB });
+    tudoOk &= ok(chamadas.length === 1 && chamadas[0].chave === 't4-painel-b',
+      `T4b: A selecionado, alvo = botão de B — POST com a chave de B (${JSON.stringify(chamadas)})`);
+
+    // T4c — B selecionado, alvo fora de qualquer painel: POST com a chave de B (o ramo painelAtual)
+    cli.focar(painelB);
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo });
+    tudoOk &= ok(chamadas.length === 2 && chamadas[1].chave === 't4-painel-b',
+      `T4c: B selecionado, alvo no corpo — POST com a chave de B (${JSON.stringify(chamadas)})`);
+  });
+
+  await rodarGrupo('T5/T6: autorepeat e combinação com modificador não geram requisição (R4)', async () => {
+    const teclasPedidas = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (/\/teclas$/.test(String(rota))) {
+          teclasPedidas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    const corpo = criarElemento('div');
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo, repeat: true });
+    tudoOk &= ok(teclasPedidas.length === 0, 'T5: e.repeat — segurar a seta não vira rajada de POST');
+    dispararTeclaFisica(cli, { key: 'ArrowUp', target: corpo, altKey: true });
+    tudoOk &= ok(teclasPedidas.length === 0, 'T6: Alt+ArrowUp é atalho, não resposta de menu — zero POST');
+  });
+
+  await rodarGrupo('T7: <dialog> aberto engole a tecla (R3 — Escape num prompt de confiança fecharia o agente)', async () => {
+    const teclasPedidas = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (/\/teclas$/.test(String(rota))) {
+          teclasPedidas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    porIdDe(cli, 'dialogo-diagnostico').open = true;
+    const corpo = criarElemento('div');
+    dispararTeclaFisica(cli, { key: 'Escape', target: corpo });
+    tudoOk &= ok(teclasPedidas.length === 0, 'T7: com um dos DIALOGOS aberto, a tecla nua não chega na pane');
+  });
+
+  await rodarGrupo('T8: preventDefault só quando a tecla VIRA resposta de menu', async () => {
+    const cli = carregarCliente({
+      aoBuscar: (rota) => (/\/teclas$/.test(String(rota)) ? { apertado: true, esperando: true, tela: 'tela' } : { painel: true, jobs: [] }),
+    });
+    const painel = cli.painelAtual();
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    const corpo = criarElemento('div');
+
+    painel.perguntando = true;
+    const comPergunta = dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo });
+    tudoOk &= ok(comPergunta.chamouPreventDefault === true,
+      'T8: com pergunta aberta, preventDefault É chamado — senão a página rolaria atrás do menu');
+
+    painel.perguntando = false;
+    const semPergunta = dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo });
+    tudoOk &= ok(semPergunta.chamouPreventDefault === false,
+      'T8: sem pergunta aberta, preventDefault NÃO é chamado — não engole a rolagem da conversa à toa');
+  });
+
+  await rodarGrupo('T10: Enter com o alvo num botão focado manda UMA tecla, não duas (R1)', async () => {
+    const teclasPedidas = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (/\/teclas$/.test(String(rota))) {
+          teclasPedidas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    const botaoDown = porIdDe(cli, 'tecla-down');
+    tudoOk &= ok(botaoDown.tagName === 'BUTTON', 'T10 pré-condição: o botão ↓ é mesmo um BUTTON');
+    dispararTeclaFisica(cli, { key: 'Enter', target: botaoDown });
+    tudoOk &= ok(teclasPedidas.length === 0,
+      'T10: Enter com o foco no botão ↓ — o OUVINTE não chama apertarTecla; quem age é o clique nativo');
+  });
+
+  await rodarGrupo('T11: a tecla não responde uma pergunta que não está na tela (R7 — as DUAS condições)', async () => {
+    const teclasPedidas = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (/\/teclas$/.test(String(rota))) {
+          teclasPedidas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    const app = porIdDe(cli, 'app');
+    const corpo = criarElemento('div');
+
+    // T11a — celular: vista='lista' E a media query de celular verdadeira ⇒ o .chat some ⇒ zero POST
+    app.dataset.vista = 'lista';
+    cli.midia['(max-width: 760px)'] = true;
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo });
+    tudoOk &= ok(teclasPedidas.length === 0,
+      'T11a: vista=lista + media query de celular — o menu não está na tela, zero POST');
+
+    // T11b — desktop: vista='lista' MAS a media query falsa ⇒ o .chat CONTINUA visível ⇒ POST normal
+    cli.midia['(max-width: 760px)'] = false;
+    dispararTeclaFisica(cli, { key: 'ArrowDown', target: corpo });
+    tudoOk &= ok(teclasPedidas.length === 1,
+      'T11b: vista=lista no DESKTOP (media query falsa) — o menu continua visível, a tecla continua valendo');
+  });
+
+  await rodarGrupo('T12: Enter durante composição de IME não é resposta de menu (R6)', async () => {
+    const teclasPedidas = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (/\/teclas$/.test(String(rota))) {
+          teclasPedidas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
+          return { apertado: true, esperando: true, tela: 'tela' };
+        }
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    porIdDe(cli, 'app').dataset.vista = 'chat';   // (d)
+    const corpo = criarElemento('div');
+    dispararTeclaFisica(cli, { key: 'Enter', target: corpo, isComposing: true });
+    tudoOk &= ok(teclasPedidas.length === 0,
+      'T12: Enter fechando um candidato de IME (celular) não vira resposta de menu — zero POST');
+  });
+
+  // T13 — o efeito colateral que T3b abriu, e que NENHUM assert daqui pegava: o `keydown` da
+  // `.entrada` (`public/app.js:1443`) roda na fase de ALVO, antes do ouvinte do `document`. Com
+  // a pergunta aberta e o cursor na caixa, a mesma tecla fazia as DUAS coisas — respondia o
+  // menu E navegava o histórico, escrevendo a mensagem anterior dentro da caixa.
+  //
+  // Quem pegou foi o PRINT da entrega (`depois-1600x1000.png` saiu com "Responda OK" na caixa
+  // e o "antes" com ela vazia), depois de o painel de execução apontar. Os asserts eram cegos
+  // por construção: `dispararTeclaFisica` só invoca os ouvintes do `document`, e este handler
+  // vive no elemento. Por isso T13 dispara NA CAIXA, não no documento.
+  await rodarGrupo('T13: com a pergunta aberta e a caixa VAZIA, ela CEDE a tecla ao menu', async () => {
+    const chamadasT13 = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota) => {
+        chamadasT13.push(String(rota));
+        if (/\/teclas$/.test(String(rota))) return { apertado: true, esperando: true, tela: 'tela' };
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.historicoEntrada = ['mensagem anterior'];
+    painel.entrada.value = 'rascunho';
+
+    // Sem pergunta aberta, a caixa continua dona das setas: o histórico navega.
+    painel.perguntando = false;
+    painel.entrada.disparar('keydown', { key: 'ArrowUp', shiftKey: false, preventDefault() {} });
+    const navegouSemMenu = painel.entrada.value !== 'rascunho';
+    tudoOk &= ok(navegouSemMenu,
+      `T13a: SEM pergunta aberta a caixa segue navegando o histórico (valor: ${JSON.stringify(painel.entrada.value)})`);
+
+    // Com a pergunta aberta e a caixa VAZIA (card escrever-texto-na-pergunta-aberta, §5.3:
+    // a régua olha `painel.textoNaCaixa`, não `entrada.value` — os dois são zerados aqui de
+    // propósito, como faria o `input` de uma caixa apagada de verdade), a mesma tecla não
+    // mexe na caixa — ela é do menu. `posHistorico = null` NÃO é detalhe: sem zerar, T13b
+    // passaria por ACIDENTE — o `navegarHistorico` do caso anterior deixou a posição em 0, e
+    // daí um ArrowUp cai em `alvo < 0` e devolve sem tocar no valor (`public/app.js:4236`).
+    // Medido: com a guarda removida, T13b continuava verde. Assert que passa pelo motivo
+    // errado não é assert.
+    painel.posHistorico = null;
+    painel.entrada.value = '';
+    painel.textoNaCaixa = '';
+    painel.perguntando = true;
+    painel.entrada.disparar('keydown', { key: 'ArrowUp', shiftKey: false, preventDefault() {} });
+    tudoOk &= ok(painel.entrada.value === '',
+      `T13b: COM pergunta aberta e caixa VAZIA, ArrowUp NÃO puxa o histórico (valor: ${JSON.stringify(painel.entrada.value)})`);
+
+    // Zero POST de `/turnos` é o que prova que `enviar()` NÃO rodou — `preventDefault` sozinho
+    // não prova nada aqui, porque o ouvinte do `document` (que responde ao Enter do MENU)
+    // também chama `preventDefault`, e um `enviou` amarrado a ele mediria a coisa errada.
+    const antesDoEnterVazio = chamadasT13.length;
+    painel.entrada.disparar('keydown', { key: 'Enter', shiftKey: false, preventDefault() {} });
+    tudoOk &= ok(!chamadasT13.slice(antesDoEnterVazio).some((r) => /\/turnos$/.test(r)) && painel.entrada.value === '',
+      `T13c: COM pergunta aberta e caixa VAZIA, Enter na caixa não dispara envio — quem responde é o menu (achei ${JSON.stringify(chamadasT13.slice(antesDoEnterVazio))})`);
+  });
+
+  // T14 — a régua da tecla com a caixa CHEIA (card escrever-texto-na-pergunta-aberta, §5.3).
+  // Com texto, a caixa é DONA da tecla: `e.stopPropagation()` corta o caminho até o
+  // `document`, e é por isso que o mecanismo de bubbling de `criarElemento.disparar`
+  // (`testes/gate-ui.js`, achado #77 metade 2) é pré-condição destes asserts — sem ele "o
+  // document não viu" passaria por não existir caminho nenhum, não por interrupção de
+  // verdade.
+  await rodarGrupo('T14: com a pergunta aberta e a caixa COM TEXTO, ela é dona da tecla', async () => {
+    const chamadasT14 = [];
+    const cli = carregarCliente({
+      aoBuscar: (rota) => {
+        chamadasT14.push(String(rota));
+        if (/\/teclas$/.test(String(rota))) return { apertado: true, esperando: true, tela: 'tela' };
+        return { painel: true, jobs: [] };
+      },
+    });
+    const painel = cli.painelAtual();
+    cli.midia['(pointer: coarse)'] = false;   // ponteiro fino: Enter sem Shift ENVIA
+    // O espião roda DEPOIS dos ouvintes reais do `document` (é registrado por último) —
+    // ele não muda o que eles fazem, só prova se a tecla chegou até ali.
+    let documentoViu = false;
+    cli.document.addEventListener('keydown', () => { documentoViu = true; });
+
+    const preparar = (texto) => {
+      painel.perguntando = true;
+      painel.entrada.value = texto;
+      painel.textoNaCaixa = texto;
+      painel.posHistorico = null;
+      painel.entrada.setSelectionRange(texto.length, texto.length);
+      documentoViu = false;
+      return chamadasT14.length;
+    };
+
+    // Enter (ponteiro fino) com texto ⇒ enviar() CHAMADO (POST /turnos) e o document NÃO viu
+    // a tecla — mesmo `escreverNaCaixa('')` esvaziando a caixa DENTRO de `enviar()`, ANTES
+    // de o evento terminar de rodar (a decisão já foi tomada, na entrada da função).
+    {
+      const antes = preparar('mensagem pronta');
+      painel.entrada.disparar('keydown', { key: 'Enter', shiftKey: false, preventDefault() {} });
+      await new Promise((pronto) => { setImmediate(pronto); });
+      tudoOk &= ok(chamadasT14.slice(antes).some((r) => /\/turnos$/.test(r)),
+        `T14a: Enter com texto CHAMA enviar() — POST /turnos (achei ${JSON.stringify(chamadasT14.slice(antes))})`);
+      tudoOk &= ok(documentoViu === false,
+        'T14a: e o document NÃO viu a tecla — inclusive depois de escreverNaCaixa(\'\') esvaziar a caixa');
+    }
+
+    // Ctrl+Enter com texto ⇒ ZERO envios, e o ouvinte de atalhos RECEBE a tecla (achado do
+    // painel: o perigo não era só a propagação, era o `enviar()` do Enter físico — cortar a
+    // propagação sem repetir a guarda de modificador aqui transformaria Ctrl+Enter em envio).
+    {
+      const antes = preparar('mensagem pronta');
+      painel.entrada.disparar('keydown', { key: 'Enter', ctrlKey: true, shiftKey: false, preventDefault() {} });
+      tudoOk &= ok(!chamadasT14.slice(antes).some((r) => /\/turnos$/.test(r)),
+        `T14b: Ctrl+Enter com texto — ZERO envios (achei ${JSON.stringify(chamadasT14.slice(antes))})`);
+      tudoOk &= ok(documentoViu === true, 'T14b: e o ouvinte de atalhos RECEBE a tecla (não foi cortada)');
+    }
+
+    // Alt+ArrowUp com texto ⇒ idem — sem tecla para o menu (zero POST /teclas).
+    {
+      const antes = preparar('mensagem pronta');
+      painel.entrada.disparar('keydown', { key: 'ArrowUp', altKey: true, shiftKey: false, preventDefault() {} });
+      tudoOk &= ok(!chamadasT14.slice(antes).some((r) => /\/teclas$/.test(r)),
+        `T14c: Alt+ArrowUp com texto — ZERO tecla para o menu (achei ${JSON.stringify(chamadasT14.slice(antes))})`);
+      tudoOk &= ok(documentoViu === true, 'T14c: e o ouvinte de atalhos RECEBE a tecla');
+    }
+
+    // Enter de IME (`isComposing: true`) com texto ⇒ ZERO envios — hoje é zero; sem a
+    // guarda nova passaria a ser UM, e esse UM ainda dispararia o Escape do gesto no servidor.
+    {
+      const antes = preparar('mensagem pronta');
+      painel.entrada.disparar('keydown', { key: 'Enter', isComposing: true, shiftKey: false, preventDefault() {} });
+      tudoOk &= ok(!chamadasT14.slice(antes).some((r) => /\/turnos$/.test(r)),
+        `T14d: Enter de IME com texto — ZERO envios (achei ${JSON.stringify(chamadasT14.slice(antes))})`);
+    }
+
+    // Escape com texto ⇒ fica na caixa (sai do histórico, `public/app.js:1486-1491`) e NÃO
+    // vai para o menu — Escape está nas seis, e o painel apontou que faltava este caso.
+    {
+      preparar('rascunho no meio da digitação');
+      painel.historicoEntrada = ['mensagem anterior'];
+      painel.rascunho = 'rascunho no meio da digitação';
+      painel.posHistorico = 0;   // já estava navegando o histórico
+      documentoViu = false;
+      const antes = chamadasT14.length;
+      painel.entrada.disparar('keydown', { key: 'Escape', shiftKey: false, preventDefault() {} });
+      tudoOk &= ok(painel.entrada.value === 'rascunho no meio da digitação' && painel.posHistorico === null,
+        `T14e: Escape com texto sai do histórico e FICA na caixa (valor: ${JSON.stringify(painel.entrada.value)})`);
+      tudoOk &= ok(documentoViu === false && !chamadasT14.slice(antes).some((r) => /\/teclas$/.test(r)),
+        'T14e: e NÃO vai para o menu — o document não viu a tecla');
+    }
+
+    // ArrowUp no MEIO de texto multilinha ⇒ move o cursor, não navega histórico — a régua
+    // olha a BORDA do cursor, não só se a caixa tem texto.
+    {
+      const texto = 'primeira linha\nsegunda linha';
+      preparar(texto);
+      painel.historicoEntrada = ['mensagem anterior'];
+      painel.posHistorico = null;
+      const naSegundaLinha = texto.indexOf('\nsegunda') + 5;   // depois do \n, no meio
+      painel.entrada.setSelectionRange(naSegundaLinha, naSegundaLinha);
+      painel.entrada.disparar('keydown', { key: 'ArrowUp', shiftKey: false, preventDefault() {} });
+      tudoOk &= ok(painel.entrada.value === texto && painel.posHistorico === null,
+        `T14f: ArrowUp no meio de texto multilinha move o cursor, não navega histórico (valor: ${JSON.stringify(painel.entrada.value)})`);
+    }
+  });
+
+  await rodarGrupo('T9: a luz do botão (R8) — dois toques rápidos no ↓ não apagam a luz cedo', async () => {
+    // "fetch pendurado" (a técnica de `testes/gate-ui.js:2451`): o `aoBuscar` devolve uma
+    // Promise que o TESTE controla, para as duas chamadas ficarem em voo ao mesmo tempo —
+    // exatamente o caso que a própria `apertarTecla` já declara esperado.
+    let resolver1;
+    let resolver2;
+    let chamada = 0;
+    const cli = carregarCliente({
+      aoBuscar: (rota) => {
+        if (!/\/teclas$/.test(String(rota))) return { painel: true, jobs: [] };
+        chamada += 1;
+        const minhaChamada = chamada;
+        return new Promise((resolve) => {
+          const resposta = { apertado: true, esperando: true, tela: 'tela' };
+          if (minhaChamada === 1) resolver1 = () => resolve(resposta);
+          else resolver2 = () => resolve(resposta);
+        });
+      },
+    });
+    const painel = cli.painelAtual();
+    painel.perguntando = true;
+    const botaoDown = painel.pergunta.querySelector('[data-tecla="Down"]');
+    tudoOk &= ok(botaoDown.dataset.apertada === undefined, 'T9 pré-condição: o botão nasce sem a marca');
+
+    const p1 = cli.apertarTecla(painel, 'Down');   // 1ª chamada, em voo (não espera)
+    const p2 = cli.apertarTecla(painel, 'Down');   // 2ª chamada, em voo — dois toques rápidos
+    tudoOk &= ok(botaoDown.dataset.apertada === '2',
+      `T9a: duas chamadas em voo — CONTADOR, não booleano (${botaoDown.dataset.apertada})`);
+
+    resolver1();
+    await p1;
+    tudoOk &= ok(botaoDown.dataset.apertada === '1',
+      `T9b: a PRIMEIRA volta, mas a luz SOBREVIVE — a segunda ainda está no ar (${botaoDown.dataset.apertada})`);
+
+    resolver2();
+    await p2;
+    tudoOk &= ok(botaoDown.dataset.apertada === undefined,
+      `T9c: só quando a SEGUNDA volta o atributo some (${botaoDown.dataset.apertada})`);
+  });
+
+  await rodarGrupo('C1: o contraste da tela da pane, sobre o fundo COMPOSTO da .pergunta (§4.4 da spec)', async () => {
+    // Passo 0 — a composição alfa que `testes/cor.js` não tem: `cor.paraRgb` só aceita
+    // `#rgb`/`#rrggbb` (`testes/cor.js:13-17`), e `--perigo-suave` é `rgba(...)`. Sem compor
+    // sobre `--fundo`, `cor.contraste(null, …)` dá `null` nas 12 paletas — o executor veria
+    // vermelho de 12, não o vermelho de 1 que este gate promete.
+    const comporAlfa = (rgba, fundoHex) => {
+      const m = String(rgba).match(/^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/);
+      const fundo = m && cor.paraRgb(fundoHex);
+      if (!m || !fundo) return null;
+      const [, r, g, b, a] = m.map(Number);
+      const canal = (c, f) => Math.round(c * a + f * (1 - a));
+      return `#${[canal(r, fundo[0]), canal(g, fundo[1]), canal(b, fundo[2])]
+        .map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+    };
+    tudoOk &= ok(comporAlfa('rgba(180, 99, 122, 0.1)', '#faf4ed') === '#f3e6e2',
+      'C1 sanidade: --perigo-suave do rose-pine-dawn sobre o --fundo dele compõe #f3e6e2');
+
+    // Passo 1 — QUAL variável a regra `.pergunta-tela` aplica em `color`, extraída do CSS —
+    // não uma cor escolhida pelo teste (senão o assert já seria verdadeiro hoje e não
+    // pegaria a regressão de voltar para `--texto-2`). Existem DUAS regras `.pergunta-tela`
+    // (a segunda, de celular, não declara `color`) — o extrator FALHA ALTO se achar `color`
+    // nas duas, em vez de escolher calado qual delas vale.
+    const blocosTela = cor.blocos(css).filter((b) => b.seletor === '.pergunta-tela');
+    const comCor = blocosTela
+      .map((b) => b.corpo.match(/(?<![\w-])color:\s*var\((--[\w-]+)\)/))
+      .filter(Boolean);
+    if (comCor.length !== 1) {
+      throw new Error(`C1: esperava EXATAMENTE 1 declaração de color em .pergunta-tela, achei ${comCor.length}`);
+    }
+    const variavelDeCor = comCor[0][1];
+
+    const paletasC1 = cor.paletas(css);
+    const raizC1 = paletasC1[0].variaveis;
+    const reprovadosC1 = [];
+    for (const t of paletasC1) {
+      const fundo = t.variaveis['--fundo'] || raizC1['--fundo'];
+      const perigoSuave = t.variaveis['--perigo-suave'] || raizC1['--perigo-suave'];
+      const fundoComposto = comporAlfa(perigoSuave, fundo);
+      const corTexto = t.variaveis[variavelDeCor] || raizC1[variavelDeCor];
+      const razao = fundoComposto && corTexto ? cor.contraste(corTexto, fundoComposto) : null;
+      if (!(razao >= 4.5)) reprovadosC1.push(`${t.rotulo} ${razao === null ? '?' : razao.toFixed(2)}:1`);
+    }
+    tudoOk &= ok(reprovadosC1.length === 0,
+      `C1: ${variavelDeCor} (a cor que .pergunta-tela REALMENTE usa) passa 4,5:1 sobre o fundo composto da .pergunta, nas 12 paletas${reprovadosC1.length ? ` — reprovam: ${reprovadosC1.join('; ')}` : ''}`);
+  });
+
   return Boolean(tudoOk);
 }
 
@@ -9561,6 +15310,21 @@ async function parteB() {
   const soCwd = await pedir('POST', '/api/abas', { cwd: '/tmp' });
   tudoOk &= ok(soCwd.status === 400,
     `POST /api/abas com cwd no lugar de projeto → 400 (${soCwd.status})`);
+
+  // Renomear (card `renomear-a-aba`): SÓ as recusas, pelo mesmo motivo do POST acima — o caminho
+  // feliz renomearia janela do socket de quem roda o gate. As quatro param ANTES de qualquer
+  // comando de tmux (`lib/abas.js`, `renomear`: chave e nome são validados primeiro), então valem
+  // contra qualquer servidor. O caminho feliz mora no `smoke-abas-tmux.js` (casos r1-r8).
+  for (const [rota, corpo, rotulo] of [
+    ['/api/abas/aba-p999999', { nome: '' }, 'nome vazio'],
+    ['/api/abas/aba-p999999', { nome: '   ' }, 'nome só de espaço'],
+    ['/api/abas/aba-p999999', { nome: 'a\\b' }, 'nome com barra invertida'],
+    ['/api/abas/lixo', { nome: 'x' }, 'chave malformada'],
+  ]) {
+    const r = await pedir('PATCH', rota, corpo);
+    tudoOk &= ok(r.status === 400 && r.corpo.erro !== 'rota desconhecida',
+      `PATCH ${rotulo} → 400 (${r.status}) ${JSON.stringify(r.corpo)}`);
+  }
 
   // A rota morta desde a D17 volta a falar com o navegador — e volta no hábito da casa:
   // caminho de disco não sai daqui. Procurar '/home/' na string deixaria passar um
@@ -9807,8 +15571,13 @@ async function parteB() {
         'e as porcentagens dele cabem em 0..100 — nunca os 2026% do total_token_usage');
       tudoOk &= ok(plano.codex.limites.every((l) => l.resetaEm === null || l.resetaEm > 1e12),
         'e o `resetaEm` é milissegundos, não os segundos crus do rollout (senão a tela diz 1970)');
-      tudoOk &= ok(typeof plano.codex.titulo === 'string' && typeof plano.codex.varias === 'boolean',
-        'com o título da aba que falou e o aviso de que há mais de uma');
+      // Card `codex-no-relatorio-de-tokens` (D6): `titulo` só é string com `fonte:'aba'` — com
+      // `fonte:'disco'` (nenhuma aba viva nesta máquina, mas há rollout no disco) ele é `null`
+      // de propósito, e o cliente escreve "do último uso" no lugar dele.
+      tudoOk &= ok((typeof plano.codex.titulo === 'string' || plano.codex.titulo === null) && typeof plano.codex.varias === 'boolean',
+        `com o título da aba que falou (ou null, vindo do disco) e o aviso de que há mais de uma (${JSON.stringify({ titulo: plano.codex.titulo, varias: plano.codex.varias })})`);
+      tudoOk &= ok(plano.codex.fonte === 'aba' || plano.codex.fonte === 'disco',
+        `e a fonte diz de onde veio o número — 'aba' ou 'disco' (veio ${plano.codex.fonte})`);
       tudoOk &= ok(!JSON.stringify(plano.codex).includes('/home/'),
         'e NENHUM caminho de disco vai junto — o cliente não precisa saber onde o rollout mora');
     }

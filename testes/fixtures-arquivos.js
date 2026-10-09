@@ -213,6 +213,8 @@ async function subirServidor({ porta, home, socket, binario, extras = {} }) {
     COCKPIT_TAILSCALE_SOCKET: socket,
     COCKPIT_BIN_TAILSCALE: binario,
     COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+    COCKPIT_LIDAS_DIR: path.join(os.tmpdir(), `cockpit-marca-lida-${process.pid}`), // pasta própria: sem ela um marcarLido gravaria no ~/.cockpit/lidas.json de produção (R2/#62). Quem usa este helper herda a linha sem repeti-la.
+    COCKPIT_MONITOR_DIR: path.join(os.tmpdir(), `cockpit-monitor-${process.pid}`), // pasta própria: o amostrador do monitor escreve desde o boot, e a env vence o HOME falso (#62/#82)
     ...extras,
   });
   const processo = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {

@@ -195,9 +195,12 @@ const W = Number(process.env.W), H = Number(process.env.H);
     const m1 = await print('01-nova-aba.png', '#dialogo-nova-aba', '#btn-nova-aba', true);
     if (!m1.existe) problemas.push('01: #dialogo-nova-aba não existe no DOM');
     else if (!m1.aberto) problemas.push('01: #dialogo-nova-aba não está aberto na hora do print');
+    // O <select> virou campo que filtra (card pesquisar-a-pasta-na-aba-nova): os projetos
+    // aparecem na lista ao focar o campo.
     const temProjeto = await pagina.evaluate(() => {
       const s = document.querySelector('#sel-projeto-novo');
-      return Boolean(s && s.options && s.options.length > 0);
+      if (s) s.focus();
+      return document.querySelectorAll('#lista-projeto-novo [role="option"]').length > 0;
     });
     if (!temProjeto) problemas.push('01: a lista de projetos está vazia no diálogo');
     const temCriar = await pagina.evaluate(() => Boolean(document.querySelector('#btn-criar-aba')));
@@ -206,13 +209,13 @@ const W = Number(process.env.W), H = Number(process.env.H);
     // 02 — criar a aba e voltar para a LISTA: é lá que o pino ⋯ mora.
     await pagina.evaluate((nome) => {
       const s = document.querySelector('#sel-projeto-novo');
-      if (s) { s.value = nome; s.dispatchEvent(new Event('change')); }
+      if (s) s.value = nome;
     }, PROJETO);
     if (!await clicar('#btn-criar-aba')) problemas.push('02: não deu para clicar no Criar');
     await espera(2500);
     await clicar('.painel .btn-voltar');
     await espera(1200);
-    const m2 = await print('02-lista-nascendo.png', '#abas', '.conversa-grupo[data-cwd] .conversa', false);
+    const m2 = await print('02-lista-nascendo.png', '#abas', '#lista-conversas .conversa', false);
     if (!m2.existe) problemas.push('02: a lista de abas não existe no DOM');
     if (!/⋯/.test(m2.texto || '')) problemas.push('02: o pino ⋯ não aparece na lista');
     // O texto virou "abrindo o agente" quando o cockpit deixou de ser só-Claude (f163225,
@@ -221,7 +224,7 @@ const W = Number(process.env.W), H = Number(process.env.H);
 
     // 03 — abrir a aba e tocar no fechar do cabeçalho da conversa.
     await pagina.evaluate(() => {
-      const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa'));
+      const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa'));
       const alvo = linhas.find((b) => /⋯/.test(b.textContent)) || linhas[0];
       if (alvo) alvo.click();
     });
@@ -296,7 +299,9 @@ function espera(ms) { return new Promise((r) => setTimeout(r, ms)); }
       COCKPIT_BIN_CLAUDE: '/bin/true',
       COCKPIT_CARENCIA_ABA_MS: '600000',
       COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+      COCKPIT_LIDAS_DIR: path.join(os.tmpdir(), `cockpit-marca-lida-${process.pid}`), // sem HOME falso aqui: sem isto um marcarLido gravaria no ~/.cockpit/lidas.json de produção (R2/#62)
       COCKPIT_VIGIA_MS: '0', // sem HOME falso aqui — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
+      COCKPIT_MONITOR_MS: '0', // o amostrador do monitor escreve desde o boot (#82)
     });
     s3 = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
       env: ambiente, stdio: ['ignore', 'ignore', 'pipe'],

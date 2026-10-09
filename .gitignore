@@ -1,5 +1,6 @@
 node_modules/
 *.log
+!testes/fixtures/*.log
 .env
 .env.*
 !.env.example

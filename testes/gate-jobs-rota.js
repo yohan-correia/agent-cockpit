@@ -196,6 +196,11 @@ function plantarJobs(lista) {
         linhaStatus = j.event === null ? null : `${hora} carimbou: ${texto}\n`;
         break;
     }
+    // `statusLog` é o `status.log` INTEIRO, cru, para os casos em que a pergunta é sobre a
+    // HISTÓRIA do job e não só a última linha (J15, J20): o teardown do orquestrador acrescenta
+    // `done: teardown concluído` DEPOIS do término, e uma fixture de linha única não sabe
+    // representar isso. O `meta` continua vindo do `state`, como acima.
+    if (j.statusLog !== undefined) linhaStatus = j.statusLog;
 
     fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta));
     if (linhaStatus !== null) fs.writeFileSync(path.join(dir, 'status.log'), linhaStatus);
@@ -263,8 +268,8 @@ function fixturaPadrao() {
       state: 'orfao', created_at: iso(5 * D + H),
       event: { at: iso(5 * D), kind: 'working', text: 'worktree criada em /home/usuario/.cockpit/worktrees/x' },
     }),
-    job('j-23h', { state: 'done', created_at: iso(30 * H), event: { at: iso(23 * H), kind: 'done' } }),
-    job('j-25h', { state: 'done', created_at: iso(40 * H), event: { at: iso(25 * H), kind: 'done' } }),
+    job('j-30m', { state: 'done', created_at: iso(5 * H), event: { at: iso(30 * 60000), kind: 'done' } }),
+    job('j-2h', { state: 'done', created_at: iso(3 * H), event: { at: iso(2 * H), kind: 'done' } }),
     // `blocked`, não `done` — como `done` seria excluído pela janela e o campo que o J5 quer
     // testar nunca teria sujeito (§1.2 do plano).
     job('j-nulo', {
@@ -283,14 +288,20 @@ function fixturaPadrao() {
     }),
     job('j-mrg', {
       state: 'merged', created_at: iso(30 * H),
-      event: { at: iso(23 * H), kind: 'done', text: 'merge comprovado' },
+      event: { at: iso(30 * 60000), kind: 'done', text: 'merge comprovado' },
     }),
-    job('j-mrg-velho', { state: 'merged', created_at: iso(40 * H), event: { at: iso(25 * H), kind: 'done' } }),
+    job('j-mrg-velho', { state: 'merged', created_at: iso(40 * H), event: { at: iso(2 * H), kind: 'done' } }),
+    // O `status.log` de um teardown de verdade tem o TÉRMINO antes da faxina (card
+    // `lista-de-agentes-ressuscita-job-na-limpeza`): aqui o executor terminou há 30 min e a
+    // faxina veio agora. Antes a fixture era a linha da faxina sozinha, com a hora do término
+    // — um disco que não existe. O assert do J15 continua o mesmo.
     job('j-trd', {
-      state: 'teardown', created_at: iso(30 * H),
-      event: { at: iso(23 * H), kind: 'done', text: 'teardown concluído' },
+      state: 'teardown', created_at: iso(30 * H), event: { at: iso(0) },
+      statusLog: `${iso(30 * H)} working: executor iniciado em tmux (x)\n`
+        + `${iso(30 * 60000)} done: executor terminou com sucesso\n`
+        + `${iso(0)} done: teardown concluído\n`,
     }),
-    job('j-trd-velho', { state: 'teardown', created_at: iso(40 * H), event: { at: iso(25 * H), kind: 'done' } }),
+    job('j-trd-velho', { state: 'teardown', created_at: iso(40 * H), event: { at: iso(2 * H), kind: 'done' } }),
     // 3 dias, não 1h: mesmo raciocínio do órfão, do outro lado do fallback (§1.2).
     job('j-inv', { state: 'inventado', created_at: iso(4 * D), event: { at: iso(3 * D), kind: 'done' } }),
     job('j-inv2', { state: 'inventado2', created_at: iso(H), event: null }),
@@ -306,9 +317,10 @@ function fixturaTeto() {
     job('teto-blk-0', { state: 'blocked', event: { at: iso(H), kind: 'blocked', text: 'x' } }),
     job('teto-blk-1', { state: 'blocked', event: { at: iso(H), kind: 'blocked', text: 'x' } }),
   ];
-  // `i=0` é o mais NOVO (1 min atrás); `i=59`, o mais velho (60 min atrás) — todos na janela.
+  // `i=0` é o mais NOVO (30s atrás); `i=59`, o mais velho (30 min atrás) — todos bem dentro
+  // da janela de 1h (folga contra o corte exato, e não o teto do J8 por acidente).
   const encerrados = Array.from({ length: 60 }, (_, i) => job(`teto-done-${i}`, {
-    state: 'done', event: { at: iso((i + 1) * 60000), kind: 'done' },
+    state: 'done', event: { at: iso((i + 1) * 30000), kind: 'done' },
   }));
   return [...protegidos, ...encerrados];
 }
@@ -365,9 +377,9 @@ async function testeJ2() {
 
 async function testeJ3() {
   const resp = await pedir('/api/jobs?tudo=1');
-  const h23 = resp.corpo.jobs.some((j) => j.id === 'j-23h');
-  const h25 = resp.corpo.jobs.some((j) => j.id === 'j-25h');
-  ok(h23 && !h25, `J3: a janela mede o TÉRMINO — 23h entra, 25h não (23h=${h23}, 25h=${h25})`);
+  const m30 = resp.corpo.jobs.some((j) => j.id === 'j-30m');
+  const h2 = resp.corpo.jobs.some((j) => j.id === 'j-2h');
+  ok(m30 && !h2, `J3: a janela mede o TÉRMINO — 30min entra, 2h não (30min=${m30}, 2h=${h2})`);
 }
 
 /** J4 — PRESERVAÇÃO: `server.js:653` já não emite os três campos; o novo campo não reabre a porta. */
@@ -471,6 +483,75 @@ async function testeJ15() {
 }
 
 /**
+ * J20 — o `fim` é o TÉRMINO do trabalho, não a faxina (card
+ * `lista-de-agentes-ressuscita-job-na-limpeza`, 06/10/2026).
+ *
+ * Medido em produção: o teardown de 13 jobs às 19:14 pôs na lista jobs de 21/09 como "terminou
+ * agora" por 1 h. o teardown do orquestrador acrescenta `done: teardown concluído` ao
+ * `status.log`, e a janela media a ÚLTIMA linha. Os `status.log` daqui têm a forma exata dos
+ * reais (`working` do spawn → `done`/`failed` do executor → `done` da faxina).
+ *
+ * Nasce VERMELHO na develop 8435aab (os dois teardowns velhos entram; o `fim` do de 10 min é a
+ * hora da faxina) e fica verde com o conserto em `lib/jobs.js`. Nenhum assert dos J1-J19 muda.
+ */
+async function testeJ20() {
+  const M = 60000;
+  const FIM_3D = iso(3 * D);
+  const FIM_10M = iso(10 * M);
+  const FIM_10M_CONTROLE = iso(10 * M + 1000);
+  const FIM_FAIL_10M = iso(10 * M + 2000);
+  const AT_BLK = iso(0);
+  const faxina = `${iso(0)} done: teardown concluído\n`;
+  plantarJobs([
+    // (1) terminou há 3 dias, faxina agora → NÃO entra na janela de 1 h.
+    job('j20-trd-3d', {
+      state: 'teardown', created_at: iso(3 * D + H), event: { at: iso(0) },
+      statusLog: `${iso(3 * D + H)} working: executor iniciado em tmux (x)\n${FIM_3D} done: executor terminou com sucesso\n${faxina}`,
+    }),
+    // (2) terminou há 10 min, faxina agora → entra, e o `fim` é o TÉRMINO, não a faxina.
+    job('j20-trd-10m', {
+      state: 'teardown', created_at: iso(H), event: { at: iso(0) },
+      statusLog: `${iso(H)} working: executor iniciado em tmux (x)\n${FIM_10M} done: executor terminou com sucesso\n${faxina}`,
+    }),
+    // (3) controle: terminou há 10 min, sem faxina → entra, `fim` = término.
+    job('j20-done-10m', {
+      state: 'done', created_at: iso(H), event: { at: FIM_10M_CONTROLE, kind: 'done' },
+      statusLog: `${iso(H)} working: executor iniciado em tmux (x)\n${FIM_10M_CONTROLE} done: executor terminou com sucesso\n`,
+    }),
+    // O caso real de 20261005-180455: morreu calado (só `working`) e foi limpo hoje. A faxina
+    // não é o fim dele; o último sinal de vida é de 2 dias atrás → NÃO entra.
+    job('j20-trd-orfao', {
+      state: 'teardown', created_at: iso(2 * D), event: { at: iso(0) },
+      statusLog: `${iso(2 * D)} working: tmux spawnado: x pid=1\n${faxina}`,
+    }),
+    // `failed` descartado (`--discard-approved`) há 10 min: o término é o `failed`, e ele entra.
+    job('j20-trd-failed-10m', {
+      state: 'teardown', created_at: iso(H), event: { at: iso(0) },
+      statusLog: `${iso(H)} working: executor iniciado em tmux (x)\n${FIM_FAIL_10M} failed: executor saiu com código 1\n${faxina}`,
+    }),
+    // (4) `blocked` segue como hoje: a recusa do teardown É o momento do bloqueio, e é o `fim`.
+    job('j20-blk', {
+      state: 'blocked', created_at: iso(2 * D), event: { at: AT_BLK, kind: 'blocked' },
+      statusLog: `${iso(2 * D)} working: executor iniciado em tmux (x)\n${iso(2 * D - H)} done: executor terminou com sucesso\n${AT_BLK} blocked: teardown recusado: job não merged e descarte não aprovado\n`,
+    }),
+  ]);
+  const resp = await pedir('/api/jobs?tudo=1');
+  const ids = resp.corpo.jobs.map((j) => j.id);
+  const acha = (id) => resp.corpo.jobs.find((j) => j.id === id);
+  ok(!ids.includes('j20-trd-3d'), `J20 (1): terminou há 3 dias + faxina agora NÃO entra na janela (ids=${JSON.stringify(ids)})`);
+  const t10 = acha('j20-trd-10m');
+  ok(Boolean(t10) && t10.estado === 'teardown' && t10.fim === FIM_10M,
+    `J20 (2): terminou há 10 min + faxina agora entra, com fim = TÉRMINO (${FIM_10M}) — ${JSON.stringify(t10)}`);
+  const d10 = acha('j20-done-10m');
+  ok(Boolean(d10) && d10.fim === FIM_10M_CONTROLE, `J20 (3): controle sem faxina entra com fim = término — ${JSON.stringify(d10)}`);
+  ok(!ids.includes('j20-trd-orfao'), 'J20: morreu calado há 2 dias + faxina agora NÃO entra (o caso 20261005-180455)');
+  const f10 = acha('j20-trd-failed-10m');
+  ok(Boolean(f10) && f10.fim === FIM_FAIL_10M, `J20: failed descartado há 10 min entra com fim = o failed — ${JSON.stringify(f10)}`);
+  const blk = acha('j20-blk');
+  ok(Boolean(blk) && blk.fim === AT_BLK, `J20 (4): blocked segue como hoje, fim = a recusa — ${JSON.stringify(blk)}`);
+}
+
+/**
  * J16/J17 — a régua de 24 h, os dois lados.
  *
  * Ela é a D40 sendo revogada: até esta entrega, `blocked`/`orfao`/`failed` NUNCA eram
@@ -530,6 +611,38 @@ async function testeJ18() {
 }
 
 /**
+ * J19 — a isenção do `failed` (spec §3.1/§5.2), os quatro ângulos.
+ *
+ * 1. `failed` recente aparece por ser `failed`, não por estar na janela de 1h.
+ * 2. `failed` de 4 dias some, mas pela porta de sempre (`arquivado`/`horasArquiva()`) — não
+ *    porque a isenção tenha um teto próprio (não tem, e não pode ter: seria a armadilha #30).
+ * 3. 🔴 `failed` com um carimbo ilegível (`event.at: 'lixo'`, o token cru do `status.log` —
+ *    `lib/jobs.js:97`) NUNCA aparece. É o assert que prende `dataBoa` no lugar de `fim &&`: um
+ *    refactor que trocasse um pelo outro deixaria este job na tela para sempre e nada acenderia.
+ * 4. Preservação: `blocked`/`orfao` de 2h continuam aparecendo — protegidos, sem janela nenhuma.
+ */
+async function testeJ19() {
+  plantarJobs([
+    job('j19-fail-recente', { state: 'failed', created_at: iso(3 * H), event: { at: iso(2 * H), kind: 'failed', text: 'falhou' } }),
+    job('j19-fail-velho', { state: 'failed', created_at: iso(5 * D), event: { at: iso(4 * D), kind: 'failed', text: 'falhou há dias' } }),
+    job('j19-fail-lixo', { state: 'failed', created_at: iso(2 * D), event: { at: 'lixo', kind: 'failed' } }),
+    job('j19-blk-2h', { state: 'blocked', created_at: iso(3 * H), event: { at: iso(2 * H), kind: 'blocked', text: 'travado' } }),
+    job('j19-orf-2h', { state: 'orfao', created_at: iso(3 * H), event: { at: iso(2 * H), kind: 'working', text: 'trabalhando' } }),
+  ]);
+  const resp = await pedir('/api/jobs?tudo=1');
+  const ids = resp.corpo.jobs.map((j) => j.id);
+
+  ok(ids.includes('j19-fail-recente'),
+    `J19: \`failed\` de 2h aparece por SER \`failed\` — a isenção, não a janela de 1h (ids=${JSON.stringify(ids)})`);
+  ok(!ids.includes('j19-fail-velho'),
+    'J19: `failed` de 4 dias some por `arquivado`/`horasArquiva()` — não pela janela');
+  ok(!ids.includes('j19-fail-lixo'),
+    'J19: `failed` com `event.at: \'lixo\'` (carimbo ilegível) não aparece — a guarda `dataBoa` barra, não `fim &&`');
+  ok(ids.includes('j19-blk-2h') && ids.includes('j19-orf-2h'),
+    `J19: \`blocked\`/\`orfao\` de 2h continuam aparecendo — protegidos, sem janela (ids=${JSON.stringify(ids)})`);
+}
+
+/**
  * A8b — o contador `arquivados` conta o que ESTA rota esconderia: depois do filtro de origem,
  * antes de esconder. Contar antes do filtro somaria jobs que a rota nunca mostra; contar
  * depois de esconder daria sempre zero.
@@ -563,6 +676,7 @@ async function principal() {
   process.env.COCKPIT_TMUX_SOCKET = SOCKET_TMUX;
   process.env.COCKPIT_TMUX_SESSAO = SESSAO_TMUX;
   process.env.COCKPIT_VIGIA_MS = '0'; // sem HOME falso aqui — cinto e suspensório
+  process.env.COCKPIT_MONITOR_MS = '0'; // o amostrador do monitor escreve desde o boot (#82)
   require(path.join(__dirname, '..', 'server.js'));
   await espera(400); // o `listen()` do http assentar
 
@@ -584,11 +698,13 @@ async function principal() {
   await testeJ13();
   await testeJ14();
   await testeJ15();
+  await testeJ20();
 
   console.log('\n── a régua de 24 h (a D40 revogada) ──\n');
   await testeJ16();
   await testeJ17();
   await testeJ18();
+  await testeJ19();
   await testeA8b();
 
   // NENHUM `kill-server` aqui, e isso é a D35 levada a sério: este gate não SOBE servidor

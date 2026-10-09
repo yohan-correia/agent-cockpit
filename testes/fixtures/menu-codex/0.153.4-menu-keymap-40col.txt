@@ -1,0 +1,35 @@
+
+⚠ Codex's Linux sandbox uses bubblewrap
+  and needs access to create user
+  namespaces.
+
+╭────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)         │
+│                                    │
+│ model:     mock   /model to change │
+│ directory: /tmp/…/cwd              │
+╰────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+ 
+ 
+  Keymap
+  All configurable shortcuts.
+  138 actions, 0 customized, 6 unbound
+ 
+  [All]  Common  Customized (0)
+  Unbound (6)  App  Composer  Editor
+  Vim  Navigation  Agents  Approval
+  Debug
+ 
+  Type to search shortcuts
+› Global       - Open Ag… unbound
+  Global         Open Tr… ctrl-t
+  Global         Open Ex… ctrl-g
+  Global         Copy     ctrl-o
+  Global         Clear T… ctrl-l
+  Global       - Toggle … unbound
+  Global       - Toggle … unbound
+  Global         Toggle … alt-r
+ 
+  left/right group · enter edit shortcut

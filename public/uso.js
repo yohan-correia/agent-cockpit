@@ -26,6 +26,10 @@ const $ = (id) => document.getElementById(id);
 // <script> é irrelevante se o valor for congelado uma vez). A correção é não congelar nunca.
 const tokenAgora = () => { try { return localStorage.getItem('cockpit-token') || ''; } catch { return ''; } };
 
+// O fuso IANA do aparelho (D2) — nunca o relógio dele (armadilha #35): só o NOME do fuso viaja
+// pro servidor, que projeta o SEU relógio nesse fuso. Celular com hora errada não muda o recorte.
+const fusoDoAparelho = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; } };
+
 async function api(rota) {
   const cabecalhos = {};
   const token = tokenAgora();
@@ -49,17 +53,20 @@ function curto(n) {
   return v.toLocaleString(idiomaUI.idioma);
 }
 
-/** '2026-09-04' → '04/09'. Sem `new Date()`: o servidor já manda o dia UTC pronto (§2.1). */
+/** '2026-09-04' → '04/09'. Sem `new Date()`: o servidor já manda o dia LOCAL pronto (no fuso do
+ * aparelho, D2). */
 function dataBR(iso) {
   const partes = String(iso || '').split('-');
   return partes.length === 3 ? (idiomaUI.idioma === 'en' ? `${partes[1]}/${partes[2]}` : `${partes[2]}/${partes[1]}`) : String(iso || '');
 }
 
-/** "Hoje · 04/09 (UTC)" / "7 dias · 29/08–04/09 (UTC)" — a tela ESCREVE a data (§2.1). */
+/** "Hoje · 04/09 (UTC-3)" / "7 dias · 29/08–04/09 (UTC-3)" — o servidor manda o dia local do
+ * fuso do aparelho, pronto, e o rótulo do fuso REALMENTE usado (D4/D5/D6). */
 function rotuloPeriodo(dados) {
-  if (dados.dias === 1) return tr`Hoje · ${dataBR(dados.ate)} (UTC)`;
+  const fuso = dados.fusoRotulo || 'UTC';
+  if (dados.dias === 1) return tr`Hoje · ${dataBR(dados.ate)} (${fuso})`;
   const nome = dados.dias === 30 ? tr('30 dias') : tr('7 dias');
-  return `${nome} · ${dataBR(dados.desde)}–${dataBR(dados.ate)} (UTC)`;
+  return `${nome} · ${dataBR(dados.desde)}–${dataBR(dados.ate)} (${fuso})`;
 }
 
 function somaTotal(t) {
@@ -325,11 +332,154 @@ function desenharAvisos(leitura) {
   if (algum) rodape.append(avisos);
 }
 
-/** Zera os três contêineres novos — chamado no início de toda carga E no `catch`. */
+/** Zera os três contêineres do Claude — chamado no início de toda carga E no `catch` DELE.
+ * NUNCA toca em `#uso-codex`: essa seção é limpa por `limparTudo()`, abaixo — senão uma falha
+ * do Claude apagaria a seção do Codex já desenhada, o oposto do isolamento prometido. */
 function limparSecoes() {
   idiomaUI.bind($('uso-custo'), 'textContent', () => tr(''));
   idiomaUI.bind($('uso-por-modelo'), 'textContent', () => tr(''));
   idiomaUI.bind($('uso-por-dia'), 'textContent', () => tr(''));
+}
+
+/** Zera as QUATRO seções — chamada uma vez, no INÍCIO de `carregar()`. */
+function limparTudo() {
+  limparSecoes();
+  idiomaUI.bind($('uso-codex'), 'textContent', () => tr(''));
+}
+
+/**
+ * Total do Codex — SEMPRE `total.tokens`, que o servidor já soma (`entrada + saida`). NUNCA
+ * `somaTotal()` (`:66`): ela somaria `cacheEscrita`, inexistente no contrato do Codex (D3) →
+ * `NaN` → `|| 0` → toda linha mostraria ZERO, sem erro nenhum no console — a pior classe de
+ * falha de contador.
+ */
+function totalCodex(t) {
+  return (t && t.tokens) || 0;
+}
+
+/** Uma linha da seção do Codex (por modelo ou por projeto) — molde de `nodeLinha` (`:134`),
+ * mas com `totalCodex()` no lugar de `somaTotal()` e sem `custo` (D3: sem preço em dólar). */
+function nodeLinhaCodex(nome, total, maior) {
+  const pct = maior > 0 ? (totalCodex(total) / maior) * 100 : 0;
+  const linha = document.createElement('div');
+  linha.className = 'uso-linha';
+
+  const topo = document.createElement('div');
+  topo.className = 'uso-linha-topo';
+  const spanNome = document.createElement('span');
+  spanNome.className = 'uso-linha-nome';
+  spanNome.textContent = nome; // id de modelo / nome de projeto — sempre textContent (#26)
+  const direita = document.createElement('span');
+  direita.className = 'uso-linha-valor';
+  const tokens = document.createElement('b');
+  idiomaUI.bind(tokens, 'textContent', () => tr(curto(totalCodex(total))));
+  direita.append(tokens);
+  topo.append(spanNome, direita);
+
+  const numeros = document.createElement('div');
+  numeros.className = 'uso-linha-numeros';
+  for (const [rotulo, valor] of [['cache', total.cacheLeitura], ['entrada', total.entrada], [tr('saída'), total.saida], ['raciocínio', total.raciocinio]]) {
+    const span = document.createElement('span');
+    idiomaUI.bind(span, 'textContent', () => tr(`${tr(rotulo)} ${curto(valor)}`));
+    numeros.append(span);
+  }
+
+  const barra = document.createElement('div');
+  barra.className = 'uso-item-barra';
+  const cheio = document.createElement('i');
+  cheio.style.width = `${Math.max(pct > 0 ? 1 : 0, Math.min(100, pct))}%`;
+  barra.append(cheio);
+
+  linha.append(topo, numeros, barra);
+  return linha;
+}
+
+/**
+ * A seção do Codex — cabeçalho, a nota de uma linha (assinatura, sem custo em dólar) e as
+ * listas "por modelo"/"por projeto". Sem `custo`, sem `origens` (D3/D5 — fora do contrato de
+ * `/api/uso-codex`).
+ */
+function desenharCodex(dados) {
+  const alvo = $('uso-codex');
+  idiomaUI.bind(alvo, 'textContent', () => tr(''));
+
+  const h2 = document.createElement('h2');
+  idiomaUI.bind(h2, 'textContent', () => tr('Codex (OpenAI)'));
+  alvo.append(h2);
+
+  const nota = document.createElement('p');
+  nota.className = 'uso-custo-nota'; // reusa a regra existente — nenhuma classe nova no CSS
+  idiomaUI.bind(nota, 'textContent', () => tr('assinatura, sem custo em dólar calculado'));
+  alvo.append(nota);
+
+  if (!dados.projetos || !dados.projetos.length) {
+    const vazio = document.createElement('p');
+    vazio.className = 'uso-vazio';
+    idiomaUI.bind(vazio, 'textContent', () => tr('sem gasto registrado neste período.'));
+    alvo.append(vazio);
+    return;
+  }
+
+  const resumo = document.createElement('p');
+  resumo.className = 'uso-resumo';
+  idiomaUI.bind(resumo, 'textContent', () => tr`total ${curto(totalCodex(dados.total))}`);
+  alvo.append(resumo);
+
+  // Cada eixo tem RÓTULO. Sem eles as duas listas ficam empilhadas e, com um modelo e um
+  // projeto só, a tela mostra o mesmo número duas vezes seguidas sem dizer que são coisas
+  // diferentes — foi o que o PNG da entrega mostrou (`gpt-6-astra 20,8k` e
+  // `(fora de projeto) 20,8k`, coladas). O lado Claude já tem "Por modelo"; a paridade aqui
+  // não é enfeite, é o que impede a leitura "o número apareceu duplicado".
+  const subtitulo = (texto) => {
+    const h3 = document.createElement('h3');
+    h3.className = 'uso-secao-sub';
+    idiomaUI.bind(h3, 'textContent', () => tr(texto));
+    return h3;
+  };
+
+  if (Array.isArray(dados.porModelo) && dados.porModelo.length) {
+    alvo.append(subtitulo('Por modelo'));
+    const maiorModelo = dados.porModelo.reduce((m, i) => Math.max(m, totalCodex(i.total)), 0);
+    for (const m of dados.porModelo) alvo.append(nodeLinhaCodex(m.modelo, m.total, maiorModelo));
+  }
+
+  alvo.append(subtitulo('Por projeto'));
+  const maiorProjeto = dados.projetos.reduce((m, p) => Math.max(m, totalCodex(p.total)), 0);
+  for (const p of dados.projetos) alvo.append(nodeLinhaCodex(p.projeto, p.total, maiorProjeto));
+}
+
+/**
+ * A metade CODEX da carga — dispara em PARALELO com `carregar()`, com `try/catch` PRÓPRIO
+ * (R4/§5): se `/api/uso-codex` falhar ou demorar, a seção do Codex mostra o aviso e o
+ * relatório do Claude continua desenhado — e o inverso também.
+ *
+ * 🔴 A guarda de corrida é `dias === diasAtual`, conferida ANTES de pintar. `carregando` NÃO
+ * cobre esta função de propósito (achado do painel): se cobrisse, o botão "7 dias" ficaria
+ * mudo pelos ~7 s da varredura fria do Codex — trocaria um bug invisível por uma regressão
+ * visível no aparelho que motivou o recurso. A resposta atrasada de um período antigo
+ * simplesmente não pinta — descartada em silêncio.
+ */
+async function carregarCodex(dias) {
+  const alvo = $('uso-codex');
+  // A varredura fria do Codex leva ~7 s (1,28 GB, medido) e ela é justamente a PRIMEIRA que
+  // o usuário vê. Sem esta linha a seção fica em branco o tempo todo, e branco no celular se
+  // lê como "não tem nada" — não como "estou contando". O `resumo` do lado Claude já faz isso.
+  const espera = document.createElement('p');
+  espera.className = 'uso-vazio';
+  idiomaUI.bind(espera, 'textContent', () => tr('Codex (OpenAI) · carregando…'));
+  alvo.append(espera);
+  try {
+    const dados = await api(`api/uso-codex?dias=${dias}&fuso=${encodeURIComponent(fusoDoAparelho())}`);
+    if (dias !== diasAtual) return; // atrasada: o usuário já trocou de período
+    desenharCodex(dados);
+  } catch (erro) {
+    if (dias !== diasAtual) return;
+    idiomaUI.bind(alvo, 'textContent', () => tr(''));
+    const aviso = document.createElement('p');
+    aviso.className = 'uso-vazio';
+    idiomaUI.bind(aviso, 'textContent', () => tr`não deu para carregar o Codex: ${erro && erro.message}`);
+    alvo.append(aviso);
+  }
 }
 
 let diasAtual = 1;
@@ -342,11 +492,13 @@ async function carregar(dias) {
   const lista = $('uso-lista');
   const resumo = $('uso-resumo');
   idiomaUI.bind(lista, 'textContent', () => tr(''));
-  limparSecoes();
+  limparTudo();
   idiomaUI.bind(resumo, 'textContent', () => tr('carregando…'));
 
+  carregarCodex(dias); // em paralelo — não segura `carregando` pela promessa do Codex
+
   try {
-    const dados = await api(`api/uso?dias=${dias}`);
+    const dados = await api(`api/uso?dias=${dias}&fuso=${encodeURIComponent(fusoDoAparelho())}`);
     idiomaUI.bind(resumo, 'textContent', () => tr`${rotuloPeriodo(dados)} · total ${curto(somaTotal(dados.total))} · ${dados.leitura.arquivos} arquivos`);
     $('uso-custo').append(nodeCusto(dados));
     desenharSecao('uso-por-modelo', tr('Por modelo'), dados.porModelo);

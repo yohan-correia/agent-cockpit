@@ -1,0 +1,44 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/medicao-menu-codex2-wesa57fr/home"))
+⚠ Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                       │
+│                                                  │
+│ model:     mock   /model to change               │
+│ directory: /tmp/medicao-menu-codex2-wesa57fr/cwd │
+╰──────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+ 
+ 
+  Configure Status Line
+  Select which items to display in the status line.
+ 
+  Type to search
+  > 
+› [x] Use theme colors      Apply colors from the active /theme
+  ───────────────────────
+  [x] model-with-reasoning  Current model name with reasoning level
+  [x] current-dir           Current working directory
+  [ ] model                 Current model name
+  [ ] reasoning             Current reasoning level
+  [ ] project-name          Project name (omitted when unavailable)
+  [ ] hostname              Current machine hostname (omitted when unavailable)
+ 
+  mock default · /tmp/medicao-menu-codex2-wesa57fr/cwd
+  Press space to toggle; ←/→ to move; enter to confirm and close; esc to close                                          
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

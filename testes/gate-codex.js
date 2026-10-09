@@ -107,6 +107,18 @@ async function comEspiao(env, roteiro, corpo) {
   let i = 0;
   cp.execFile = (bin, args, opts, cb) => {
     chamadas.push([bin, args]);
+    // `capture-pane` NÃO consome uma posição do roteiro. `listar()` passa a capturar a tela
+    // de cada pane de Codex (card menu-da-tui-do-codex-na-tela), e o roteiro é POSICIONAL:
+    // sem esta saída, uma chamada a mais empurra todas as respostas seguintes uma casa e
+    // reprova 31 casos que não têm nada a ver com a mudança. `''` é o que o tmux leniente
+    // devolveria numa pane que não responde — e a régua classifica isso como `desconhecido`.
+    //
+    // O comando NÃO é `args[0]`: `comSocket()` (lib/abas.js:68) antepõe `['-L', <socket>]`
+    // quando COCKPIT_TMUX_SOCKET existe, e os dois gates setam essa env. Testar `args[0]`
+    // aqui seria um no-op silencioso — a captura continuaria consumindo o roteiro, e o
+    // fallback vazio esconderia o defeito.
+    const cmd = args && args[0] === '-L' ? args[2] : args && args[0];
+    if (cmd === 'capture-pane') return (cb || opts)(null, '', '');
     const r = roteiro[i++] || { saida: '' };
     const pronto = cb || opts;
     if (!r.erro) return pronto(null, r.saida ?? '', '');
@@ -172,8 +184,14 @@ grupo('23/32 — o registro é o whitelist, e `de()` nunca devolve null', async 
   ok(agentes.existe('bash') === false, 'agentes.existe("bash") é false — o whitelist não é uma lista solta');
   ok(agentes.existe('claude') === true && agentes.existe('codex') === true,
     'e os dois que existem existem');
-  ok(JSON.stringify(agentes.ids()) === JSON.stringify(['claude', 'codex']),
-    `ids() === ["claude","codex"] (${JSON.stringify(agentes.ids())})`);
+  // `ids()` mudou de propósito em 2026-09-12: o registro passou a ter um agente (`job`) que
+  // só se LÊ (`lib/agentes.js`, campo `executavel: false`) — não é regressão, é o assert
+  // envelhecendo junto com a decisão (igual ao G8/G9 do gate-ui.js). Quem responde "dá para
+  // criar aba com ele?" não é mais `ids()`, é `existe()` — daí o par logo abaixo.
+  ok(JSON.stringify(agentes.ids()) === JSON.stringify(['claude', 'codex', 'job']),
+    `ids() === ["claude","codex","job"] (${JSON.stringify(agentes.ids())})`);
+  ok(agentes.existe('job') === false,
+    'agentes.existe("job") é false — ele está no registro para ser LIDO, não para abrir aba');
 
   // 32 — as seis chaves do contrato. Sem esta asserção, §3.1 e §3.8 poderiam divergir e só
   // o servidor descobriria, em produção.
@@ -1116,6 +1134,51 @@ grupo('50/51 — o degrade de DOIS níveis, e eles não são a mesma coisa', asy
     'conversa que só tem task_started/token_count é fita VAZIA, não abstenção');
 });
 
+grupo('ATE — o contrato ate/inicio do card carregar-mais-historico', async () => {
+  const ad = require('../lib/adaptador-codex');
+
+  // ate/inicio funcionam: uma conversa maior que o alvo corta, e o pedido seguinte
+  // (ate = inicio da primeira) traz a janela ANTERIOR.
+  const linhasGrande = [];
+  for (let i = 0; i < 500; i += 1) {
+    const texto = `M${String(i).padStart(5, '0')}${'x'.repeat(200)}`;
+    linhasGrande.push(itemFeito(i % 2 === 0
+      ? { id: `u${i}`, type: 'UserMessage', content: [{ type: 'text', text: texto }] }
+      : { id: `a${i}`, type: 'AgentMessage', content: [{ type: 'text', text: texto }] }));
+  }
+  const arquivoGrande = conversa(linhasGrande);
+  const lote1 = await ad.lerConversa(arquivoGrande, 0, { alvoMensagens: 80 });
+  ok(lote1.cortado === true && lote1.inicio > 0,
+    `ate/inicio: primeira leitura corta e devolve inicio > 0 (cortado=${lote1.cortado}, inicio=${lote1.inicio})`);
+  const lote2 = await ad.lerConversa(arquivoGrande, 0, { ate: lote1.inicio, alvoMensagens: 80 });
+  ok(lote2 !== null && lote2.eventos.length > 0,
+    'ate/inicio: o pedido ate=inicio traz a janela ANTERIOR');
+
+  // Sob `ate`, o leitor NÃO devolve `null` num trecho ilegível — a abstenção do esquema velho
+  // (caso 50 acima) continua valendo SÓ na leitura sem `ate`.
+  const semAte = conversa([
+    JSON.stringify({ timestamp: '2026-07-31T10:00:00.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'oi' } }),
+    JSON.stringify({ timestamp: '2026-07-31T10:00:01.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'olá' } }),
+  ]);
+  const tamanhoSemAte = fs.statSync(semAte).size;
+  ok(await ad.lerConversa(semAte, 0, {}) === null,
+    'sem ate: esquema velho continua se abstendo (null)');
+  const comAte = await ad.lerConversa(semAte, 0, { ate: tamanhoSemAte });
+  ok(comAte !== null && comAte.eventos.length === 0,
+    `sob ate: o MESMO arquivo não se abstém — devolve eventos vazios (veio ${JSON.stringify(comAte)})`);
+
+  // O ramo incremental (`desde > 0`) devolve `inicio: desde`.
+  const arquivoInc = conversa([
+    itemFeito({ id: 'u1', type: 'UserMessage', content: [{ type: 'text', text: 'a' }] }),
+  ]);
+  const base = await ad.lerConversa(arquivoInc, 0, {});
+  fs.appendFileSync(arquivoInc,
+    `${itemFeito({ id: 'a1', type: 'AgentMessage', content: [{ type: 'text', text: 'b' }] }, '2026-08-28T12:00:01.000Z')}\n`);
+  const incremental = await ad.lerConversa(arquivoInc, base.tamanho, {});
+  ok(incremental.inicio === base.tamanho,
+    `o ramo incremental devolve inicio === desde (${incremental.inicio} === ${base.tamanho})`);
+});
+
 grupo('30b — `horaDaUltimaMensagem` DESPACHA de verdade, não só aceita o parâmetro', async () => {
   const abas = require('../lib/abas');
   // A fixture tem o `mtime` deslocado SEIS HORAS da última fala. Quem despacha devolve a
@@ -1307,8 +1370,12 @@ grupo('72 — com duas abas de Codex vivas, QUAL delas fala pelo plano', async (
   // O critério é o `timestamp` do próprio evento `token_count`, não o `mtime` do arquivo: o
   // `mtime` muda por qualquer escrita, inclusive de um turno que não emitiu `token_count`.
   const roll = temporario('gate-codex-consumo-');
+  // Card `codex-no-relatorio-de-tokens` (D6): janela vencida é DESCARTADA — um `resets_at`
+  // chumbado no passado apodrece e derrubaria este caso por construção, exatamente como
+  // aconteceu aqui (verificado: 1787991960 é 29/08/2026). Derivado de `Date.now()`, como as
+  // fixtures da Fase 1.
   const limitesDe = (pct) => ({
-    primary: { used_percent: pct, window_minutes: 300, resets_at: 1787991960 },
+    primary: { used_percent: pct, window_minutes: 300, resets_at: Math.floor((Date.now() + 3 * 86400000) / 1000) },
   });
   const corpoCom = (pct, quando) => [contexto({}), contagem({
     info: { last_token_usage: { input_tokens: 100 }, model_context_window: 1000 },
@@ -1347,7 +1414,10 @@ grupo('72 — com duas abas de Codex vivas, QUAL delas fala pelo plano', async (
   ok(consumo?.titulo === 'B', `e o cabeçalho diz de qual aba o número veio (${consumo?.titulo})`);
   ok(consumo?.varias === true, 'com duas abas de Codex vivas, `varias` é true — a tela mostra o título');
 
-  // Sem aba de Codex viva: AUSÊNCIA, não `0%`.
+  // Sem aba de Codex viva: nem por isso é `null` — o DISCO COMPLEMENTA (D6). A fixture `roll`
+  // ainda tem os dois rollouts de cima, e o vencedor por timestamp de evento (da-72, pct=77)
+  // responde por eles, com `fonte:'disco'` e `titulo:null` (o cliente escreve "do último
+  // uso"). AUSÊNCIA de verdade — nem aba, nem rollout — é outro caso (74, abaixo).
   const semNada = await comEspiao(
     {
       COCKPIT_PROC_RAIZ: arvoreProc({ 30: { comm: 'bash', argv: ['-bash'], pgrp: 30, tpgid: 30 } }),
@@ -1357,7 +1427,111 @@ grupo('72 — com duas abas de Codex vivas, QUAL delas fala pelo plano', async (
     [{ saida: linhaPane({ janela: '@9', nome: 'sucata', pane: '%1', pid: 30 }) }],
     async (mod) => mod.consumoDoCodex(),
   );
-  ok(semNada === null, `sem aba de Codex viva, o consumo é null — ausência, nunca 0% (${JSON.stringify(semNada)})`);
+  ok(semNada?.fonte === 'disco', `sem aba de Codex viva, o DISCO responde — fonte:'disco' (veio ${JSON.stringify(semNada)})`);
+  ok(semNada?.titulo === null, `e sem aba, o título é null (veio ${semNada?.titulo})`);
+  ok(semNada?.limites?.[0]?.usado === 77,
+    `e o número é o do rollout de timestamp de evento mais recente, da-72 (veio ${semNada?.limites?.[0]?.usado})`);
+
+  // AUSÊNCIA de verdade: nem aba de Codex viva, nem rollout nenhum no disco.
+  const nadaMesmo = await comEspiao(
+    {
+      COCKPIT_PROC_RAIZ: arvoreProc({ 30: { comm: 'bash', argv: ['-bash'], pgrp: 30, tpgid: 30 } }),
+      COCKPIT_CODEX_RAIZ: temporario('gate-codex-consumo-vazio-'), HOME: temporario('gate-codex-home-vazio-'),
+      COCKPIT_TMUX_SOCKET: 'f', COCKPIT_TMUX_SESSAO: 'main',
+    },
+    [{ saida: linhaPane({ janela: '@9', nome: 'sucata', pane: '%1', pid: 30 }) }],
+    async (mod) => mod.consumoDoCodex(),
+  );
+  ok(nadaMesmo === null, `caso 74: nem aba, nem rollout — o consumo é null, ausência de verdade (${JSON.stringify(nadaMesmo)})`);
+});
+
+grupo('GC5/GC10/GC10b/GC11 — o disco como CANDIDATO de "quanto resta" (card codex-no-relatorio-de-tokens)', async () => {
+  const futuro = () => Math.floor((Date.now() + 3 * 86400000) / 1000);
+  const passado = () => Math.floor((Date.now() - 2 * 86400000) / 1000);
+  const semCodex = () => arvoreProc({ 90: { comm: 'bash', argv: ['-bash'], pgrp: 90, tpgid: 90 } });
+  const paneSucata = () => [{ saida: linhaPane({ janela: '@9', nome: 'sucata', pane: '%1', pid: 90 }) }];
+
+  // GC5 — primary presente, secondary:null: limites tem 1 item, sem barra de 0%. E, no mesmo
+  // fôlego, GC10 — sem aba nenhuma, o disco responde: fonte:'disco', titulo:null, varias:false.
+  const semSecundaria = temporario('gate-codex-gc5-');
+  rollout(semSecundaria, {
+    nome: 'sem-secundaria', cwd: '/home/y/projetos/gc5',
+    corpo: [contexto({}), contagem({
+      info: { last_token_usage: { input_tokens: 50 }, model_context_window: 1000 },
+      limites: { primary: { used_percent: 42, window_minutes: 300, resets_at: futuro() }, secondary: null },
+    })],
+  });
+  const rGC5 = await comEspiao(
+    {
+      COCKPIT_PROC_RAIZ: semCodex(), COCKPIT_CODEX_RAIZ: semSecundaria,
+      HOME: temporario('gate-codex-home-vazio-'), COCKPIT_TMUX_SOCKET: 'f', COCKPIT_TMUX_SESSAO: 'main',
+    },
+    paneSucata(),
+    async (mod) => mod.consumoDoCodex(),
+  );
+  ok(rGC5?.limites?.length === 1, `GC5: primary sem secondary → 1 item na lista (veio ${JSON.stringify(rGC5?.limites)})`);
+  ok(Array.isArray(rGC5?.limites) && !rGC5.limites.some((l) => l.usado === 0),
+    'GC5: secondary:null NÃO vira uma barra de 0% — a lista tem só o item real');
+  ok(rGC5?.fonte === 'disco' && rGC5?.titulo === null && rGC5?.varias === false,
+    `GC10: sem aba nenhuma, fonte:'disco', titulo:null, varias:false (veio ${JSON.stringify({ fonte: rGC5?.fonte, titulo: rGC5?.titulo, varias: rGC5?.varias })})`);
+
+  // GC11 — só um rollout com `resets_at` já VENCIDO na raiz → null, nunca um `used_percent`
+  // velho. O candidato inteiro é descartado (D6), não vira uma barra desatualizada.
+  const vencidoDir = temporario('gate-codex-gc11-');
+  rollout(vencidoDir, {
+    nome: 'vencido', cwd: '/home/y/projetos/gc11',
+    corpo: [contexto({}), contagem({
+      info: { last_token_usage: { input_tokens: 30 }, model_context_window: 1000 },
+      limites: { primary: { used_percent: 88, window_minutes: 10080, resets_at: passado() }, secondary: null },
+    })],
+  });
+  const rGC11 = await comEspiao(
+    {
+      COCKPIT_PROC_RAIZ: semCodex(), COCKPIT_CODEX_RAIZ: vencidoDir,
+      HOME: temporario('gate-codex-home-vazio-'), COCKPIT_TMUX_SOCKET: 'f', COCKPIT_TMUX_SESSAO: 'main',
+    },
+    paneSucata(),
+    async (mod) => mod.consumoDoCodex(),
+  );
+  ok(rGC11 === null, `GC11: janela já vencida — o candidato é descartado, o consumo é null, não um % velho (veio ${JSON.stringify(rGC11)})`);
+
+  // GC10b — uma aba VIVA (medidoEm maior) E rollouts no disco: o DESEMPATE por `medidoEm`
+  // continua valendo, e uma aba aberta ganha do disco — é o que prova que o disco COMPLEMENTA,
+  // nunca atropela.
+  const misto = temporario('gate-codex-gc10b-');
+  rollout(misto, {
+    nome: 'da-aba', cwd: '/home/y/projetos/gc10b-aba', sessaoId: 'da-aba', mtime: PROC + 60_000,
+    corpo: [contexto({}), contagem({
+      info: { last_token_usage: { input_tokens: 60 }, model_context_window: 1000 },
+      limites: { primary: { used_percent: 61, window_minutes: 300, resets_at: futuro() }, secondary: null },
+      quando: '2026-08-28T22:00:00.000Z',
+    })],
+  });
+  rollout(misto, {
+    nome: 'do-disco', cwd: '/home/y/projetos/gc10b-disco', sessaoId: 'do-disco', mtime: PROC + 900_000,
+    corpo: [contexto({}), contagem({
+      info: { last_token_usage: { input_tokens: 60 }, model_context_window: 1000 },
+      limites: { primary: { used_percent: 15, window_minutes: 300, resets_at: futuro() }, secondary: null },
+      quando: '2026-08-28T10:00:00.000Z',
+    })],
+  });
+  const procMisto = arvoreProc({
+    50: { comm: 'bash', pgrp: 50, tpgid: 51, filhos: [51] },
+    51: { comm: 'codex', argv: ['/usr/bin/codex'], pgrp: 51, tpgid: 51, cwd: '/home/y/projetos/gc10b-aba', nascidoEm: PROC },
+  });
+  const rGC10b = await comEspiao(
+    {
+      COCKPIT_PROC_RAIZ: procMisto, COCKPIT_CODEX_RAIZ: misto,
+      HOME: temporario('gate-codex-home-vazio-'), COCKPIT_TMUX_SOCKET: 'f', COCKPIT_TMUX_SESSAO: 'main',
+    },
+    [{ saida: linhaPane({ janela: '@5', nome: 'aba-viva', pane: '%50', pid: 50, cwd: '/home/y/projetos/gc10b-aba' }) }],
+    async (mod) => mod.consumoDoCodex(),
+  );
+  ok(rGC10b?.fonte === 'aba',
+    `GC10b: com uma aba viva de medidoEm maior, ela vence o disco (veio ${JSON.stringify({ fonte: rGC10b?.fonte, titulo: rGC10b?.titulo, usado: rGC10b?.limites?.[0]?.usado })})`);
+  ok(rGC10b?.titulo === 'aba-viva', `e o título vem preenchido, da aba (veio ${rGC10b?.titulo})`);
+  ok(rGC10b?.limites?.[0]?.usado === 61,
+    `e o número é o da ABA (61), não o do disco (15) — o disco não atropela (veio ${rGC10b?.limites?.[0]?.usado})`);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

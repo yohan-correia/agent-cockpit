@@ -34,7 +34,10 @@ let vermelho = false;
 // vermelho toda vez que alguém acrescentasse um `ok()` — o que ele precisa garantir é que
 // nenhum dos 17 casos deixou de rodar (por um `return` esquecido ou uma exceção engolida).
 const CASOS = new Set();
-const CASOS_ESPERADOS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14a', '14b', '15', '16'];
+const CASOS_ESPERADOS = [
+  '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14a', '14b', '15', '16',
+  '17', '18', '19', '20', '21', '22', '23',
+];
 
 function ok(condicao, mensagem) {
   total += 1;
@@ -176,6 +179,24 @@ function molde(i) {
   throw new Error(`molde(${i}) nao fecha em 127 bytes`);
 }
 const textoDoMolde = (i) => JSON.parse(molde(i)).message.content;
+
+// ─── as peças dos casos 17-23 (contrato `ate`/`inicio` de `lerConversa`) ─────────────────────
+
+/** `n` mensagens numeradas (M0000, M0001, …), alternando humano/agente, cada uma com `padding`
+ * bytes de recheio — o bastante para o arquivo passar de 64 KB e forçar mais de um bloco. */
+function conversaComIndices(n, padding) {
+  let c = '';
+  for (let i = 0; i < n; i += 1) {
+    const texto = `M${String(i).padStart(5, '0')}${'x'.repeat(padding)}`;
+    c += (i % 2 === 0) ? humano(texto) : agente(texto);
+  }
+  return c;
+}
+/** Extrai o número M**** do texto de um evento — `null` se não casar. */
+function indiceDoTexto(evento) {
+  const m = /^M(\d+)/.exec((evento && evento.texto) || '');
+  return m ? Number(m[1]) : null;
+}
 
 // ─── os checks ────────────────────────────────────────────────────────────────────────────────
 
@@ -448,6 +469,109 @@ const textoDoMolde = (i) => JSON.parse(molde(i)).message.content;
     ok(!lancou, 'não lança — erro de syscall degrada');
     ok(Array.isArray(obtido) && obtido.length < inteiro.length,
       `devolve PARCIAL, não o arquivo inteiro (${obtido && obtido.length} < ${inteiro.length})`);
+  }
+
+  // 17-19 — o contrato `ate`/`inicio` de `lerConversa`: corte pelo alvo, o pedido seguinte e a
+  // emenda entre os dois lotes. Os três casos compartilham a MESMA fixture de propósito: são a
+  // mesma história (uma leitura, depois a leitura ANTERIOR a ela, depois a prova de que as duas
+  // juntas reconstroem a conversa inteira sem pular nem duplicar linha).
+  // Tamanho escolhido para caber em DOIS blocos de 64 KB: o lote 1 corta pelo ALVO no primeiro
+  // bloco, e o resto sobra dentro de um único bloco — o lote 2 (`ate = lote1.inicio`) chega ao
+  // byte 0 numa chamada só. É o que faz "lote2 + lote1" bater com uma leitura única (caso 19).
+  const conteudoLongo = conversaComIndices(400, 220);
+  const fLongo = fixture(conteudoLongo);
+  const lote1 = await externo.lerConversa(fLongo.caminho, 0, {});
+
+  titulo('17. conversa > 80 msgs: cortado === true e inicio > 0');
+  ok(lote1.cortado === true, `cortado === true (obtido ${lote1.cortado})`);
+  ok(lote1.inicio > 0, `inicio > 0 (obtido ${lote1.inicio})`);
+
+  titulo('18. o pedido { ate: inicio } traz as mensagens ANTERIORES, sem repetir nenhuma');
+  const lote2 = await externo.lerConversa(fLongo.caminho, 0, { ate: lote1.inicio });
+  const idx1 = lote1.eventos.map(indiceDoTexto).filter((n) => n !== null);
+  const idx2 = lote2.eventos.map(indiceDoTexto).filter((n) => n !== null);
+  ok(idx1.length > 0 && idx2.length > 0, 'os dois lotes trouxeram eventos numerados');
+  ok(Math.max(...idx2) < Math.min(...idx1),
+    `nenhum índice do lote 2 (máx ${Math.max(...idx2)}) aparece no lote 1 (mín ${Math.min(...idx1)})`);
+
+  titulo('19. os dois lotes emendam: lote2 + lote1 === leitura única com alvo grande o bastante');
+  const leituraUnica = await externo.lerConversa(fLongo.caminho, 0, { alvoMensagens: 10000 });
+  ok(leituraUnica.cortado === false, 'a leitura única (alvo grande) chega ao byte 0 — pré-condição do caso 19');
+  const idxUnica = leituraUnica.eventos.map(indiceDoTexto).filter((n) => n !== null);
+  const idxEmendado = idx2.concat(idx1);
+  ok(JSON.stringify(idxEmendado) === JSON.stringify(idxUnica),
+    'sequência emendada (lote2+lote1) bate com a leitura única — sem linha pulada nem duplicada');
+
+  // 20 — o caso degenerado que a guarda por `corpo.length > 0` existe para fechar.
+  titulo('20. linha de 5 MB terminada em \\n: inicio < ate mesmo com eventos.length === 0');
+  {
+    const linhaGigante = `${JSON.stringify({ type: 'nao-reconhecido', junk: 'A'.repeat(5 * 1024 * 1024) })}\n`;
+    const f = fixture(linhaGigante);
+    const tamanhoArquivo = fs.statSync(f.caminho).size;
+    const r = await externo.lerConversa(f.caminho, 0, { ate: tamanhoArquivo });
+    ok(r.eventos.length === 0, `zero eventos: a linha não é reconhecida por nenhum tipo (obtido ${r.eventos.length})`);
+    ok(r.inicio < tamanhoArquivo,
+      `inicio (${r.inicio}) < ate (${tamanhoArquivo}) — progresso real, não trava repetindo o mesmo ate`);
+    ok(r.cortado === true, 'cortado === true: o TETO_DURO interrompeu antes do byte 0');
+  }
+
+  // 21 — a conta de `tamanho` sob `ate`, com `sobra` conhecida por construção.
+  titulo('21. tamanho === ate - sobra quando ate < info.size');
+  {
+    const cincoLinhas = `${[molde(0), molde(1), molde(2), molde(3), molde(4)].join('\n')}\n`;
+    const f = fixture(cincoLinhas);
+    const tamanhoTotal = fs.statSync(f.caminho).size;
+    ok(tamanhoTotal === 5 * 128, `fixture tem 5 linhas de 128 B = 640 B (medido ${tamanhoTotal})`);
+    const sobraEsperada = 50; // 50 bytes dentro da 4ª linha (índice 3), que fica incompleta na janela
+    const ate = 3 * 128 + sobraEsperada; // termina 50 B depois do fim da 3ª linha (índices 0-2 completos)
+    const r = await externo.lerConversa(f.caminho, 0, { ate });
+    ok(r.tamanho === ate - sobraEsperada, `tamanho (${r.tamanho}) === ate - sobra (${ate - sobraEsperada})`);
+    ok(r.cortado === false, 'cortado === false: a janela alcançou o byte 0 real do arquivo');
+    ok(r.inicio === 0, 'inicio === 0: a leitura chegou ao começo do arquivo dentro da janela');
+  }
+
+  // 22 — N lotes em laço, do mais novo ao mais antigo, até `cortado === false`.
+  titulo('22. N lotes em laço até cortado === false: termina, e o primeiro evento é o do byte 0');
+  {
+    const conteudoLoop = conversaComIndices(500, 200);
+    const fLoop = fixture(conteudoLoop);
+    const TETO_VOLTAS = 200;
+    let ate;
+    let cortado = true;
+    let voltas = 0;
+    let primeiroEventoDoUltimoLote = null;
+    while (cortado && voltas < TETO_VOLTAS) {
+      voltas += 1;
+      const r = await externo.lerConversa(fLoop.caminho, 0, ate === undefined ? {} : { ate });
+      cortado = r.cortado;
+      ate = r.inicio;
+      if (r.eventos.length > 0) primeiroEventoDoUltimoLote = r.eventos[0];
+    }
+    ok(voltas < TETO_VOLTAS, `termina em número finito de passos (${voltas} < ${TETO_VOLTAS})`);
+    ok(voltas > 1, `mais de um lote foi necessário para varrer a fixture (${voltas})`);
+    ok(!cortado, 'a última volta chega com cortado === false');
+    ok(Boolean(primeiroEventoDoUltimoLote) && indiceDoTexto(primeiroEventoDoUltimoLote) === 0,
+      `o primeiro evento do lote mais antigo é o índice 0 (obtido ${primeiroEventoDoUltimoLote && primeiroEventoDoUltimoLote.texto})`);
+  }
+
+  // 23 — sem `ate`, o retorno é byte a byte o de hoje (os 4 campos de sempre), mais `inicio`.
+  titulo('23. sem ate, o retorno é byte a byte o de hoje + o campo inicio');
+  {
+    const conteudo = humano('oi') + agente('ola') + humano('tudo bem?');
+    const f = fixture(conteudo);
+    const tamanhoArquivo = fs.statSync(f.caminho).size;
+    const r = await externo.lerConversa(f.caminho, 0, {});
+    ok(igual(r.eventos, [
+      { tipo: 'humano', texto: 'oi', quando: '2026-09-02T00:00:00.000Z' },
+      { tipo: 'texto', texto: 'ola', quando: '2026-09-02T00:00:01.000Z' },
+      { tipo: 'humano', texto: 'tudo bem?', quando: '2026-09-02T00:00:00.000Z' },
+    ]), 'eventos batem byte a byte com o literal congelado');
+    ok(r.tamanho === tamanhoArquivo, `tamanho === tamanho do arquivo (${r.tamanho} === ${tamanhoArquivo})`);
+    ok(r.cortado === false, 'cortado === false: coube tudo');
+    ok(r.bytesLidos === tamanhoArquivo, `bytesLidos === tamanho do arquivo (${r.bytesLidos} === ${tamanhoArquivo})`);
+    ok(r.inicio === 0, 'inicio === 0: campo NOVO, aditivo, sem quebrar os quatro de sempre');
+    ok(Object.keys(r).sort().join(',') === 'bytesLidos,cortado,eventos,inicio,tamanho',
+      'as chaves do retorno são exatamente as 5 esperadas (4 de sempre + inicio)');
   }
 
   // ─── rodapé ─────────────────────────────────────────────────────────────────────────────────

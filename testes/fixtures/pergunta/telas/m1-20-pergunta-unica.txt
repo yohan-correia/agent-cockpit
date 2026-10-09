@@ -1,0 +1,34 @@
+ ▐▛███▛█   Claude Code v2.1.294
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /home/usuario/projetos/demo
+
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 1 pergunta: header "Teste", pergunta "Qual cor?",
+  multiSelect false, opcoes Azul e Verde com descricao curta.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Teste
+
+Qual cor?
+
+❯ 1. Azul
+     Cor fria, lembra céu e mar.
+  2. Verde
+     Cor natural, lembra folha e mata.
+  3. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+

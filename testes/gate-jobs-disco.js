@@ -391,6 +391,55 @@ async function a6() {
   tmuxErra = false;
 }
 
+// ─── A7 — `fim` é o TÉRMINO do trabalho, não a faxina ──────────────────────
+//
+// Card `lista-de-agentes-ressuscita-job-na-limpeza` (06/10/2026). O `status.log` é
+// append-only e o orquestrador escreve nele DEPOIS do término: o teardown do orquestrador
+// acrescenta `done: teardown concluído`. A última linha continua sendo o `event` (é ela que
+// a máquina de estados lê), mas o `fim` que a tela e a janela de 1 h medem tem de ser o
+// último evento que NÃO é faxina. Os logs daqui têm a forma exata dos reais.
+
+async function a7() {
+  console.log('\nA7 — `fim` é o término do trabalho, não a faxina do teardown');
+  const raiz = novaRaiz();
+  tmuxSessoes = [];
+  tmuxErra = false;
+
+  const FIM_DONE = iso(3 * DIA);
+  const FIM_FAILED = iso(2 * HORA);
+  const ULTIMO_SINAL = iso(DIA);
+  const faxina = `${iso(0)} done: teardown concluído\n`;
+  escreverJob(raiz, 'j-trd-apos-done', {
+    meta: { teardown_at: iso(0), merged_at: iso(0) },
+    status: `${iso(3 * DIA + HORA)} working: executor iniciado em tmux (x)\n${FIM_DONE} done: executor terminou com sucesso\n${faxina}`,
+  });
+  escreverJob(raiz, 'j-trd-apos-failed', {
+    meta: { teardown_at: iso(0) },
+    status: `${iso(3 * HORA)} working: executor iniciado em tmux (x)\n${FIM_FAILED} failed: executor saiu com código 1\n${faxina}`,
+  });
+  // O caso real de 20261005-180455: só `working`, depois a faxina. O fim é o último sinal.
+  escreverJob(raiz, 'j-trd-apos-working', {
+    meta: { teardown_at: iso(0) },
+    status: `${ULTIMO_SINAL} working: tmux spawnado: x pid=1\n${faxina}`,
+  });
+  escreverJob(raiz, 'j-trd-so-faxina', { meta: { teardown_at: iso(0) }, status: faxina });
+  escreverJob(raiz, 'j-done-simples', { status: `${iso(HORA)} working: x\n${FIM_DONE} done: executor terminou com sucesso\n` });
+  escreverJob(raiz, 'j-sem-log', { meta: { status: 'done', pid: pidMorto() } });
+  escreverJob(raiz, 'j-linha-crua', { meta: { status: 'done', pid: pidMorto() }, status: '/linha/sem/formato\n' });
+
+  const r = await jobs.listar();
+  const j = (id) => acharJob(r, id);
+  ok(j('j-trd-apos-done').state === 'teardown' && j('j-trd-apos-done').event.text === 'teardown concluído',
+    'o `event` continua sendo a última linha (a máquina de estados não muda)');
+  ok(j('j-trd-apos-done').fim === FIM_DONE, `teardown depois de done ⇒ fim = o done (${j('j-trd-apos-done').fim})`);
+  ok(j('j-trd-apos-failed').fim === FIM_FAILED, `teardown depois de failed ⇒ fim = o failed (${j('j-trd-apos-failed').fim})`);
+  ok(j('j-trd-apos-working').fim === ULTIMO_SINAL, `teardown depois de só working ⇒ fim = o último sinal, não a faxina (${j('j-trd-apos-working').fim})`);
+  ok(j('j-trd-so-faxina').fim === null, 'só a faxina no log ⇒ fim null (não há término a mostrar)');
+  ok(j('j-done-simples').fim === FIM_DONE, 'sem faxina, fim = event.at (como sempre foi)');
+  ok(j('j-sem-log').fim === null, 'sem status.log ⇒ fim null');
+  ok(j('j-linha-crua').fim === null, 'linha fora do formato ⇒ fim null (mesmo `at: null` de antes)');
+}
+
 // ─── A10 — a guarda dos testes que sobem o server ───────────────────────────
 
 /**
@@ -415,12 +464,14 @@ function a10() {
     ['gate-jobs-rota.js', 'planta a própria fixture de pastas e aponta a variável para ela'],
     ['gate-limite-janelas.js', 'já usa COCKPIT_JOBS_DIR em nove pontos, com pasta cheia, vazia e inválida'],
     ['gate-uso.js', 'idem, e ainda troca o HOME junto — a pasta acompanha o HOME falso'],
-    // Os quatro abaixo mencionam `server.js` sem SUBIR o processo. A marca é uma menção de
+    // Os cinco abaixo mencionam `server.js` sem SUBIR o processo. A marca é uma menção de
     // texto de propósito (ela sobrevive à remoção da env var, que é o ponto da #57), e o preço
-    // é este: quatro falsos positivos, cada um conferido à mão antes de entrar aqui.
+    // é este: cinco falsos positivos, cada um conferido à mão antes de entrar aqui.
     ['gate-ui.js', 'lê o TEXTO-FONTE do server.js (`fs.readFileSync`) para provar coisas por regex; nunca sobe o processo'],
     ['smoke-celular-medidor.js', 'exige `BASE=` de quem chama e recusa rodar sem ela (:44) — quem sobe o servidor é o chamador'],
     ['smoke-catalogo-codex.js', 'sobe um HTTP estático próprio, e o cabeçalho dele diz "NUNCA server.js" (:83)'],
+    ['gate-terminou.js', 'lê o TEXTO-FONTE do server.js (`fs.readFileSync`) para conferir a fiação do `terminouEm` por regex (T16); nunca sobe o processo'],
+    ['gate-publicacao.js', 'cria um server.js de uma linha num repo-fixture (arquivo obrigatório do export) e roda só o bin/prepara-publicacao.js; nunca sobe o processo'],
   ]);
 
   const faltando = [];
@@ -466,6 +517,7 @@ async function principal() {
     await a5();
     await a5b();
     await a6();
+    await a7();
     a10();
     a18();
   } finally {

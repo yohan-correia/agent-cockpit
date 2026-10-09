@@ -65,7 +65,7 @@ function decompor(transform) {
    */
   function trocarDeVistaEMedir(pagina, alvo) {
     return pagina.evaluate(async (nome) => {
-      const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'));
+      const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'));
       const linha = linhas.find((l) => {
         const t = l.querySelector('.conversa-titulo');
         return t && t.textContent.includes(nome);
@@ -119,14 +119,14 @@ function decompor(transform) {
       // e cravar `currentTime = 80` congela o quadro exato que a medida A1 descreve.
       await voltarParaLista(pagina);
       medidas.t1AnimacoesCongeladas = await pagina.evaluate((nome) => {
-        const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'));
+        const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'));
         const linha = linhas.find((l) => {
           const t = l.querySelector('.conversa-titulo');
           return t && t.textContent.includes(nome);
         });
         if (linha) linha.querySelector('.conversa').click();
-        // Só as CSSTransition: `getAnimations()` traz junto o `pulsar` do `.faixa-pino`, que é
-        // `infinite` — `finish()` nele estoura com InvalidStateError.
+        // Só as CSSTransition: `getAnimations()` traz junto o `pulsar` do `.conversa-pino`, que
+        // é `infinite` — `finish()` nele estoura com InvalidStateError.
         const vivas = document.getAnimations().filter((a) => a instanceof CSSTransition);
         for (const a of vivas) { a.pause(); a.currentTime = 80; }
         return vivas.length;
@@ -149,7 +149,7 @@ function decompor(transform) {
       await espera(500);
     } else {
       const abriu = await pagina.evaluate((nome) => {
-        const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'));
+        const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'));
         const linha = linhas.find((l) => {
           const t = l.querySelector('.conversa-titulo');
           return t && t.textContent.includes(nome);
@@ -332,7 +332,7 @@ function decompor(transform) {
     // mediu a `.pergunta` como 0×0. Aqui o clique é reentrante e ESPERA a vista virar "chat".
     const voltou = await pagina.evaluate(async (nome) => {
       const clicar = () => {
-        const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'));
+        const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'));
         const linha = linhas.find((l) => {
           const t = l.querySelector('.conversa-titulo');
           return t && t.textContent.includes(nome);

@@ -86,7 +86,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 // sozinha não prova comparação nenhuma.
 //
 //   projeto-b       quieta            (lida, sem pergunta)               peso 400 + --texto-2
-//   projeto-c  te esperando      (localStorage atrás da última msg)  borda some; negrito fica
+//   projeto-c  te esperando      (carimbo do servidor atrás da última msg)  borda some; negrito fica
 //   projeto-a    perguntando       (status: "waiting" no sessions/.)  borda sobrevive — a única
 //   bsd          sem agente        (pane sem CLI no /proc falso)      Achado B + S4
 
@@ -244,6 +244,25 @@ function saude() {
   });
 }
 
+/**
+ * Semeia "já lida" DIRETO no servidor — desde 14/09 (D53) o carimbo mora lá, não no
+ * `localStorage` do navegador. Sai do PROCESSO PAI, que é quem conhece PORTA, ANTES de o
+ * filho (dentro do container) abrir a página: assim a PRIMEIRA carga da lista já nasce
+ * certa, sem precisar de um `reload()` no meio do roteiro.
+ */
+function postLido(sessaoId, carimbo) {
+  return new Promise((resolve, reject) => {
+    const corpo = JSON.stringify({ sessaoId, carimbo });
+    const req = http.request({
+      host: '127.0.0.1', port: PORTA, path: '/api/lidas', method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.write(corpo);
+    req.end();
+  });
+}
+
 // ─── O roteiro do navegador — roda DENTRO do container ───────────────────────
 
 function montarRoteiro() {
@@ -256,7 +275,6 @@ const BASE = process.env.BASE;
 const FIXTURE_HOME = process.env.FIXTURE_HOME;
 const PROJETO_C_SESSAO_ARQUIVO = process.env.PROJETO_C_SESSAO_ARQUIVO;
 const PROJETO_C_SESSAO_BUSY = process.env.PROJETO_C_SESSAO_BUSY;
-const LIDAS = JSON.parse(process.env.LIDAS_JSON);
 
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -274,7 +292,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /** Clica na primeira linha da lista cujo título contém \`nome\`. */
   const abrirALinha = (nome) => (pagina) => pagina.evaluate((n) => {
-    const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'));
+    const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'));
     const alvo = linhas.find((l) => {
       const t = l.querySelector('.conversa-titulo');
       return t && t.textContent.includes(n);
@@ -341,20 +359,17 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
   // ── 01-lista ────────────────────────────────────────────────────────────
   await roteiro('01-lista', {
     acao: async (pagina) => {
+      // A marca de "lida" já chegou ao servidor por POST, ANTES desta página abrir (o
+      // processo pai semeou via postLido) — a PRIMEIRA carga já nasce certa, sem precisar
+      // de reload() nem de mexer no localStorage do navegador.
       const m1 = await pagina.evaluate(() => !!document.getElementById('abas'));
       if (!m1) return { ok: false, porque: '#abas não existe no DOM' };
-      await pagina.evaluate((lidas) => {
-        localStorage.setItem('cockpit-lidas', JSON.stringify(lidas));
-      }, LIDAS);
-      await pagina.reload({ waitUntil: 'networkidle0', timeout: 30000 });
-      await pagina.waitForSelector('#abas', { timeout: 15000 });
-      await espera(600);
-      const linhas = await pagina.evaluate(() => document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha').length);
+      const linhas = await pagina.evaluate(() => document.querySelectorAll('#lista-conversas .conversa-linha').length);
       if (linhas < 4) return { ok: false, porque: 'só ' + linhas + ' linha(s) na lista, esperava 4' };
       return { ok: true };
     },
     medir: () => {
-      const acharLinha = (nome) => Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'))
+      const acharLinha = (nome) => Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'))
         .find((l) => { const t = l.querySelector('.conversa-titulo'); return t && t.textContent.includes(nome); });
       const tituloDe = (nome) => { const l = acharLinha(nome); return l && l.querySelector('.conversa-titulo'); };
       const pesoDe = (nome) => { const t = tituloDe(nome); return t ? getComputedStyle(t).fontWeight : null; };
@@ -365,7 +380,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
         const cs = getComputedStyle(el);
         return cs.borderLeftWidth === '2px' && cs.borderLeftColor !== 'rgba(0, 0, 0, 0)' ? cs.borderLeftColor : null;
       };
-      const bordas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa')).filter((el) => {
+      const bordas = Array.from(document.querySelectorAll('#lista-conversas .conversa')).filter((el) => {
         const cs = getComputedStyle(el);
         return cs.borderLeftWidth === '2px' && cs.borderLeftColor !== 'rgba(0, 0, 0, 0)';
       });
@@ -399,14 +414,6 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       if (!clicou) return { ok: false, porque: 'não achei a linha de projeto-c na lista' };
       await pagina.waitForSelector('.painel .chat-topo:not([hidden])', { timeout: 10000 }).catch(() => {});
       await espera(500);
-      try {
-        await pagina.waitForFunction(() => {
-          const f = document.querySelector('.painel .faixa-jobs');
-          return f && !f.hidden;
-        }, { timeout: 20000 });
-      } catch {
-        return { ok: false, porque: 'a .painel .faixa-jobs não apareceu em 20s' };
-      }
       const bolhas = await pagina.evaluate(() => document.querySelectorAll('.painel .fita .bolha-eu, .painel .fita .fala').length);
       if (bolhas < 2) return { ok: false, porque: 'só ' + bolhas + ' bolha(s) com texto na fita' };
       return { ok: true };
@@ -417,22 +424,18 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       const titulo = document.querySelector('.painel .chat-titulo');
       const matar = document.querySelector('.painel .btn-matar-aba');
       const medidor = document.querySelector('.painel .medidor');
-      const faixaJobs = document.querySelector('.painel .faixa-jobs');
       const btnParar = document.querySelector('.painel .btn-parar');
       const identidade = document.querySelector('.chat-identidade');
       const caminho = document.querySelector('.painel .chat-caminho');
       const recarregar = document.querySelector('.painel .btn-recarregar-conversa');
-      const faixaEtapa = document.querySelector('.painel .faixa-etapa');
-      const faixaTitulos = document.querySelector('.painel .faixa-titulos');
       const chatTopo = document.querySelector('.painel .chat-topo');
       if (!voltar || !titulo || !matar || !identidade) {
         return { ok: false, porque: 'faltam elementos base do .painel .chat-topo' };
       }
 
-      const centro = (el) => rect(el).top + rect(el).height / 2;
-
-      // Quantas linhas VISUAIS os itens do "cromo" ocupam (não a .faixa-jobs, que já tem
-      // linha própria HOJE por flex-basis:100% — isso é ortogonal ao Achado C). Não é "mesmo
+      // Quantas linhas VISUAIS os itens do "cromo" ocupam. A .faixa-jobs ficava de fora desta
+      // conta porque tinha linha própria (flex-basis:100%); ela MORREU na D51 (13/09) e o
+      // parêntese fica como memória de por que a conta já ignorou um item. Não é "mesmo
       // top nem mesmo centro": sob align-items:center, um botão de 40px de alvo de dedo e o
       // h1 de ~19px têm topos E centros levemente diferentes mesmo na MESMA linha (o h1 é o
       // primeiro filho, no TOPO da .chat-identidade, que por sua vez É centralizada como um
@@ -454,27 +457,11 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
       const linhasDoTopo = linhasVisuais([voltar, identidade, medidor, btnParar, recarregar, matar]);
 
-      // Quantos de {medidor, faixa-jobs, parar} compartilham a faixa vertical do PRIMEIRO
-      // deles (o medidor) — hoje (antes) a faixa já tem linha própria e não se sobrepõe ao
-      // medidor: conta 2 (medidor + parar). Depois da Fase 2 os três dividem a mesma linha:
-      // conta 3. Sobreposição de [top,bottom], não igualdade de top — mesmo motivo de cima.
-      const alvosLinha2 = [medidor, faixaJobs, btnParar].filter((el) => el && rect(el).width > 0 && rect(el).height > 0);
-      let linha2Itens = 0;
-      if (alvosLinha2.length) {
-        const ref = rect(alvosLinha2[0]);
-        linha2Itens = alvosLinha2.filter((el) => { const r = rect(el); return r.top < ref.bottom && ref.top < r.bottom; }).length;
-      }
-
-      const etapaInline = Boolean(faixaEtapa && faixaTitulos && !faixaEtapa.hidden && faixaEtapa.textContent
-        && Math.abs(centro(faixaEtapa) - centro(faixaTitulos)) <= 4);
-
       return {
         ok: true,
         dados: {
           linhasDoTopo,
-          linha2Itens,
           linha2Overflow: chatTopo.scrollWidth > chatTopo.clientWidth + 1,
-          etapaInline,
           caminhoCortado: caminho.scrollWidth > caminho.clientWidth + 1,
           caminhoTexto: caminho.textContent,
           caminhoTitle: caminho.title,
@@ -653,29 +640,29 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       caminhoDoJsonl(home, CWD_PROJETO_A, SESSID_PROJETO_A), Date.now() - 15 * 60000,
     );
 
-    plantarAgenteFalso(scratch, panes.projeto-b.panePid, { starttime: 1000001 });
+    plantarAgenteFalso(scratch, panes['projeto-b'].panePid, { starttime: 1000001 });
     escreverSessao(home, {
-      pid: panes.projeto-b.panePid, janela: panes.projeto-b.janelaId, pane: panes.projeto-b.paneId,
+      pid: panes['projeto-b'].panePid, janela: panes['projeto-b'].janelaId, pane: panes['projeto-b'].paneId,
       sessaoId: SESSID_PROJETO_B, cwd: CWD_PROJETO_B, starttime: 1000001, status: 'idle',
     });
 
-    plantarAgenteFalso(scratch, panes.projeto-c.panePid, { starttime: 1000002 });
-    const arenaSessaoArquivo = path.join(home, '.claude', 'sessions', `${panes.projeto-c.panePid}.json`);
+    plantarAgenteFalso(scratch, panes['projeto-c'].panePid, { starttime: 1000002 });
+    const arenaSessaoArquivo = path.join(home, '.claude', 'sessions', `${panes['projeto-c'].panePid}.json`);
     escreverSessao(home, {
-      pid: panes.projeto-c.panePid, janela: panes.projeto-c.janelaId, pane: panes.projeto-c.paneId,
+      pid: panes['projeto-c'].panePid, janela: panes['projeto-c'].janelaId, pane: panes['projeto-c'].paneId,
       sessaoId: SESSID_PROJETO_C, cwd: CWD_PROJETO_C, starttime: 1000002, status: 'idle',
     });
     // A versão "ocupada" que o roteiro grava DEPOIS da foto 01 — mesma sessão, `status: busy`,
     // para o .painel .btn-parar aparecer quando a conversa é ABERTA (§ ver comentário no roteiro).
     const arenaSessaoBusy = JSON.stringify({
       kind: 'interactive', sessionId: SESSID_PROJETO_C, cwd: CWD_PROJETO_C, status: 'busy',
-      updatedAt: Date.now(), pid: panes.projeto-c.panePid, procStart: 1000002,
-      tmux: `${SESSAO}:${panes.projeto-c.janelaId}.${panes.projeto-c.paneId}`,
+      updatedAt: Date.now(), pid: panes['projeto-c'].panePid, procStart: 1000002,
+      tmux: `${SESSAO}:${panes['projeto-c'].janelaId}.${panes['projeto-c'].paneId}`,
     });
 
-    plantarAgenteFalso(scratch, panes.projeto-a.panePid, { starttime: 1000003 });
+    plantarAgenteFalso(scratch, panes['projeto-a'].panePid, { starttime: 1000003 });
     escreverSessao(home, {
-      pid: panes.projeto-a.panePid, janela: panes.projeto-a.janelaId, pane: panes.projeto-a.paneId,
+      pid: panes['projeto-a'].panePid, janela: panes['projeto-a'].janelaId, pane: panes['projeto-a'].paneId,
       sessaoId: SESSID_PROJETO_A, cwd: CWD_PROJETO_A, starttime: 1000003, status: 'waiting',
     });
 
@@ -683,10 +670,10 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
     // `${procRaiz()}/<panePid>/stat`, não acha nada, devolve `null` sem exceção. É assim que
     // ela vira "aba sem agente" — pane de verdade, só sem CLI na árvore /proc de mentira.
 
-    console.log(`  · fixture pronta: projeto-b=${panes.projeto-b.panePid} projeto-c=${panes.projeto-c.panePid}`
-      + ` projeto-a=${panes.projeto-a.panePid} bsd=${panes.bsd.panePid}`);
+    console.log(`  · fixture pronta: projeto-b=${panes['projeto-b'].panePid} projeto-c=${panes['projeto-c'].panePid}`
+      + ` projeto-a=${panes['projeto-a'].panePid} bsd=${panes.bsd.panePid}`);
 
-    // ── 4) o localStorage — sem ele NENHUMA aba nasce quieta ────────────────
+    // ── 4) os carimbos de lido — sem eles NENHUMA aba nasce quieta ──────────
     const LIDAS = {
       [SESSID_PROJETO_B]: T_PROJETO_B,
       [SESSID_PROJETO_A]: T_PROJETO_A,
@@ -710,6 +697,12 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       COCKPIT_PROC_RAIZ: raizProc(scratch),
       COCKPIT_BIN_CLAUDE: '/bin/true',
       COCKPIT_JOBS_DIR: pastaJobs,
+      // Desde 14/09 este smoke SEMEIA por `POST /api/lidas` (a marca saiu do localStorage,
+      // D53), então ele escreve de verdade. Esta linha SOBRESCREVE o que veio herdado em
+      // `...process.env`: `COCKPIT_LIDAS_DIR` VENCE o `HOME` falso (lib/lidas.js:17,
+      // armadilha #62), e uma var esquecida no shell de quem roda mandaria as fixtures para
+      // o `~/.cockpit/lidas.json` de PRODUÇÃO. `HOME: home` acima não protege disto.
+      COCKPIT_LIDAS_DIR: path.join(home, '.cockpit'),
     });
     s3 = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
       env: ambiente, stdio: ['ignore', 'ignore', 'pipe'],
@@ -728,6 +721,22 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
     }
     console.log(`  · S3 no ar em http://127.0.0.1:${PORTA} (pid ${s3.pid}), socket ${SOCKET}`);
 
+    // Semear "lida" no SERVIDOR, do processo pai — ANTES de o container abrir a página, para
+    // a primeira carga já nascer certa (§3.6 do plano de 14/09; D53). Nada de `localStorage`
+    // nem de `reload()` no roteiro: o carimbo mora no servidor desde essa entrega.
+    // O status é CONFERIDO, não descartado: um 400 (sessaoId fora da regex) ou 401 passaria
+    // calado e o percurso inteiro sairia com tudo `◆`, sem nenhum assert reprovar — a tela
+    // estaria "certa" para um mundo que não é o que este smoke quer fotografar. Achado do
+    // painel de execução, 14/09.
+    for (const [sessaoId, carimbo] of Object.entries(LIDAS)) {
+      const status = await postLido(sessaoId, carimbo);
+      if (status !== 200) {
+        console.error(`🔴 POST /api/lidas devolveu ${status} para ${sessaoId} — semeadura falhou`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
     // ── 7) o roteiro, dentro do container ────────────────────────────────────
     const roteiro = montarRoteiro();
     fs.writeFileSync(path.join(scratch, 'pane.js'), roteiro);
@@ -736,9 +745,8 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       'run', '--rm', '--network', 'host', '--entrypoint', 'node',
       '-e', `BASE=http://127.0.0.1:${PORTA}`,
       '-e', `FIXTURE_HOME=/fixture-home`,
-      '-e', `PROJETO_C_SESSAO_ARQUIVO=/fixture-home/.claude/sessions/${panes.projeto-c.panePid}.json`,
+      '-e', `PROJETO_C_SESSAO_ARQUIVO=/fixture-home/.claude/sessions/${panes['projeto-c'].panePid}.json`,
       '-e', `PROJETO_C_SESSAO_BUSY=${arenaSessaoBusy}`,
-      '-e', `LIDAS_JSON=${JSON.stringify(LIDAS)}`,
       '-v', `${scratch}:/w:ro`,
       '-v', `${home}:/fixture-home:rw`,
       '-v', `${SAIDA}:/out`,
@@ -779,7 +787,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
         const alvo = {
           bordasVivas: 2, notaVaza: true, linhasDoTopo: 1, caminhoCortado: true,
           avisoVisivel: false, recarregarVisivel: true, bolhasNaFita: 1,
-          linha2Itens: 2, linha2Overflow: false, etapaInline: false,
+          linha2Overflow: false,
           pesoQuieta: '550', pesoEsperando: '700', pesoSemAgente: '450',
           caminhoTexto: '~/projetos/projeto-c',
         };
@@ -794,7 +802,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
         const alvo = {
           bordasVivas: 1, notaVaza: false, linhasDoTopo: 2, caminhoCortado: false,
           avisoVisivel: true, bolhasNaFita: 0, recarregarVisivel: false, pesoQuieta: '400',
-          pesoSemAgente: '400', linha2Itens: 3, etapaInline: true, linha2Overflow: false,
+          pesoSemAgente: '400', linha2Overflow: false,
           pesoEsperando: '700', caminhoTexto: '~/projetos/projeto-c',
         };
         for (const [chave, valor] of Object.entries(alvo)) {
@@ -814,7 +822,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
         const MUDAM = ['bordasVivas', 'notaVaza', 'scrollWidth', 'linhasDoTopo', 'caminhoCortado',
           'avisoVisivel', 'bolhasNaFita', 'recarregarVisivel', 'pesoQuieta', 'corQuieta', 'avisoTexto',
-          'corDoAviso', 'pesoSemAgente', 'linha2Itens', 'etapaInline', 'caminhoTitle'];
+          'corDoAviso', 'pesoSemAgente', 'caminhoTitle'];
         const FIXAS = ['pesoEsperando', 'caminhoTexto', 'bordaPerguntando', 'linha2Overflow'];
         for (const chave of MUDAM) {
           ok(JSON.stringify(antes[chave]) !== JSON.stringify(medidas[chave]),

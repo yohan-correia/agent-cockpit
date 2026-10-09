@@ -40,6 +40,7 @@ Você escolhe onde rodar e como acessar: localhost, Tailscale, outra VPN ou reve
 | Desktop e celular | Layout responsivo, painéis lado a lado e PWA |
 | Notificações e arquivos | Web Push com contexto seguro e contato VAPID; [Taildrop opcional](docs/configuracao.md) |
 | Jobs do orquestrador | Lidos direto do disco, sem serviço externo; pasta configurável |
+| Conversa do job | Clicar num job abre a conversa dele num painel — só leitura, com a fala de cada subagente marcada |
 
 ## Requisitos
 

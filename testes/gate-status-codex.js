@@ -259,7 +259,7 @@ async function testeOrquestracao() {
   function criar(op = {}) {
     let tempo = Date.now();
     let aba = { chave:'aba-7', agente:'codex', temAgente:true, esperando:false,
-      sessaoId:sessao, arquivo:'/fixture/rollout.jsonl', pane:'%7', rodando:false, casamento:'ok', ...op.aba };
+      sessaoId:sessao, arquivo:'/fixture/rollout.jsonl', pane:'%7', rodando:false, casamento:'ok', panePid: 7, ...op.aba };
     let fase = 'vazio'; let saida = op.anterior || ''; let n = 0;
     const chamadas=[]; const salvos=new Map();
     const contexto={
@@ -268,6 +268,13 @@ async function testeOrquestracao() {
       Date: class extends Date { static now(){return tempo;} },
       espera:async ms=>{tempo+=ms;}, comSocket:a=>['-L','fixture',...a],
       buscar:async()=>aba,
+      // `autorizarEscrita()` é declarada FORA do intervalo que este gate fatia (antes de
+      // `motivoDeRecusa`, lib/abas.js:790), então o duble basta — ela não entra de verdade
+      // no `vm`. Permissivo por padrão; recusa quando `op.recusaAutorizar` pede (o caso que
+      // só passa a valer na Fase 4, card menu-da-tui-do-codex-na-tela: com ela recusando,
+      // `/status` não manda NENHUM send-keys).
+      autorizarEscrita: async()=> (op.recusaAutorizar ? 'recusa' : null),
+      detectarAgente: async()=>({agente:'codex',pid:7}),
       statusCodex:{...statusReal,
         snapshotsDe:async()=>[...salvos.values()],
         registrarSnapshot:async(s, r)=>{if(op.storageFalha)throw new Error('disco indisponível');const snapshot={...r,sessaoId:s};salvos.set(r.id,snapshot);return {snapshot};}},
@@ -306,6 +313,10 @@ async function testeOrquestracao() {
     assert.ok(!c.chamadas.some(a=>a[0]==='send-keys'));
   }
   marcar(true,'rascunho multiline, placeholder sem dim e marcador em texto recusam sem teclas');
+  const recusado=criar({recusaAutorizar:true});
+  await assert.rejects(recusado.run(),e=>e.codigo===409);
+  assert.ok(!recusado.chamadas.some(a=>a[0]==='send-keys'));
+  marcar(true,"autorizarEscrita recusando (menu aberto na captura fresca) ⇒ ZERO send-keys em /status");
   const alterado=criar({digitado:'› /status\n  texto extra'});
   await assert.rejects(alterado.run(),e=>e.codigo===409);
   assert.ok(!alterado.chamadas.some(a=>a.at(-1)==='Enter'));
@@ -385,6 +396,7 @@ async function testeRotaESse() {
   process.env.COCKPIT_TOKEN = '';
   process.env.COCKPIT_JOBS_DIR = path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`); // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
   process.env.COCKPIT_VIGIA_MS = '0'; // sem HOME falso aqui — cinto e suspensório
+  process.env.COCKPIT_MONITOR_MS = '0'; // o amostrador do monitor escreve desde o boot (#82)
   const criarServer = http.createServer;
   let servidor;
   http.createServer = (...args) => { servidor = criarServer(...args); return servidor; };

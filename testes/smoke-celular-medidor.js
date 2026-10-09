@@ -27,6 +27,15 @@
 // `127.0.0.1:<porta>` do host — sem ele dá ERR_CONNECTION_REFUSED.
 //
 // Códigos de saída: 0 = passou · 1 = falha de produto/assert · 2 = erro de USO ou de AMBIENTE.
+//
+// ⚠️ Este roteiro só clica `#btn-config` (:115) e `#btn-plano` (:150) — nunca abre conversa,
+// então `marcarLido` (public/app.js) nunca dispara e nenhum POST /api/lidas sai daqui hoje.
+// Por isso NÃO recebe `COCKPIT_LIDAS_DIR` (nem faria sentido: este script não sobe servidor,
+// §BASE acima). Mas o dia em que o roteiro passar a abrir uma aba, o POST sairia contra o
+// servidor que QUEM CHAMA subiu — possivelmente produção — e a allowlist de
+// `testes/gate-lidas.js` (caso 14) esconderia esse risco por trás de um motivo que não vale
+// mais. Quem mexer no roteiro para abrir conversa tem de dar a este script um `BASE` isolado
+// (nunca a produção), não bastando ajustar o gate de outro módulo.
 
 const fs = require('node:fs');
 const path = require('node:path');

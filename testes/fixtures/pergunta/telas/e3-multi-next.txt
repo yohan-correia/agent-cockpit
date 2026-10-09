@@ -1,0 +1,45 @@
+claude --model sonnet
+usuario@servidor:/home/usuario/projetos/demo$ claude --model sonnet
+Permission deny rule (/home/usuario/.claude/settings.json): Bash(curl * | bash:*) mixes * with the trailing :* prefix syntax,
+ so it is matched as a literal prefix (the * is not expanded) and will likely never match. Use Bash(curl * | bash*) for wildcard
+matching.
+Permission deny rule (/home/usuario/.claude/settings.json): Bash(wget * | bash:*) mixes * with the trailing :* prefix syntax,
+ so it is matched as a literal prefix (the * is not expanded) and will likely never match. Use Bash(wget * | bash*) for wildcard
+matching.
+ ▐▛███▛█   Claude Code v2.1.294
+▝▜██████▀  Sonnet 5.5 · Claude Max
+ ▝▝   ▝▝   /home/usuario/projetos/demo
+
+
+❯ Use a ferramenta AskUserQuestion AGORA, sem fazer mais nada antes, com 4 perguntas. (1) header "Formato de audio final do
+  cliente", pergunta "Qual formato de audio salvar no desenho que vamos montar para o cliente, considerando o espaco em disco, a
+  qualidade final e a compatibilidade com aparelhos antigos?", multiSelect false, 3 opcoes cujo label tenha uns 70 caracteres e
+  descricao de uns 300 caracteres cada; (2) header "Avisos", pergunta "Quais avisos?", multiSelect true, opcoes A, B, C com
+  descricao curta; (3) header "Cor", pergunta "Qual cor?", multiSelect false, opcoes Azul e Verde; (4) header "Fruta", pergunta
+  "Qual fruta?", multiSelect false, opcoes Uva e Pera. Use exatamente esses headers, mesmo que sejam longos. Depois de receber a
+  resposta, apenas repita as respostas literalmente.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Formato de audio final do cliente  ☒ Avisos  ☐ Cor  ☐ Fruta  ✔ Submit  →
+
+Quais avisos?
+
+  1. [✔] A
+         Aviso A
+  2. [ ] B
+         Aviso B
+  3. [ ] C
+         Aviso C
+  4. [ ] Type something
+❯    Next
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel
+
+
+
+
+
+
+
+

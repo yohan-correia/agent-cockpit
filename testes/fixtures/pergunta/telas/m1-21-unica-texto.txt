@@ -1,0 +1,8 @@
+  1. Azul
+     Cor fria, lembra céu e mar.
+  2. Verde
+     Cor natural, lembra folha e mata.
+❯ 3. Roxo, 3 tons
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel

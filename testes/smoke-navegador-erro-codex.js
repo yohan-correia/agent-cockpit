@@ -244,7 +244,9 @@ function limpar() {
         ...process.env, PORT: String(PORT), COCKPIT_HOST: '127.0.0.1', COCKPIT_CERT_DIR: certVazio, COCKPIT_TOKEN: '',
         COCKPIT_TMUX_SOCKET: SOCKET, COCKPIT_TMUX_SESSAO: SESSAO, COCKPIT_PROC_RAIZ: procRaiz, COCKPIT_CODEX_RAIZ: codexRaiz,
         COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
+        COCKPIT_LIDAS_DIR: path.join(os.tmpdir(), `cockpit-marca-lida-${process.pid}`), // sem HOME falso aqui: sem isto um marcarLido gravaria no ~/.cockpit/lidas.json de produção (R2/#62)
         COCKPIT_VIGIA_MS: '0', // sem HOME falso aqui — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
+        COCKPIT_MONITOR_MS: '0', // o amostrador do monitor escreve desde o boot (#82)
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -350,7 +352,7 @@ async function roteiro(nome, { acao, assert, arg }) {
 /** Clica na linha da lista cujo título é exatamente \`titulo\`. */
 const abrir = (titulo) => async (pagina) => {
   const achou = await pagina.evaluate((alvo) => {
-    const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa'));
+    const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa'));
     // O nome mora em .conversa-nome (app.js, nome.className = 'conversa-nome'), irmão do
     // pino e do chip do agente dentro de .conversa-titulo. Até 09/09 este smoke lia os NÓS
     // DE TEXTO soltos do título, e isso parou de achar qualquer coisa quando o nome ganhou o
@@ -374,7 +376,7 @@ const abrir = (titulo) => async (pagina) => {
 // erro) foi provada pela API antes do navegador.
 await roteiro('01-lista-te-esperando', {
   assert: () => {
-    const linhas = Array.from(document.querySelectorAll('#abas .conversa-grupo[data-cwd] .conversa-linha'))
+    const linhas = Array.from(document.querySelectorAll('#lista-conversas .conversa-linha'))
       .filter((l) => (l.querySelector('.conversa-agente')?.textContent || '').trim() === 'codex');
     if (linhas.length !== 2) return { ok: false, porque: linhas.length + ' linha(s) de Codex na lista, esperava 2' };
     for (const l of linhas) {

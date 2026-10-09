@@ -256,7 +256,7 @@ function memoria() {
 const IDS_DO_PAINEL = new Set([
   'chat-topo', 'chat-titulo', 'chat-caminho', 'chat-agente', 'aviso-agente', 'btn-voltar',
   'medidor', 'medidor-trilho', 'medidor-cheio', 'medidor-modelo', 'medidor-effort',
-  'medidor-pct', 'faixa-jobs', 'faixa-pino', 'faixa-conta', 'faixa-titulos', 'faixa-etapa',
+  'medidor-pct',
   'btn-parar', 'parar-rotulo', 'btn-recarregar-conversa', 'btn-matar-aba',
   'mensagens', 'puxar-selo', 'fita', 'pergunta', 'pergunta-tela', 'pergunta-teclas',
   'tecla-left', 'tecla-up', 'tecla-down', 'tecla-right', 'tecla-enter', 'tecla-esc',
@@ -854,10 +854,17 @@ async function parteUm() {
     let mod;
     let i = 0;
     cp.execFile = (bin, args, opts, cb) => {
+      chamadas.push([bin, args]);
+      // `capture-pane` NÃO consome uma posição do roteiro — mesmo motivo de
+      // gate-ui.js/gate-codex.js (card menu-da-tui-do-codex-na-tela). Este espião não tem
+      // caso de Codex hoje (`grep -c codex` = 0), então a linha não dispara ainda — mas
+      // custa uma linha e evita que o próximo caso de Codex escrito aqui quebre sem
+      // ninguém entender por quê.
+      const cmd = args && args[0] === '-L' ? args[2] : args && args[0];
+      if (cmd === 'capture-pane') return (cb || opts)(null, '', '');
       const indice = i;
       const r = roteiro[i] || { saida: '' };
       i += 1;
-      chamadas.push([bin, args]);
       if (aoChamar) aoChamar(indice, args, mod);
       const pronto = cb || opts;
       if (!r.erro) return pronto(null, r.saida ?? '', '');

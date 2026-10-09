@@ -19,6 +19,8 @@ O histórico é a fonte persistente da conversa. Pendentes ainda sem eco ficam n
 
 `lib/sessoes.js` e os gates de fase 1/2/3 pertencem ao fluxo legado de sessões próprias. São mantidos para compatibilidade e não são o caminho principal da interface atual. Não execute esses gates sem entender o uso de modelos reais.
 
+`/api/jobs` filtra por `origin === 'capitao'` (a decisão sobre alargar esse filtro pra sempre continua em aberto). O ramo `?revisar=1` (tela "Pra revisar", D60) é a ÚNICA exceção: alarga o filtro de origem só pra ele mesmo, porque a regra de "quem ainda não entrou na develop" vale pra job disparado de qualquer origem, não só pela caixa de envio do app. A resposta tem `jobs[]` e `atencao[]` (branch sumida), cada job com `retomou[]`/`inclui[]`; a regra vive em `lib/revisar.js`, 1:1 com o oráculo v2 do esteira-jobs (D70). Cada item de topo leva `merge` (`{ estado, base, n, arquivos }` ou `null`), prévia só leitura (`lib/revisar.js` `previaDoMerge`, D75), que não filtra e não escreve no repo.
+
 ## Decisões que orientam os adaptadores
 
 As CLIs mantêm o login e executam os turnos; o Cockpit não cria uma assinatura ou autenticação paralela. A tela não deve escolher um arquivo por recência para esconder ambiguidade. O conteúdo das conversas vem dos arquivos dos CLIs, não de parsing da tela do terminal. A captura de tela tem usos restritos: menus identificados e a resposta do `/status` nativo.

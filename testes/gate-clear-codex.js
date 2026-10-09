@@ -47,7 +47,7 @@ const status = require('../lib/status-codex');
       let t = Date.now(), fase = 0;
       const teclas = [], salvos = [];
       let esquecidas = 0;
-      const a = { ...aba, chave:'aba-p7', agente:'codex', pane:'%7', processoCodex:processo };
+      const a = { ...aba, chave:'aba-p7', agente:'codex', pane:'%7', processoCodex:processo, panePid: processo.pid };
       const ctx = {
         Date: class extends Date { static now() { return t; } },
         espera: async ms => { t += ms; },
@@ -61,6 +61,12 @@ const status = require('../lib/status-codex');
           : fase === 1 ? (op.digitado || '› /clear ') : (op.stale ? antes : depois),
         tmuxDoStatus: async args => { if (op.falha) throw new Error('tmux falhou'); teclas.push(args); fase++; },
         esquecerPendentes: () => { esquecidas++; },
+        // Duble de `autorizarEscrita()` — permissivo por padrão, e recusa quando
+        // `op.recusaAutorizar` pede (o caso que só passa a valer na Fase 4, card
+        // menu-da-tui-do-codex-na-tela: com ela recusando, `/clear` não manda NENHUM
+        // send-keys). Mesmo padrão de `motivoDeRecusaDeStatus` acima.
+        autorizarEscrita: async () => (op.recusaAutorizar ? 'recusa' : null),
+        detectarAgente: async () => ({ agente: 'codex', pid: processo.pid }),
       };
       vm.runInNewContext(codigo, ctx);
       let erro;
@@ -70,10 +76,10 @@ const status = require('../lib/status-codex');
     const feliz = await executar();
     assert.equal(feliz.erro, undefined); assert.equal(feliz.teclas.length, 2);
     assert.equal(feliz.salvos.length, 1); assert.equal(feliz.esquecidas, 1);
-    for (const op of [{ocupado:true}, {rascunho:'› texto'}, {digitado:'› /clear texto'}, {stale:true}, {mudou:true}, {falha:true}]) {
+    for (const op of [{ocupado:true}, {rascunho:'› texto'}, {digitado:'› /clear texto'}, {stale:true}, {mudou:true}, {falha:true}, {recusaAutorizar:true}]) {
       const r = await executar(op);
       assert.ok(r.erro, JSON.stringify(op)); assert.equal(r.salvos.length, 0); assert.equal(r.esquecidas, 0);
-      if (op.ocupado || op.rascunho) assert.equal(r.teclas.length, 0);
+      if (op.ocupado || op.rascunho || op.recusaAutorizar) assert.equal(r.teclas.length, 0);
       if (op.digitado || op.mudou) assert.equal(r.teclas.length, 1, 'sem Enter em composer/pane alterado');
     }
     console.log('GATE VERDE — clear: confirmação, recusas, persistência e isolamento');

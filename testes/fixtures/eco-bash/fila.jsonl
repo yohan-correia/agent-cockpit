@@ -1,0 +1,8 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-09T02:06:49.000Z","sessionId":"00000000-0000-4000-8000-000000000001","content":"echo x"}
+{"type":"assistant","uuid":"a1","timestamp":"2026-10-09T02:06:55.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_f1","name":"Bash","input":{"command":"true"}}]},"sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"user","uuid":"u1","timestamp":"2026-10-09T02:07:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_f1","content":"ok"}]},"sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-10-09T02:07:10.000Z","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"assistant","uuid":"a2","timestamp":"2026-10-09T02:07:15.000Z","message":{"role":"assistant","content":[{"type":"text","text":"pronto"}]},"sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"system","subtype":"turn_duration","uuid":"s1","timestamp":"2026-10-09T02:07:20.000Z","durationMs":1000,"isMeta":false,"sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"user","uuid":"u2","timestamp":"2026-10-09T02:07:22.000Z","message":{"role":"user","content":"<bash-input>echo x</bash-input>"},"sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"user","uuid":"u3","timestamp":"2026-10-09T02:07:23.000Z","message":{"role":"user","content":"<bash-stdout>x</bash-stdout><bash-stderr></bash-stderr>"},"sessionId":"00000000-0000-4000-8000-000000000001"}

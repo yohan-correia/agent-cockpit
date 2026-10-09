@@ -1,0 +1,44 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/medicao-menu-codex2-wesa57fr/home"))
+⚠ Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                       │
+│                                                  │
+│ model:     mock   /model to change               │
+│ directory: /tmp/medicao-menu-codex2-wesa57fr/cwd │
+╰──────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+
+/mcp
+
+🔌  MCP Tools
+
+  • No MCP servers configured.
+    See the MCP docs to configure them.
+ 
+ 
+  Plugins
+  Browse plugins from available marketplaces.
+  Installed 0 of 49 available plugins.
+ 
+  [All Plugins]  Installed (0)  OpenAI Curated  Workspace  Shared with me  Add Marketplace
+ 
+  Type to search plugins
+› [-] Atlassian Rovo                Available   Press Enter to install or view plugin details.
+  [-] Boltz                         Available · OpenAI Curated · Predict structures, screen molecules and proteins, a…
+  [-] Build iOS Apps                Available · OpenAI Curated · Build, refine, and debug iOS apps with App Intents, …
+  [-] Build macOS Apps              Available · OpenAI Curated · Build, debug, instrument, and implement macOS apps w…
+  [-] Build Web Apps                Available · OpenAI Curated · Build frontend-focused web apps with generated asset…
+  [-] Build Web Data Visualization  Available · OpenAI Curated · Design, build, test, and export web data visualizati…
+  [-] Canva                         Available · OpenAI Curated · Create, review, edit designs
+  [-] ChatCut                       Available · OpenAI Curated · Install and connect ChatCut
+ 
+  space enable/disable · ←/→ select marketplace · enter view details · esc close                                        
+
+
+
+
+
+
+

@@ -47,6 +47,9 @@ const CASOS_ESPERADOS = [
   'G28',
   // card `tokens-mais-detalhe` — custo, por modelo e por dia
   'G20c', 'G33', 'G34', 'G35', 'G36', 'G37', 'G38', 'G39',
+  // card `tela-de-uso-no-fuso-do-aparelho` — dia local no fuso do aparelho. G44 fica de fora:
+  // é a rota (fase 4), coberta pelo GC18 em gate-uso-codex.js (mesmo precedente do GC9).
+  'G40', 'G41', 'G42', 'G43', 'G45', 'G46', 'G47',
 ];
 
 function ok(condicao, mensagem) {
@@ -257,7 +260,11 @@ function carregarAppJsComEspiaoDeOpen({ comUso = false, ordem = 'app-primeiro', 
     // sandbox inteiro (o mesmo achado do gate-ui.js).
     matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
     fetch: async (rota) => {
-      if (/api\/uso/.test(String(rota))) {
+      // Âncora em `uso\?`, não `uso` solto: desde o card `codex-no-relatorio-de-tokens`
+      // existe também `api/uso-codex?...`, disparado em paralelo por `carregar()` — um
+      // regex sem âncora contaria os DOIS fetches como se fossem o mesmo, e o A8 (que conta
+      // "exatamente 1 fetch") reprovaria por um motivo que não é dele.
+      if (/api\/uso\?/.test(String(rota))) {
         chamadasFetchUso.push(String(rota));
         const corpo = typeof respostaFetchUso === 'function' ? respostaFetchUso(rota) : (respostaFetchUso || {});
         return { ok: true, status: 200, json: async () => corpo };
@@ -473,6 +480,12 @@ async function parte1() {
     assert(!JSON.stringify(r).includes('SEGREDO'), 'a string SEGREDO não aparece na resposta');
     const textoCache = fs.readFileSync(path.join(process.env.COCKPIT_USO_DIR, 'cache.json'), 'utf8');
     assert(!textoCache.includes('SEGREDO'), 'a string SEGREDO não aparece no cache.json gravado');
+    // O literal sozinho aprovava o formato v2: a assinatura era o HEX dos 256 bytes finais — e
+    // a linha acima (261 bytes) cabe inteira nesse trecho. Card `assinatura-do-cache-guarda-
+    // conteudo-em-hex`: procura o hex E decodifica cada assinatura de volta.
+    assert(!textoCache.includes(Buffer.from('SEGREDO', 'utf8').toString('hex')), 'nem o HEX de SEGREDO aparece no cache.json');
+    const decodificadas = JSON.parse(textoCache).arquivos.map((a) => Buffer.from(a.assinatura, 'hex').toString('utf8'));
+    assert(!decodificadas.some((t) => t.includes('SEGREDO')), 'nenhuma assinatura, decodificada de hex, devolve SEGREDO');
   });
 
   await bloco('G13. subagente (<sessao>/subagents/agent-x.jsonl) soma no projeto DAQUELA pasta (R1)', async () => {
@@ -710,30 +723,30 @@ async function parte1() {
   });
 
   await bloco('G24b. agregarLinha() chamada DIRETO, com NaN e undefined (só alcançável pela API)', async () => {
-    const alvo = { dias: {} };
+    const alvo = { horas: {} };
     const contribuiu1 = uso.agregarLinha({
       type: 'assistant', timestamp: '2026-09-04T10:00:00.000Z',
       message: { model: 'x', usage: { input_tokens: NaN, output_tokens: undefined, cache_creation_input_tokens: 7, cache_read_input_tokens: NaN } },
     }, alvo);
     assert(contribuiu1 === true, 'contribuiu (soma > 0 por causa do 7)');
-    const arr = alvo.dias['2026-09-04'].x;
+    const arr = alvo.horas['2026-09-04T10'].x;
     assert(arr[0] === 0 && arr[1] === 0 && arr[2] === 7 && arr[3] === 0, `NaN e undefined viram 0, 7 conta (veio ${JSON.stringify(arr)})`);
 
-    const alvo2 = { dias: {} };
+    const alvo2 = { horas: {} };
     const contribuiu2 = uso.agregarLinha({
       type: 'assistant',
       message: { usage: { input_tokens: NaN, output_tokens: NaN, cache_creation_input_tokens: undefined, cache_read_input_tokens: undefined } },
     }, alvo2);
     assert(contribuiu2 === false, 'soma zero (tudo NaN/undefined) é pulada — não contribui');
-    assert(Object.keys(alvo2.dias).length === 0, 'nada foi agregado (contribuiu2 === false)');
+    assert(Object.keys(alvo2.horas).length === 0, 'nada foi agregado (contribuiu2 === false)');
   });
 
   await bloco('G25. overflow do ACUMULADOR (não do campo isolado): leitura.precisaoPerdida', async () => {
     const M = Number.MAX_SAFE_INTEGER;
     const estado = {
       arquivos: {
-        '/x/a.jsonl': { offset: 10, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0, dias: { '2026-09-04': { modeloX: [M, 0, 0, 0, 1] } } },
-        '/x/b.jsonl': { offset: 10, ino: 2, assinatura: '', ignoradas: {}, mtimeMs: 0, dias: { '2026-09-04': { modeloX: [M, 0, 0, 0, 1] } } },
+        '/x/a.jsonl': { offset: 10, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0, horas: { '2026-09-04T10': { modeloX: [M, 0, 0, 0, 1] } } },
+        '/x/b.jsonl': { offset: 10, ino: 2, assinatura: '', ignoradas: {}, mtimeMs: 0, horas: { '2026-09-04T10': { modeloX: [M, 0, 0, 0, 1] } } },
       },
       caminhoParaPasta: { '/x/a.jsonl': 'pasta1', '/x/b.jsonl': 'pasta1' },
       classes: { pasta1: { origem: 'aba', projeto: 'g25', rotulo: 'aba g25', id: 'pasta1' } },
@@ -755,13 +768,18 @@ async function parte1() {
       // saiu do nível de projeto (virou `porModelo`) mas segue vivo em `origens[]`.
       'precos', 'consultadoEm', 'moeda', 'custo', 'usd', 'conhecido',
       'tokensSemPreco', 'cacheSemDuracao', 'porModelo', 'modelo', 'porDia', 'dia',
+      // card `tela-de-uso-no-fuso-do-aparelho` — a chave do agregado virou hora, e a resposta
+      // ganhou o fuso REALMENTE usado e o rótulo dele (D5/D6).
+      'horas', 'fuso', 'fusoRotulo',
     ]);
     // Lista FECHADA dos ids de modelo que este gate injeta em qualquer fixture, do começo ao
     // fim do arquivo — de propósito curta e explícita: uma regex genérica de "parece um
     // identificador" deixaria passar a própria mutação #9 (`alvo.amostra = ...content`), já
     // que "amostra" também "parece um identificador".
     const MODELOS_CONHECIDOS = new Set(['claude-opus-5', 'x', 'modeloX', '<synthetic>']);
-    const RE_DIA_OU_SEMDATA = /^(\d{4}-\d{2}-\d{2}|sem-data)$/;
+    // `T\d{2}` é OBRIGATÓRIO: a chave do agregado agora é hora, não dia — um caminho que
+    // esquecesse de migrar e gravasse '2026-09-04' (sem hora) no cache tem de reprovar aqui.
+    const RE_DIA_OU_SEMDATA = /^(\d{4}-\d{2}-\d{2}T\d{2}|sem-data)$/;
     const chaveOk = (k) => PERMITIDAS.has(k) || RE_DIA_OU_SEMDATA.test(k) || MODELOS_CONHECIDOS.has(k);
     const achadas = new Set();
     function varreChaves(objeto) {
@@ -777,6 +795,12 @@ async function parte1() {
     varreChaves(cacheDisco);
     const foraDaLista = Array.from(achadas).filter((k) => !chaveOk(k));
     assert(foraDaLista.length === 0, `todas as chaves pertencem à whitelist (fora: ${JSON.stringify(foraDaLista)})`);
+    // A chave `assinatura` é permitida, então o VALOR dela também precisa de forma fechada:
+    // sha256 (64 hex). O formato v2 (512 hex = 256 bytes de conversa) passava por aqui.
+    const assinaturas = cacheDisco.arquivos.map((a) => a.assinatura);
+    const foraDaForma = assinaturas.filter((s) => !/^[0-9a-f]{64}$/.test(s));
+    assert(assinaturas.length > 0 && foraDaForma.length === 0,
+      `toda assinatura do cache.json é sha256 (fora da forma: ${foraDaForma.length} de ${assinaturas.length}, tamanhos ${JSON.stringify([...new Set(foraDaForma.map((s) => s.length))])})`);
   });
 
   await bloco('G27. meta.json alterado entre 2 varreduras muda o RÓTULO sem limpar o agregado', async () => {
@@ -805,8 +829,8 @@ async function parte1() {
     // V8 preserva ordem de inserção e a saída sairia [zebra, abacaxi], não [abacaxi, zebra].
     const estadoBase = () => ({
       arquivos: {
-        '/x/zebra.jsonl': { offset: 1, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0, dias: { '2026-09-04': { m: [77, 0, 0, 0, 1] } } },
-        '/x/abacaxi.jsonl': { offset: 1, ino: 2, assinatura: '', ignoradas: {}, mtimeMs: 0, dias: { '2026-09-04': { m: [77, 0, 0, 0, 1] } } },
+        '/x/zebra.jsonl': { offset: 1, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0, horas: { '2026-09-04T10': { m: [77, 0, 0, 0, 1] } } },
+        '/x/abacaxi.jsonl': { offset: 1, ino: 2, assinatura: '', ignoradas: {}, mtimeMs: 0, horas: { '2026-09-04T10': { m: [77, 0, 0, 0, 1] } } },
       },
       caminhoParaPasta: { '/x/zebra.jsonl': 'pZebra', '/x/abacaxi.jsonl': 'pAbacaxi' },
       classes: {
@@ -939,13 +963,16 @@ async function parte1() {
     assert(erro === null, `A8b: uso.js → app.js não lança (${erro && erro.message})`);
   });
 
-  await bloco('A8c. index.html tem UM <main> e UM <h1>; dentro de #dialogo-uso, uso-lista é <div> e uso-titulo é <h2> (R4)', async () => {
+  await bloco('A8c. index.html tem UM <main> e ZERO <h1> estático; dentro de #dialogo-uso, uso-lista é <div> e uso-titulo é <h2> (R4)', async () => {
     const indexHtml = fs.readFileSync(path.join(RAIZ_REPO, 'public', 'index.html'), 'utf8');
     const semComentarios = indexHtml.replace(/<!--[\s\S]*?-->/g, '');
     const mains = (semComentarios.match(/<main[\s>]/g) || []).length;
     const h1s = (semComentarios.match(/<h1[\s>]/g) || []).length;
     assert(mains === 1, `A8c: um <main> só, fora de comentário (veio ${mains})`);
-    assert(h1s === 1, `A8c: um <h1> só, fora de comentário (veio ${h1s})`);
+    assert(h1s === 0, 'A8c: index.html sem <h1> estático — o título da conversa nasce no app.js desde f3b4a50 (veio N)');
+    const appJs = fs.readFileSync(path.join(RAIZ_REPO, 'public', 'app.js'), 'utf8');
+    assert(/createElement\(\s*['"]h1['"]\s*\)/.test(appJs),
+      'A8c: o app.js cria o <h1> da conversa (public/app.js, Painel)');
     // As duas trocas de tag do R4, por extenso — o miolo de uso.html trazia
     // `<main id="uso-lista">` e um `<h1>` sem id; dentro do index.html os dois teriam
     // duplicado o <main>/<h1> que a conversa já usa. Sem estas duas linhas específicas, o
@@ -1192,10 +1219,10 @@ async function parte1() {
   // só velocidade: criar pasta nova aqui poluiria o G26 (a whitelist fechada de ids de
   // modelo), que varre o HOME compartilhado inteiro.
 
-  /** Um `estado` no formato de `varrer()`, a partir de `{dia: {modelo: arr}}` — um projeto só. */
-  function estadoDe(dias, projeto = 'gcusto') {
+  /** Um `estado` no formato de `varrer()`, a partir de `{hora: {modelo: arr}}` — um projeto só. */
+  function estadoDe(horas, projeto = 'gcusto') {
     return {
-      arquivos: { '/x/a.jsonl': { offset: 1, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0, dias } },
+      arquivos: { '/x/a.jsonl': { offset: 1, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0, horas } },
       caminhoParaPasta: { '/x/a.jsonl': 'pasta1' },
       classes: { pasta1: { origem: 'aba', projeto, rotulo: `aba ${projeto}`, id: 'pasta1' } },
       leitura: { arquivos: 1, comUsage: 1, relidos: 1, bytesLidos: 1, ms: 1, arquivosComErro: 0 },
@@ -1208,14 +1235,14 @@ async function parte1() {
   const perto = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
 
   await bloco('G33. a soma por MODELO fecha com o total geral — e com 5 posições não vira NaN', async () => {
-    const dias = {
-      [HOJE_UTC]: {
+    const horas = {
+      [`${HOJE_UTC}T10`]: {
         'claude-opus-5': agr(1000, 200, 3000, 40000, 5, 1000, 2000),
         'claude-haiku-4-5-20251001': agr(70, 8, 900, 100, 2, 900, 0),
       },
-      [DIA_MENOS(1)]: { 'claude-opus-5': agr(11, 22, 33, 44, 1, 33, 0) },
+      [`${DIA_MENOS(1)}T10`]: { 'claude-opus-5': agr(11, 22, 33, 44, 1, 33, 0) },
     };
-    const r = uso.montar(estadoDe(dias), 7);
+    const r = uso.montar(estadoDe(horas), 7);
     const campos = ['entrada', 'saida', 'cacheEscrita', 'cacheLeitura'];
     for (const c of campos) {
       const soma = r.porModelo.reduce((s, m) => s + m.total[c], 0);
@@ -1248,21 +1275,21 @@ async function parte1() {
 
     // (b) o MESMO fechamento sobre arrays de 5 posições — o formato que G25 e G29 passam à
     // mão. Sem esta rodada a defesa do `|| 0` nunca é exercitada e `arr[5]` viraria NaN.
-    const r5 = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': [77, 0, 0, 0, 1] } }), 1);
+    const r5 = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': [77, 0, 0, 0, 1] } }), 1);
     assert(Number.isFinite(r5.custo.usd) && r5.custo.usd > 0, `5 posições: custo finito e > 0 (veio ${r5.custo.usd})`);
     assert(r5.porModelo.length === 1 && r5.porModelo[0].total.entrada === 77, `5 posições: porModelo fecha (veio ${JSON.stringify(r5.porModelo)})`);
     assert(r5.custo.cacheSemDuracao === 0, `5 posições sem cacheEscrita: cacheSemDuracao 0 (veio ${r5.custo.cacheSemDuracao})`);
   });
 
   await bloco('G34. a soma por DIA fecha com o total, só traz dias da janela, em ordem CRESCENTE', async () => {
-    const dias = {
-      [DIA_MENOS(2)]: { 'claude-opus-5': agr(500, 10, 0, 0, 1) },
-      [HOJE_UTC]: { 'claude-opus-5': agr(100, 20, 0, 0, 1) },
-      [DIA_MENOS(1)]: { 'claude-sonnet-5': agr(300, 30, 0, 0, 1) },
-      '2020-01-01': { 'claude-opus-5': agr(999999, 0, 0, 0, 1) },   // fora da janela
-      'sem-data': { 'claude-opus-5': agr(888888, 0, 0, 0, 1) },     // nunca entra
+    const horas = {
+      [`${DIA_MENOS(2)}T10`]: { 'claude-opus-5': agr(500, 10, 0, 0, 1) },
+      [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(100, 20, 0, 0, 1) },
+      [`${DIA_MENOS(1)}T10`]: { 'claude-sonnet-5': agr(300, 30, 0, 0, 1) },
+      '2020-01-01T10': { 'claude-opus-5': agr(999999, 0, 0, 0, 1) },   // fora da janela
+      'sem-data': { 'claude-opus-5': agr(888888, 0, 0, 0, 1) },        // nunca entra
     };
-    const r = uso.montar(estadoDe(dias), 7);
+    const r = uso.montar(estadoDe(horas), 7);
     for (const c of ['entrada', 'saida', 'cacheEscrita', 'cacheLeitura']) {
       const soma = r.porDia.reduce((s, d) => s + d.total[c], 0);
       assert(soma === r.total[c], `Σ porDia[].total.${c} === total.${c} (${soma} vs ${r.total[c]})`);
@@ -1282,8 +1309,8 @@ async function parte1() {
     // mesmo com os dois dias assumindo 5 min. Este bloco é o que impede a volta disso.
     const M = 1e6;
     const misto = uso.montar(estadoDe({
-      [DIA_MENOS(1)]: { 'claude-opus-5': agr(0, 0, M, 0, 1, M, M) },   // fonte inconsistente
-      [HOJE_UTC]: { 'claude-opus-5': agr(0, 0, M, 0, 1, 0, 0) },       // sem duração declarada
+      [`${DIA_MENOS(1)}T10`]: { 'claude-opus-5': agr(0, 0, M, 0, 1, M, M) },   // fonte inconsistente
+      [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(0, 0, M, 0, 1, 0, 0) },       // sem duração declarada
     }), 7);
     const somaDias = misto.porDia.reduce((s, d) => s + d.custo.usd, 0);
     const somaModelos = misto.porModelo.reduce((s, m) => s + m.custo.usd, 0);
@@ -1300,7 +1327,7 @@ async function parte1() {
     // claude-opus-5: entrada 5,00 · saída 25,00 · escrita 5m 6,25 · escrita 1h 10,00 · leitura 0,50
     // 1M de cada  ⇒  5 + 25 + 6,25 + 10 + 0,50 = 46,75
     const M = 1e6;
-    const r = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': agr(M, M, 2 * M, M, 1, M, M) } }), 1);
+    const r = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(M, M, 2 * M, M, 1, M, M) } }), 1);
     assert(perto(r.custo.usd, 46.75), `US$ 46,75 (veio ${r.custo.usd})`);
     assert(r.custo.conhecido === true, `custo.conhecido === true (veio ${r.custo.conhecido})`);
     assert(perto(r.porModelo[0].custo.usd, 46.75), `o mesmo em porModelo[0] (veio ${r.porModelo[0].custo.usd})`);
@@ -1312,14 +1339,16 @@ async function parte1() {
   });
 
   await bloco('G36. a tabela de preço obedece aos multiplicadores da FONTE, com uma exceção nomeada', async () => {
-    const EXCECAO = 'claude-fable-5-1';   // lê cache a 0,025× (US$ 0,25/1M), não 0,1× — skill claude-api
+    // Leitura de cache fora do 0,1× — cobradas NOMINALMENTE, cada uma com a sua fonte (skill claude-api):
+    // Fable 5.1 a 0,025× (US$ 0,25/1M); Opus 5.5 a 0,05× (US$ 0,20/1M, consultado em 2026-09-24).
+    const EXCECOES = { 'claude-fable-5-1': 0.25, 'claude-opus-5-5': 0.20 };
     const linhas = Object.entries(uso.PRECOS);
     assert(linhas.length >= 9, `a tabela tem as 9+ linhas de §1.5 (veio ${linhas.length})`);
     for (const [modelo, p] of linhas) {
       assert(perto(p.escrita5m, p.entrada * 1.25), `${modelo}: escrita 5m === entrada × 1,25 (${p.escrita5m} vs ${p.entrada * 1.25})`);
       assert(perto(p.escrita1h, p.entrada * 2), `${modelo}: escrita 1h === entrada × 2 (${p.escrita1h} vs ${p.entrada * 2})`);
-      if (modelo === EXCECAO) {
-        assert(p.leitura === 0.25, `${modelo}: a exceção documentada é cobrada NOMINALMENTE — 0,25 (veio ${p.leitura})`);
+      if (modelo in EXCECOES) {
+        assert(p.leitura === EXCECOES[modelo], `${modelo}: a exceção documentada é cobrada NOMINALMENTE — ${EXCECOES[modelo]} (veio ${p.leitura})`);
       } else {
         assert(perto(p.leitura, p.entrada * 0.1), `${modelo}: leitura === entrada × 0,1 (${p.leitura} vs ${p.entrada * 0.1})`);
       }
@@ -1330,13 +1359,19 @@ async function parte1() {
     }
     assert(uso.PRECOS['claude-opus-5'].entrada === 5 && uso.PRECOS['claude-opus-5'].saida === 25,
       'claude-opus-5 é 5/25 (consultado na skill claude-api em 2026-09-04)');
+    const o55 = uso.PRECOS['claude-opus-5-5'];
+    assert(o55 && o55.entrada === 4 && o55.saida === 20 && o55.leitura === 0.20,
+      `claude-opus-5-5 é 4/20 com leitura 0,20 (consultado na skill claude-api em 2026-09-24) (veio ${JSON.stringify(o55)})`);
+    const s55 = uso.PRECOS['claude-sonnet-5-5'];
+    assert(s55 && s55.entrada === 2 && s55.saida === 10 && s55.leitura === 0.20,
+      `claude-sonnet-5-5 é 2/10 com leitura 0,20 (consultado na skill claude-api em 2026-10-07) (veio ${JSON.stringify(s55)})`);
     assert(uso.PRECOS['claude-mythos-5-1'] === undefined,
       'claude-mythos-5-1 NÃO está na tabela — a fonte diz que a taxa de leitura dele é indefinida');
   });
 
   await bloco('G37. modelo desconhecido NÃO vira zero: fica de fora do custo e acende tokensSemPreco', async () => {
     const r = uso.montar(estadoDe({
-      [HOJE_UTC]: {
+      [`${HOJE_UTC}T10`]: {
         'claude-opus-5': agr(1e6, 0, 0, 0, 1),
         bananinha: agr(10, 20, 30, 40, 3),
       },
@@ -1349,7 +1384,7 @@ async function parte1() {
     assert(r.custo.conhecido === false, `o custo GERAL é marcado como piso (conhecido=false) (veio ${r.custo.conhecido})`);
     assert(r.custo.tokensSemPreco === 100, `tokensSemPreco = 10+20+30+40 = 100 (veio ${r.custo.tokensSemPreco})`);
     assert(r.projetos[0].custo.conhecido === false, 'o projeto também é marcado como piso');
-    const soOpus = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': agr(1e6, 0, 0, 0, 1) } }), 1);
+    const soOpus = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(1e6, 0, 0, 0, 1) } }), 1);
     assert(soOpus.custo.conhecido === true && soOpus.custo.tokensSemPreco === 0,
       `sem modelo desconhecido: conhecido=true e tokensSemPreco=0 (veio ${soOpus.custo.conhecido}/${soOpus.custo.tokensSemPreco})`);
   });
@@ -1367,26 +1402,26 @@ async function parte1() {
 
   await bloco('G39. escrita de cache é cobrada pela DURAÇÃO REAL; sem duração, assume 5m e SINALIZA', async () => {
     const M = 1e6;
-    const de5m = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': agr(0, 0, M, 0, 1, M, 0) } }), 1);
-    const de1h = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': agr(0, 0, M, 0, 1, 0, M) } }), 1);
+    const de5m = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(0, 0, M, 0, 1, M, 0) } }), 1);
+    const de1h = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(0, 0, M, 0, 1, 0, M) } }), 1);
     assert(perto(de5m.custo.usd, 6.25), `1M de escrita 5m custa US$ 6,25 (veio ${de5m.custo.usd})`);
     assert(perto(de1h.custo.usd, 10), `1M de escrita 1h custa US$ 10,00 (veio ${de1h.custo.usd})`);
     assert(de1h.custo.usd > de5m.custo.usd, 'a de 1h custa MAIS que a de 5m no mesmo volume');
     assert(de5m.custo.cacheSemDuracao === 0 && de1h.custo.cacheSemDuracao === 0, 'com duração declarada, cacheSemDuracao fica em 0');
 
     // `cache_creation` ausente (CLI antigo, armadilha #10): o resíduo é cobrado como 5m E dito.
-    const semDuracao = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': agr(0, 0, M, 0, 1, 0, 0) } }), 1);
+    const semDuracao = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(0, 0, M, 0, 1, 0, 0) } }), 1);
     assert(perto(semDuracao.custo.usd, 6.25), `sem duração ⇒ mesmo custo do caso 5m (veio ${semDuracao.custo.usd})`);
     assert(semDuracao.custo.cacheSemDuracao === M, `cacheSemDuracao acende com o resíduo inteiro (veio ${semDuracao.custo.cacheSemDuracao})`);
 
     // Fonte INCONSISTENTE (e5+e1 > cacheEscrita): confia-se no campo mais antigo, cobra-se
     // tudo a 5m, e sinaliza — nunca um custo maior que o volume mostrado ao lado.
-    const inconsistente = uso.montar(estadoDe({ [HOJE_UTC]: { 'claude-opus-5': agr(0, 0, M, 0, 1, M, M) } }), 1);
+    const inconsistente = uso.montar(estadoDe({ [`${HOJE_UTC}T10`]: { 'claude-opus-5': agr(0, 0, M, 0, 1, M, M) } }), 1);
     assert(perto(inconsistente.custo.usd, 6.25), `inconsistente ⇒ cacheEscrita inteiro a 5m, sem estourar o volume (veio ${inconsistente.custo.usd})`);
     assert(inconsistente.custo.cacheSemDuracao === M, `inconsistente também sinaliza (veio ${inconsistente.custo.cacheSemDuracao})`);
 
     // E a origem dos números: agregarLinha() lê mesmo `usage.cache_creation` do .jsonl.
-    const alvo = { dias: {} };
+    const alvo = { horas: {} };
     uso.agregarLinha({
       type: 'assistant', timestamp: '2026-09-04T10:00:00.000Z',
       message: {
@@ -1398,16 +1433,147 @@ async function parte1() {
         },
       },
     }, alvo);
-    const linha = alvo.dias['2026-09-04']['claude-opus-5'];
+    const linha = alvo.horas['2026-09-04T10']['claude-opus-5'];
     assert(linha[2] === 300 && linha[5] === 100 && linha[6] === 200,
       `agregarLinha grava [cw, e5, e1] = [300, 100, 200] (veio [${linha[2]}, ${linha[5]}, ${linha[6]}])`);
-    const alvoSem = { dias: {} };
+    const alvoSem = { horas: {} };
     uso.agregarLinha({
       type: 'assistant', timestamp: '2026-09-04T10:00:00.000Z',
       message: { model: 'claude-opus-5', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 300 } },
     }, alvoSem);
-    const semCc = alvoSem.dias['2026-09-04']['claude-opus-5'];
+    const semCc = alvoSem.horas['2026-09-04T10']['claude-opus-5'];
     assert(semCc[2] === 300 && semCc[5] === 0 && semCc[6] === 0, `sem cache_creation: [300, 0, 0] em vez de estourar (veio [${semCc[2]}, ${semCc[5]}, ${semCc[6]}])`);
+  });
+
+  // ─── fuso do aparelho (card `tela-de-uso-no-fuso-do-aparelho`) ────────────
+  //
+  // Os blocos abaixo compartilham o MESMO HOME e COCKPIT_USO_DIR dos blocos acima (posição é
+  // requisito, spec §5 do plano): vão DEPOIS do último bloco existente, e o G47 por último —
+  // ele chama recarregarUso(<tmp novo>), trocando o COCKPIT_USO_DIR do processo inteiro.
+
+  await bloco('G40. o caso do dono: 22:30 de Brasília (01:30Z do dia seguinte) cai no dia local certo com fuso, e no dia UTC sem fuso', async () => {
+    const { abs } = pastaAba('g40');
+    fs.writeFileSync(path.join(abs, 'a.jsonl'), linhaUsage({ input: 7, ts: '2026-09-04T01:30:00.000Z' }));
+
+    const comFuso = await uso.relatorio({ dias: 1, fuso: 'America/Sao_Paulo' });
+    const pComFuso = comFuso.projetos.find((x) => x.projeto === 'g40');
+    assert(!pComFuso, `com fuso=America/Sao_Paulo e dias=1, g40 fica FORA de "hoje" — 01:30Z é 22:30 de 03/09 em Brasília (veio ${pComFuso && JSON.stringify(pComFuso.total)})`);
+    assert(comFuso.fuso === 'America/Sao_Paulo', `fuso devolvido é America/Sao_Paulo (veio ${comFuso.fuso})`);
+    assert(comFuso.fusoRotulo === 'UTC-3', `fusoRotulo é UTC-3 (veio ${comFuso.fusoRotulo})`);
+    assert(comFuso.ate === '2026-09-04', `ate é o dia local de hoje (veio ${comFuso.ate})`);
+
+    const semFuso = await uso.relatorio({ dias: 1 });
+    const pSemFuso = semFuso.projetos.find((x) => x.projeto === 'g40');
+    assert(pSemFuso && pSemFuso.total.entrada === 7, `sem fuso, g40 cai no dia UTC de hoje — entrada=7 (veio ${pSemFuso && JSON.stringify(pSemFuso.total)})`);
+    assert(semFuso.fusoRotulo === 'UTC', `sem fuso, fusoRotulo é UTC (veio ${semFuso.fusoRotulo})`);
+
+    const agora = Date.UTC(2026, 8, 4, 12);
+    const e = {
+      arquivos: {
+        '/x/a.jsonl': {
+          offset: 10, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0,
+          horas: {
+            '2026-09-04T01': { m: [10, 0, 0, 0, 1] },
+            '2026-09-04T02': { m: [20, 0, 0, 0, 1] },
+            '2026-09-04T03': { m: [40, 0, 0, 0, 1] },
+          },
+        },
+      },
+      caminhoParaPasta: { '/x/a.jsonl': 'pasta1' },
+      classes: { pasta1: { origem: 'aba', projeto: 'g40puro', rotulo: 'aba g40puro', id: 'pasta1' } },
+      leitura: { arquivos: 1, comUsage: 1, relidos: 1, bytesLidos: 10, ms: 1, arquivosComErro: 0 },
+    };
+    const r1 = uso.montar(e, 1, 'America/Sao_Paulo', agora);
+    assert(r1 && r1.total.entrada === 40, `montar puro, 1 dia, São Paulo, agora=04/09 12:00Z: só a hora 03 (22h SP) entra — entrada=40 (veio ${r1 && r1.total.entrada})`);
+    const r7 = uso.montar(e, 7, 'America/Sao_Paulo', agora);
+    const porDia7 = (r7.porDia || []).map((d) => ({ dia: d.dia, entrada: d.total.entrada }));
+    assert(JSON.stringify(porDia7) === JSON.stringify([{ dia: '2026-09-03', entrada: 30 }, { dia: '2026-09-04', entrada: 40 }]),
+      `7 dias, São Paulo: 01Z+02Z caem em 03/09 (30), 03Z cai em 04/09 (40) (veio ${JSON.stringify(porDia7)})`);
+    const rSemFuso = uso.montar(e, 1, undefined, agora);
+    assert(rSemFuso && rSemFuso.total.entrada === 70, `montar puro sem fuso: as 3 horas caem no dia UTC de hoje — entrada=70 (veio ${rSemFuso && rSemFuso.total.entrada})`);
+  });
+
+  await bloco('G41. uso.diaNoFuso — Kolkata (meia hora), New York nas duas viradas de DST de 2026', async () => {
+    assert(uso.diaNoFuso('2026-09-04T18', 'Asia/Kolkata') === '2026-09-04', 'Kolkata 18Z cai em 04/09');
+    assert(uso.diaNoFuso('2026-09-04T19', 'Asia/Kolkata') === '2026-09-05', 'Kolkata 19Z cai em 05/09 (limite do §4)');
+    assert(uso.diaNoFuso('2026-11-01T03', 'America/New_York') === '2026-10-31', 'NY, antes da virada (UTC-4): 01/11 03Z → 31/10');
+    assert(uso.diaNoFuso('2026-11-01T04', 'America/New_York') === '2026-11-01', 'NY, ainda UTC-4: 01/11 04Z → 01/11');
+    assert(uso.diaNoFuso('2026-11-02T04', 'America/New_York') === '2026-11-01', 'NY, já UTC-5 (virada passou): 02/11 04Z → 01/11');
+    assert(uso.diaNoFuso('2026-11-02T05', 'America/New_York') === '2026-11-02', 'NY, UTC-5: 02/11 05Z → 02/11');
+    assert(uso.diaNoFuso('2026-03-08T04', 'America/New_York') === '2026-03-07', 'NY, antes da virada de março (UTC-5): 08/03 04Z → 07/03');
+    assert(uso.diaNoFuso('2026-03-08T05', 'America/New_York') === '2026-03-08', 'NY, já UTC-4: 08/03 05Z → 08/03');
+    assert(uso.diaNoFuso('sem-data', 'America/Sao_Paulo') === 'sem-data', "'sem-data' continua 'sem-data'");
+  });
+
+  await bloco('G42. uso.fusoValido — IANA válido, minúsculo canonizado, inválido/../vazio/65 chars → UTC', async () => {
+    assert(uso.fusoValido('America/Sao_Paulo') === 'America/Sao_Paulo', 'IANA válido devolve ele mesmo');
+    assert(uso.fusoValido('america/sao_paulo') === 'America/Sao_Paulo', 'minúsculo é canonizado pelo ICU');
+    assert(uso.fusoValido('Marte/Base') === 'UTC', 'fuso inexistente → UTC');
+    assert(uso.fusoValido('../etc/passwd') === 'UTC', 'texto de path traversal → UTC (barrado pela regex, nunca chega ao ICU)');
+    assert(uso.fusoValido('') === 'UTC', 'vazio → UTC');
+    assert(uso.fusoValido(undefined) === 'UTC', 'undefined → UTC');
+    assert(uso.fusoValido('A'.repeat(65)) === 'UTC', '65 chars → UTC (teto de 64)');
+    assert(uso.fusoValido('UTC; rm') === 'UTC', "texto com ';' → UTC (barrado pela regex)");
+  });
+
+  await bloco('G43. uso.rotuloDoFuso — o deslocamento no instante agora, UTC±H ou UTC±H:MM', async () => {
+    const agora = Date.UTC(2026, 8, 4, 12);
+    assert(uso.rotuloDoFuso('America/Sao_Paulo', agora) === 'UTC-3', `São Paulo: UTC-3 (veio ${uso.rotuloDoFuso('America/Sao_Paulo', agora)})`);
+    assert(uso.rotuloDoFuso('Asia/Kolkata', agora) === 'UTC+5:30', `Kolkata: UTC+5:30 (veio ${uso.rotuloDoFuso('Asia/Kolkata', agora)})`);
+    assert(uso.rotuloDoFuso('UTC', agora) === 'UTC', `UTC: UTC (veio ${uso.rotuloDoFuso('UTC', agora)})`);
+    assert(uso.rotuloDoFuso('America/New_York', agora) === 'UTC-4', `New York: UTC-4 (veio ${uso.rotuloDoFuso('America/New_York', agora)})`);
+  });
+
+  await bloco('G45. chave estragada nunca lança: horaDe/diaNoFuso degradam para sem-data, montar segue com a hora boa', async () => {
+    assert(uso.horaDe('2026-09-04T99:00:00.000Z') === 'sem-data', "hora fora de 00-23 (T99) → 'sem-data', não lança");
+    assert(uso.horaDe('lixo') === 'sem-data', "texto sem T → 'sem-data'");
+    assert(uso.horaDe(undefined) === 'sem-data', "undefined → 'sem-data'");
+    assert(uso.horaDe('2026-09-04T13:39:14.123Z') === '2026-09-04T13', `ISO completo → chave-hora (veio ${uso.horaDe('2026-09-04T13:39:14.123Z')})`);
+    assert(uso.diaNoFuso('2026-02-31T10', 'UTC') === 'sem-data', "data impossível (31/02) → 'sem-data'");
+
+    const eG45 = {
+      arquivos: {
+        '/x/a.jsonl': {
+          offset: 10, ino: 1, assinatura: '', ignoradas: {}, mtimeMs: 0,
+          horas: { '2026-02-31T10': { m: [5, 0, 0, 0, 1] }, '2026-09-04T10': { m: [9, 0, 0, 0, 1] } },
+        },
+      },
+      caminhoParaPasta: { '/x/a.jsonl': 'pasta1' },
+      classes: { pasta1: { origem: 'aba', projeto: 'g45', rotulo: 'aba g45', id: 'pasta1' } },
+      leitura: { arquivos: 1, comUsage: 1, relidos: 1, bytesLidos: 10, ms: 1, arquivosComErro: 0 },
+    };
+    const agora = Date.UTC(2026, 8, 4, 12);
+    let erro = null;
+    let r = null;
+    try { r = uso.montar(eG45, 1, 'UTC', agora); } catch (e) { erro = e; }
+    assert(erro === null, `montar com uma chave-hora estragada não lança (${erro && erro.message})`);
+    assert(r && r.total.entrada === 9, `a hora estragada vira 'sem-data' e fica fora; só a boa (9) entra (veio ${r && r.total.entrada})`);
+  });
+
+  await bloco('G46. comUsage por VALOR numa varredura de verdade — protege a troca dias→horas de zerar o contador calado', async () => {
+    const { abs } = pastaAba('g46');
+    fs.writeFileSync(path.join(abs, 'a.jsonl'), linhaUsage({ input: 3 }));
+    const r = await uso.relatorio({ dias: 1 });
+    assert(r.leitura.comUsage > 0, `comUsage > 0 (veio ${r.leitura.comUsage})`);
+  });
+
+  await bloco('G47. poda: recarregarUso(tmp novo) — só a hora de hoje sobrevive no cache.json, sob a chave "horas"', async () => {
+    const novoCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-uso-g47-'));
+    recarregarUso(novoCacheDir);
+    const { abs } = pastaAba('g47');
+    const ts40DiasAtras = new Date(Date.now() - 40 * 86400000).toISOString();
+    fs.writeFileSync(path.join(abs, 'a.jsonl'),
+      linhaUsage({ input: 1, ts: ts40DiasAtras })
+      + linhaUsage({ input: 9, ts: '2026-09-04T10:00:00.000Z' }));
+    await uso.relatorio({ dias: 1 });
+    const cacheDisco = JSON.parse(fs.readFileSync(path.join(novoCacheDir, 'cache.json'), 'utf8'));
+    // Caminho EXATO, não `endsWith('a.jsonl')`: o HOME é compartilhado e quase todo bloco grava
+    // um `a.jsonl` — o `find` pegaria o de outro bloco e passaria com a poda quebrada.
+    const entradaArquivo = cacheDisco.arquivos.find((a) => a.caminho === path.join(abs, 'a.jsonl'));
+    assert(entradaArquivo, 'o arquivo de g47 está no cache.json');
+    const chaves = Object.keys((entradaArquivo && entradaArquivo.horas) || {});
+    assert(chaves.length === 1 && chaves[0] === '2026-09-04T10',
+      `só a hora de hoje sobrevive à poda, sob a chave "horas" (veio ${JSON.stringify(chaves)})`);
   });
 
   const faltaram = CASOS_ESPERADOS.filter((c) => !CASOS.has(c));

@@ -1,0 +1,59 @@
+
+⚠ Codex's Linux sandbox uses bubblewrap and needs access to
+  create user namespaces.
+
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                       │
+│                                                  │
+│ model:     mock   /model to change               │
+│ directory: /tmp/medicao-menu-codex2-wesa57fr/cwd │
+╰──────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+
+/mcp
+
+🔌  MCP Tools
+
+  • No MCP servers configured.
+    See the MCP docs to configure them.
+
+
+› rode um comando
+
+
+⚠ Model metadata for `mock` not found. Defaulting to
+  fallback metadata; this can degrade performance and cause
+  issues.
+
+■ Conversation interrupted - tell the model what to do
+differently. Something went wrong? Hit `/feedback` to report
+the issue.
+
+
+› demore
+
+
+■ Conversation interrupted - tell the model what to do
+differently. Something went wrong? Hit `/feedback` to report
+the issue.
+ 
+ 
+  Select Model and Effort
+  Access legacy models by running codex -m <model_name> or
+ 
+› 1. gpt-6-astra (default)  Our most capable model for
+                            complex, demanding work.
+  2. gpt-5.6-sol            Latest frontier agentic coding
+                            model.
+  3. gpt-5.6-terra          Balanced agentic coding model
+                            for everyday work.
+  4. gpt-5.6-luna           Fast and affordable agentic
+                            coding model.
+  5. gpt-5.5                Frontier model for complex
+                            coding, research, and real-
+                            world work.
+  6. gpt-5.2                Optimized for professional
+                            work and long-running agents.
+ 
+  Press enter to confirm or esc to go back                  

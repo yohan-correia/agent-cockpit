@@ -37,6 +37,9 @@ if (MODO !== 'fixture' && MODO !== 'real') {
   console.error('🔴 defina MODO=fixture ou MODO=real');
   process.exit(2);
 }
+// O fuso que o roteiro força no navegador (card `tela-de-uso-no-fuso-do-aparelho`) — o mesmo
+// valor alimenta o fixture, o assert S5/S5b e o container. Default = o do dono (UTC-3).
+const FUSO = process.env.FUSO || 'America/Sao_Paulo';
 const SAIDA = process.env.SAIDA;
 if (!SAIDA) {
   console.error('🔴 defina SAIDA=<pasta onde os PNGs e o medidas.json vão cair>');
@@ -74,8 +77,15 @@ function montarFixture(raiz) {
   const preProjeto = `${cru(path.join(home, 'projetos'))}-`;
   const preWorktree = `${cru(path.join(home, '.cockpit', 'worktrees'))}-`;
 
-  const hoje = new Date().toISOString().slice(0, 10);
-  const seteDiasFmt = (offsetDias) => new Date(Date.now() - offsetDias * 86400000).toISOString();
+  // O dia local no FUSO forçado, n dias-calendário atrás de agora — mesma aritmética de
+  // `janelaNoFuso` (lib/uso.js): o dia de "hoje" vem do Intl no fuso, e o deslocamento é em
+  // Date.UTC sobre esse dia (nunca em cima do relógio UTC cru, que erraria perto da virada).
+  const fmtDiaLocal = new Intl.DateTimeFormat('en-CA', { timeZone: FUSO, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const diaLocal = (n) => {
+    const [a, m, d] = fmtDiaLocal.format(Date.now()).split('-').map(Number);
+    return new Date(Date.UTC(a, m - 1, d) - n * 86400000).toISOString().slice(0, 10);
+  };
+  const hoje = diaLocal(0);
 
   const linha = ({ ts, modelo = 'claude-opus-5', input = 0, output = 0, cw = 0, cr = 0, isSidechain = false }) => `${JSON.stringify({
     type: 'assistant', timestamp: ts, isSidechain,
@@ -86,7 +96,7 @@ function montarFixture(raiz) {
   const pastaAba = path.join(projetos, `${preProjeto}projeto-a`);
   fs.mkdirSync(pastaAba, { recursive: true });
   // origem 1 (aba): entrada 1000, cacheLeitura 9000 -> total 10000
-  fs.writeFileSync(path.join(pastaAba, 'a.jsonl'), linha({ ts: `${hoje}T09:00:00.000Z`, input: 1000, cr: 9000 }));
+  fs.writeFileSync(path.join(pastaAba, 'a.jsonl'), linha({ ts: `${hoje}T12:00:00.000Z`, input: 1000, cr: 9000 }));
 
   const idJob1 = 'joba';
   const pastaJob1 = path.join(projetos, `${preWorktree}${idJob1}`);
@@ -95,7 +105,7 @@ function montarFixture(raiz) {
   fs.writeFileSync(path.join(jobs, idJob1, 'meta.json'), JSON.stringify({ project: 'projeto-a', type: 'ataca', title: 'card um <img src=x onerror=alert(1)>' }));
   // origem 2 (job 1): entrada 2000, cacheLeitura 3000 -> total 5000. O `<img ...>` no título
   // é o marcador de S11: se algum dia isto virar innerHTML, o navegador executa o onerror.
-  fs.writeFileSync(path.join(pastaJob1, 'a.jsonl'), linha({ ts: `${hoje}T09:05:00.000Z`, input: 2000, cr: 3000 }));
+  fs.writeFileSync(path.join(pastaJob1, 'a.jsonl'), linha({ ts: `${hoje}T12:00:00.000Z`, input: 2000, cr: 3000 }));
 
   const idJob2 = 'jobb';
   const pastaJob2 = path.join(projetos, `${preWorktree}${idJob2}`);
@@ -104,8 +114,8 @@ function montarFixture(raiz) {
   fs.mkdirSync(path.join(jobs, idJob2), { recursive: true });
   fs.writeFileSync(path.join(jobs, idJob2, 'meta.json'), JSON.stringify({ project: 'projeto-a', type: 'ataca', title: 'card dois' }));
   // origem 3 (job 2): pai 1000+2000=3000, subagente 500+500=1000 -> total 4000 (S8)
-  fs.writeFileSync(path.join(pastaJob2, 'sessao-pai.jsonl'), linha({ ts: `${hoje}T09:10:00.000Z`, input: 1000, cr: 2000 }));
-  fs.writeFileSync(path.join(subagentsDir, 'agent-x.jsonl'), linha({ ts: `${hoje}T09:11:00.000Z`, input: 500, cr: 500, isSidechain: true }));
+  fs.writeFileSync(path.join(pastaJob2, 'sessao-pai.jsonl'), linha({ ts: `${hoje}T12:00:00.000Z`, input: 1000, cr: 2000 }));
+  fs.writeFileSync(path.join(subagentsDir, 'agent-x.jsonl'), linha({ ts: `${hoje}T12:00:00.000Z`, input: 500, cr: 500, isSidechain: true }));
 
   // projeto-a HOJE = 10000 + 5000 + 4000 = 19000
 
@@ -117,19 +127,19 @@ function montarFixture(raiz) {
   // S1-S10 continuam cobrando exatamente os mesmos números.
   const pastaAbaB = path.join(projetos, `${preProjeto}projeto-b`);
   fs.mkdirSync(pastaAbaB, { recursive: true });
-  fs.writeFileSync(path.join(pastaAbaB, 'a.jsonl'), linha({ ts: `${hoje}T09:00:00.000Z`, modelo: 'claude-haiku-4-5', input: 100, cr: 900 }));
+  fs.writeFileSync(path.join(pastaAbaB, 'a.jsonl'), linha({ ts: `${hoje}T12:00:00.000Z`, modelo: 'claude-haiku-4-5', input: 100, cr: 900 }));
 
   // TOTAL HOJE = 19000 + 1000 = 20000. projeto-a = 95,0% · projeto-b = 5,0% (S2/S3).
 
   // ── mais volume 3 dias atrás, só para o projeto-a: aparece em 7 dias, não em hoje (S9) ──
-  fs.writeFileSync(path.join(pastaAba, 'b.jsonl'), linha({ ts: `${seteDiasFmt(3)}`, input: 500, cr: 0 }));
+  fs.writeFileSync(path.join(pastaAba, 'b.jsonl'), linha({ ts: `${diaLocal(3)}T12:00:00.000Z`, input: 500, cr: 0 }));
   // TOTAL 7 DIAS = 20000 + 500 = 20500.
 
   // ── par empatado, só dentro da janela de 7 dias (S10) ──
   for (const nome of ['aaa-empate', 'zzz-empate']) {
     const p = path.join(projetos, `${preProjeto}${nome}`);
     fs.mkdirSync(p, { recursive: true });
-    fs.writeFileSync(path.join(p, 'a.jsonl'), linha({ ts: seteDiasFmt(2), input: 50, cr: 0 }));
+    fs.writeFileSync(path.join(p, 'a.jsonl'), linha({ ts: `${diaLocal(2)}T12:00:00.000Z`, input: 50, cr: 0 }));
   }
   // TOTAL 7 DIAS COM O EMPATE = 20500 + 50 + 50 = 20600.
 
@@ -138,7 +148,7 @@ function montarFixture(raiz) {
   // IGUALDADE em vez de tentar ordenar strings DD/MM — comparar "1230" com "0101" reprovaria
   // o smoke na virada do ano, e um gate que quebra sozinho um dia por ano é pior que nenhum.
   const paraBR = (offsetDias) => {
-    const [, mes, dia] = new Date(Date.now() - offsetDias * 86400000).toISOString().slice(0, 10).split('-');
+    const [, mes, dia] = diaLocal(offsetDias).split('-');
     return `${dia}/${mes}`;
   };
   return {
@@ -153,15 +163,30 @@ function montarFixture(raiz) {
 
 // ─── sobe o server.js ─────────────────────────────────────────────────────
 
-async function subirServidor({ home, certDir, usoDir }) {
+async function subirServidor({ home, certDir, usoDir, modo }) {
   const ambiente = { ...process.env };
   delete ambiente.COCKPIT_TOKEN;
+  // Isolamento por lista FECHADA (#78/#62) — nos DOIS modos: mesmo em MODO=real (HOME de
+  // verdade), estas pastas ficam dentro do tmp descartável do smoke, nunca em ~/.cockpit de
+  // produção. COCKPIT_TMUX_SOCKET dedicado: nunca o herdado de quem roda o teste.
+  const raizIsolamento = path.dirname(usoDir);
   Object.assign(ambiente, {
     HOST: '127.0.0.1', PORT: String(PORTA), HOME: home,
     COCKPIT_CERT_DIR: certDir, COCKPIT_USO_DIR: usoDir, COCKPIT_TOKEN: TOKEN,
+    COCKPIT_USO_CODEX_DIR: path.join(raizIsolamento, 'cache-codex-descartavel'),
+    COCKPIT_LIDAS_DIR: path.join(raizIsolamento, 'lidas-descartavel'),
+    COCKPIT_PUSH_DIR: path.join(raizIsolamento, 'push-descartavel'),
+    COCKPIT_TMUX_SOCKET: `cockpit-smoke-uso-${process.pid}`,
     COCKPIT_JOBS_DIR: path.join(os.tmpdir(), `cockpit-sem-jobs-${process.pid}`), // pasta nunca criada: painel de jobs desligado, não lê os jobs reais de quem roda o teste
     COCKPIT_VIGIA_MS: '0', // MODO=real usa o HOME de verdade — a trava do COCKPIT_CONTATO já cobre, isto é cinto e suspensório
   });
+  // Em MODO=fixture, `lib/adaptador-codex.js:39` lê COCKPIT_CODEX_RAIZ (não CODEX_HOME) — sem
+  // isto o servidor leria o ~/.codex de verdade de quem roda o teste mesmo com HOME falso.
+  if (modo === 'fixture') ambiente.COCKPIT_CODEX_RAIZ = path.join(home, '.codex', 'sessions');
+  // Em MODO=fixture os jobs SÃO o fixture: o `meta.json` de cada worktree mora em
+  // <home>/.cockpit/jobs, e a pasta "nunca criada" acima o escondia — os dois jobs viravam
+  // "(job sem registro)" e S1/S7/S8 caíam (armadilha #57, desde c0e890b).
+  if (modo === 'fixture') ambiente.COCKPIT_JOBS_DIR = path.join(home, '.cockpit', 'jobs');
   const processo = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: ambiente, stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -208,6 +233,7 @@ const fs = require('fs');
 const BASE = process.env.BASE;
 const TOKEN = process.env.TOKEN;
 const MODO = process.env.MODO;
+const FUSO = process.env.FUSO;
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
@@ -252,8 +278,17 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
   try {
     await pagina.setViewport(CELULAR);
     await pagina.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+    // Sem isto o Chromium do container roda em UTC e o print diria "(UTC)" (card
+    // tela-de-uso-no-fuso-do-aparelho) — mesmo forcar de TZ da D26 (gate-ui.js), por pagina.
+    // (Sem crases neste comentario: o roteiro inteiro e uma template string.)
+    await pagina.emulateTimezone(FUSO);
     await pagina.evaluateOnNewDocument((token) => {
-      try { localStorage.setItem('cockpit-token', token); } catch (e) { /* modo privado */ }
+      try {
+        localStorage.setItem('cockpit-token', token);
+        // Sem isto o Chromium em inglês (public/i18n.js:8-10) escreve "Today" e o S5 reprova
+        // por idioma, não por fuso.
+        localStorage.setItem('cockpit-idioma', 'pt-BR');
+      } catch (e) { /* modo privado */ }
     }, TOKEN);
 
     if (MODO === 'fixture') {
@@ -350,6 +385,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
         abaLimpa = limpa;
         {
           await limpa.setViewport(CELULAR);
+          await limpa.emulateTimezone(FUSO);
           // Aba nova NAO basta: localStorage e por ORIGEM, compartilhado por todas as abas
           // do mesmo navegador — o token que a pagina original gravou continua la. Entao
           // sao duas cargas: a primeira so para ter acesso ao localStorage da origem, o
@@ -386,6 +422,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
         const nova = await navegador.newPage();
         abaPrimeiroAcesso = nova;
         await nova.setViewport(CELULAR);
+        await nova.emulateTimezone(FUSO);
         await nova.goto(BASE + '/?token=' + encodeURIComponent(TOKEN), { waitUntil: 'networkidle2', timeout: 30000 });
         await nova.waitForSelector('#abas', { timeout: 15000 });
         await nova.click('#btn-config');
@@ -498,7 +535,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
     }
 
     try {
-      servidor = await subirServidor({ home: homeParaServidor, certDir, usoDir });
+      servidor = await subirServidor({ home: homeParaServidor, certDir, usoDir, modo: MODO });
     } catch (e) {
       console.error(`🟡 ambiente: ${e.message}`);
       return process.exit(2);
@@ -511,6 +548,7 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       '-e', `BASE=http://127.0.0.1:${PORTA}`,
       '-e', `TOKEN=${TOKEN}`,
       '-e', `MODO=${MODO}`,
+      '-e', `FUSO=${FUSO}`,
       '-v', `${raiz}:/w:ro`,
       '-v', `${SAIDA}:/out`,
       IMAGEM, '/w/roteiro.js',
@@ -540,6 +578,10 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
     if (MODO === 'fixture' && problemas.length === 0) {
       // `totaisFixture` deixou de ser só decorativo: `diasEsperados` é lido pelo S17b abaixo.
       // Os totais em número continuam comentados dentro de `montarFixture`.
+      // O rótulo do fuso que S5/S5b esperam na tela — UTC-3 só quando FUSO é São Paulo
+      // (D5, `rotuloDoFuso`); qualquer outro FUSO forçado só precisa parecer um rótulo de
+      // deslocamento (UTC, UTC±H ou UTC±H:MM), sem cravar o valor exato aqui.
+      const esperadoFuso = FUSO === 'America/Sao_Paulo' ? 'UTC-3' : 'UTC[+-]?[\\d:]*';
       // S1 — as 2 linhas de projeto, na ordem [maior, menor], com o nome exato
       ok(JSON.stringify(medidas.nomesHoje) === JSON.stringify(['projeto-a', 'projeto-b']),
         `S1: ordem [projeto-a, projeto-b] (veio ${JSON.stringify(medidas.nomesHoje)})`);
@@ -551,9 +593,9 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       const [l1, l2] = medidas.largurasHoje || [];
       ok(typeof l1 === 'number' && typeof l2 === 'number' && l1 > l2 && (l1 + l2) <= 100.5,
         `S4: barra do 1º (${l1}) > barra do 2º (${l2}), soma <= 100% (soma=${l1 + l2})`);
-      // S5 — o texto do período é "Hoje · DD/MM (UTC)"
-      ok(/^Hoje · \d{2}\/\d{2} \(UTC\)/.test(medidas.resumoHoje || ''),
-        `S5: período no formato "Hoje · DD/MM (UTC)" (veio "${medidas.resumoHoje}")`);
+      // S5 — o texto do período é "Hoje · DD/MM (<fuso>)", com o rótulo do FUSO forçado
+      ok(new RegExp(`^Hoje · \\d{2}\\/\\d{2} \\(${esperadoFuso}\\)`).test(medidas.resumoHoje || ''),
+        `S5: período no formato "Hoje · DD/MM (${esperadoFuso})" (veio "${medidas.resumoHoje}")`);
       // S6 — cache aparece SEPARADO de entrada/saída: 3 nós de texto distintos, cada um
       // começando pelo rótulo certo — não uma string só com os três números concatenados.
       const n1 = medidas.numeros1 || [];
@@ -569,6 +611,10 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
       // curto(20600) === "20,6k" (20000 + 500 do dia -3 + 50 + 50 do par empatado).
       ok(/total 20,6k/.test(medidas.resumo7 || ''),
         `S9: o resumo de 7 dias cita "total 20,6k" (veio "${medidas.resumo7}")`);
+      // S5b — o resumo de 7 dias TAMBÉM escreve o rótulo do fuso (rotuloPeriodo tem DOIS
+      // "(UTC)" em public/uso.js — Hoje e N dias — e os dois mudam).
+      ok(new RegExp(`\\(${esperadoFuso}\\) · total`).test(medidas.resumo7 || ''),
+        `S5b: o resumo de 7 dias também traz "(${esperadoFuso}) · total" (veio "${medidas.resumo7}")`);
       // S10 — desempate alfabético estável entre aaa-empate/zzz-empate na janela de 7 dias
       const nomes7 = medidas.nomes7 || [];
       const iA = nomes7.indexOf('aaa-empate');

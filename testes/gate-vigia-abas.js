@@ -895,12 +895,12 @@ async function testarLeituraPermissaoNegadaLanca() {
 function testarFiacaoNoServidor() {
   console.log('\nP1e — a fiação nos DOIS ramos de server.js');
   const fonte = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const ocorrencias = fonte.split('vigiaAbas.iniciar()').length - 1;
-  ok(ocorrencias >= 2, `vigiaAbas.iniciar() aparece ao menos DUAS vezes em server.js (achei ${ocorrencias}) — uma só passaria com o ramo TLS sem vigia, e produção roda TLS`);
+  const ocorrencias = fonte.split('vigiaAbas.iniciar(').length - 1;
+  ok(ocorrencias >= 2, `vigiaAbas.iniciar( aparece ao menos DUAS vezes em server.js (achei ${ocorrencias}) — uma só passaria com o ramo TLS sem vigia, e produção roda TLS`);
   const iCert = fonte.indexOf('if (!certificado)');
   const iElse = fonte.indexOf('} else {', iCert);
-  const iPrimeira = fonte.indexOf('vigiaAbas.iniciar()');
-  const iSegunda = fonte.indexOf('vigiaAbas.iniciar()', iPrimeira + 1);
+  const iPrimeira = fonte.indexOf('vigiaAbas.iniciar(');
+  const iSegunda = fonte.indexOf('vigiaAbas.iniciar(', iPrimeira + 1);
   ok(iCert !== -1 && iElse !== -1 && iPrimeira > iCert && iPrimeira < iElse,
     'a primeira ocorrência está dentro do ramo `if (!certificado)`');
   ok(iSegunda !== -1 && iSegunda > iElse, 'a segunda ocorrência está dentro do ramo `else` (TLS + multiplexador)');

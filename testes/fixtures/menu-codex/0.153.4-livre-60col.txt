@@ -1,0 +1,59 @@
+
+⚠ Codex's Linux sandbox uses bubblewrap and needs access to
+  create user namespaces.
+
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                       │
+│                                                  │
+│ model:     mock   /model to change               │
+│ directory: /tmp/medicao-menu-codex2-wesa57fr/cwd │
+╰──────────────────────────────────────────────────╯
+
+  Tip: New Build faster with Codex.
+
+/mcp
+
+🔌  MCP Tools
+
+  • No MCP servers configured.
+    See the MCP docs to configure them.
+
+
+› rode um comando
+
+
+⚠ Model metadata for `mock` not found. Defaulting to
+  fallback metadata; this can degrade performance and cause
+  issues.
+
+■ Conversation interrupted - tell the model what to do
+differently. Something went wrong? Hit `/feedback` to report
+the issue.
+
+
+› demore
+
+
+■ Conversation interrupted - tell the model what to do
+differently. Something went wrong? Hit `/feedback` to report
+the issue.
+ 
+ 
+› Ask Codex to do anything
+ 
+  mock default · /tmp/medicao-menu-codex2-wesa57fr/cwd
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

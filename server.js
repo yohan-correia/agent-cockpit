@@ -29,14 +29,25 @@ const limite = require('./lib/limite');
 const avisos = require('./lib/avisos');
 const vigiaAbas = require('./lib/vigia-abas');
 const abas = require('./lib/abas');
+const lidas = require('./lib/lidas');
+const leituras = require('./lib/leituras');
 const agentes = require('./lib/agentes');
 const externo = require('./lib/externo');
 const contexto = require('./lib/contexto');
 const statusCodex = require('./lib/status-codex');
 const arquivos = require('./lib/arquivos');
 const uso = require('./lib/uso');
+const usoCodex = require('./lib/uso-codex');
 const jobs = require('./lib/jobs');
+const revisar = require('./lib/revisar');
+const adaptadorJob = require('./lib/adaptador-job');
 const acesso = require('./lib/acesso');
+const monitor = require('./lib/monitor');
+const disco = require('./lib/monitor-disco');
+const terminou = require('./lib/terminou');
+// Um escritor, dois leitores (D69, S6): o GET /api/abas e o vigia de push chamam `abas.listar()`
+// por esta função, que anota `terminouEm` em cada aba.
+const listarAbasComFim = terminou.listarComFim({ listar: abas.listar, mapaDeLidas: lidas.mapa });
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 7879);
@@ -201,6 +212,16 @@ async function listarProjetos() {
   }
 }
 
+// Nome de pasta que a aba nova pode criar (card `criar-pasta-na-aba-nova`): letras, números, - e _, até
+// 64, começando por letra ou número. Sem espaço e sem ponto — o tmux troca `.` por `_` no nome da janela.
+// A MESMA régua mora em `public/app.js` (`NOME_DE_PASTA`); mudou uma, muda a outra.
+const NOME_DE_PASTA = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+/** "É a mesma pasta para um humano": sem acento, sem caixa. A mesma chave do filtro da tela (`normalizarBusca`). */
+const chaveDePasta = (s) => String(s).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
+// Checar e criar em FILA (S16): dois pedidos simultâneos (`Dup-A` e `dup-a`) leriam a mesma lista e
+// criariam os dois — o Linux distingue caixa e o EEXIST só pega o nome exato.
+let filaDePastas = Promise.resolve();
+
 // Jobs do orquestrador. Até 2026-09-10 quem sabia o estado de um job era o `painel-externo`
 // (um serviço à parte, na 7878), e esta rota só fazia um `http.get` nele — o que deixava um
 // recurso do cockpit dependendo de um programa que não está neste repositório. Quem clonasse
@@ -209,10 +230,11 @@ async function listarProjetos() {
 // por ninguém: virar fallback manteria de pé exatamente a dependência que esta entrega existe
 // para matar.
 
-// `?tudo=1` (spec 2026-09-08, §4.2) — quanto tempo um job ENCERRADO continua na lista depois
-// de terminar. Medido contra os 169 jobs do disco em 08/09: 24h traz 11 encerrados (48h traria
-// 14; 6h traria só 1). Trocável numa linha se o usuário quiser outro número — não é desenho novo.
-const JANELA_ENCERRADOS_MS = 24 * 60 * 60 * 1000;
+// Quem terminou BEM sai da vista em 1 HORA (decisão do dono, 11/09): `done`, `merged` e
+// `teardown` são o fim feliz, e ninguém os relê. 24 h os empilhavam por cima do que importa.
+// O nome mudou junto com o significado: esta janela não é mais "dos encerrados" — o `failed`
+// também encerrou e NÃO é medido por ela (ver a isenção logo abaixo).
+const JANELA_FIM_FELIZ_MS = 60 * 60 * 1000;
 // §4.1.2 — teto de segurança do `?tudo=1`, e ele CEDE para quem exige ação: `running`,
 // `blocked`, `orfao` e estado desconhecido nunca são cortados, só os encerrados (do mais
 // antigo). Com os dados de hoje (16 linhas) o teto nem encosta — é rede, não regra do dia a dia.
@@ -226,6 +248,42 @@ const ESTADOS_CONHECIDOS = new Set(['running', 'done', 'teardown', 'failed', 'me
 // carregando o TEXTO CRU do disco — medido: 1 job de 179 tem isso hoje. Allowlist protege do
 // que o orquestrador inventar depois, sem avisar o cockpit.
 const KINDS_DE_DESFECHO = new Set(['done', 'failed', 'blocked']);
+
+/**
+ * O desfecho de um job do disco (`lib/jobs.js`), pela mesma allowlist de `KINDS_DE_DESFECHO`.
+ *
+ * Extraído para ter UM DONO só: a rota `/api/jobs?tudo=1` (abaixo) e `acompanharJob` (a fonte
+ * do fluxo SSE de um job, ver a seção SSE) precisam do MESMO cálculo, e escrevê-lo duas vezes
+ * é a armadilha #40 — a regra se separa da legenda e uma das duas envelhece calada, e sem a
+ * allowlist um evento `working` viraria "desfecho" na tela. `fim` fica de FORA desta função de
+ * propósito: ele nasce em `lib/jobs.js` (`j.fim`, o TÉRMINO do trabalho — não a última linha,
+ * que pode ser a faxina do teardown) e é consumido pela janela de 1 h, pelo `rank` e pela
+ * ordenação antes do `.map` final — derivá-lo de novo aqui seria a mesma #40 de novo.
+ */
+function desfechoDoJob(j) {
+  return KINDS_DE_DESFECHO.has(j.event?.kind) ? (j.event.text ?? null) : null;
+}
+
+// Quantos bytes de `result.md` a etiqueta "parou no limite" lê — só o INÍCIO do relatório,
+// nunca o arquivo inteiro (ele pode chegar a 64 KB, ver TETO_RESULTADO abaixo).
+const TETO_LEITURA_LIMITE = 4 * 1024;
+const RE_PAROU_NO_LIMITE = /hit your (session )?limit/i;
+
+/** A etiqueta "parou no limite" (plano 2026-10-04): só os primeiros 4 KB do `result.md`. */
+async function paraNoLimite(id) {
+  try {
+    const caminho = path.join(limite.dirJobs(), id, 'result.md');
+    const fd = await fsp.open(caminho, 'r');
+    try {
+      const buf = Buffer.alloc(TETO_LEITURA_LIMITE);
+      const { bytesRead } = await fd.read(buf, 0, TETO_LEITURA_LIMITE, 0);
+      return RE_PAROU_NO_LIMITE.test(buf.toString('utf8', 0, bytesRead));
+    } finally { await fd.close().catch(() => {}); }
+  } catch { return false; }
+}
+
+// O teto do `/api/jobs/resultado` — o relatório inteiro do `result.md`, cortado em 64 KB.
+const TETO_RESULTADO = 64 * 1024;
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
 
@@ -414,8 +472,8 @@ function acompanharAba(chave, mandar, aoEncerrar) {
       if (lida === null) {
         mandar({ tipo: 'erro', mensagem: 'não sei ler esta conversa — o formato do CLI mudou' });
       } else {
-        const { eventos, tamanho, cortado } = lida;
-        if (cortado) mandar({ tipo: 'historico_cortado' });
+        const { eventos, tamanho, cortado, inicio } = lida;
+        if (cortado) mandar({ tipo: 'historico_cortado', inicio });
         // D-b: a leitura inicial despeja a cauda inteira do histórico. Um `humano` que voltou
         // do disco é o servidor sabendo que aquele texto já saiu da fila — a pendente daquela
         // aba que casar com ele (por texto E por tempo) é consumida ANTES de reemitir nada.
@@ -657,6 +715,297 @@ function acompanharAba(chave, mandar, aoEncerrar) {
 const barramento = new (require('node:events').EventEmitter)();
 barramento.setMaxListeners(0);
 
+/**
+ * Acompanha UM job do orquestrador. Irmã de `acompanharAba`, NÃO um parâmetro dela: um job
+ * não tem troca de arquivo (#33), `esperando`, `status_codex`, pendentes nem medidor de
+ * verdade — enfiar oito `if (ehJob)` ali seria a armadilha #40 pela porta dos fundos.
+ *
+ * 🔴 NÃO é `async function`. `acompanharAba` (acima) tem retorno SÍNCRONO com um runner
+ * assíncrono por dentro: monta `{ parar, bater }` e devolve na hora, disparando o trabalho de
+ * verdade num `(async () => {...})()`. Escrever `async function acompanharJob` faria
+ * `paradas.set(chave, <Promise>)` — e no relógio consolidado, `paradas.get(chave)?.bater`
+ * viraria `undefined`, calado: o job para de receber estado e ninguém vê erro nenhum.
+ *
+ * Definida DEPOIS do `barramento`, e não junto de `acompanharAba` acima, para não entrar no
+ * recorte de texto que `testes/gate-ui.js` faz entre `function acompanharAba` e
+ * `// Avisa os fluxos abertos` (aquele teste conta quantos `tipo: 'sessao'` existem SÓ na
+ * função da aba — um `acompanharJob` colado ali contaria um terceiro `sessao` que não é dela).
+ */
+function acompanharJob(chave, mandar, aoEncerrar) {
+  let morto = false;
+  const aoParar = [];
+  const parar = () => {
+    if (morto) return;
+    morto = true;
+    aoParar.forEach((fn) => fn());
+  };
+  let bater = () => {};
+  const alvo = { parar, bater: (linha) => bater(linha) };
+
+  // `job-<id>` (§7.1): o prefixo é hífen, não `:`, porque a rota valida cada chave com
+  // `/^[\w-]+$/` e `:` cairia em 400 mudo (armadilha #17 — a mesma que fez `aba-N`).
+  const id = chave.slice(4);
+
+  (async () => {
+    // Duas travas (§5.4): a FORMA do id (idValido) e a EXISTÊNCIA de verdade no disco
+    // (existe) — a lista de ids válidos sai do disco, nunca de `/api/jobs`, que é HTTP
+    // filtrado e pode estar fora do ar.
+    if (!adaptadorJob.idValido(id) || !(await adaptadorJob.existe(id))) {
+      mandar({ tipo: 'erro', mensagem: 'não achei este job' });
+      // R34/#47: sem o `sincronizado`, a fita do cliente fica presa no fragmento que
+      // `segurarFita()` criou — os DOIS eventos, sempre.
+      mandar({ tipo: 'sincronizado', turnoEmAndamento: false });
+      return aoEncerrar();
+    }
+    if (morto) return;
+
+    const dadosIniciais = await jobs.listar();
+    if (morto) return;
+    const jInicial = dadosIniciais && Array.isArray(dadosIniciais.jobs)
+      ? dadosIniciais.jobs.find((j) => j && j.id === id) : null;
+
+    const caminho = adaptadorJob.caminhoDoLog(id);
+    // O mapa de subagentes SOBREVIVE por todo o fluxo deste job (Fase 1.1 item 3 do plano):
+    // sem ele, o incremental perderia o nome de um `Agent` lido numa leitura anterior.
+    const subagentes = new Map();
+
+    // `cwd: null` é regra de hoje — worktree é caminho de disco e não vai para o navegador
+    // (§5.3). `desfecho`/`fim` usam a MESMA função da rota (`desfechoDoJob`, acima) — nunca
+    // uma segunda derivação (#40).
+    mandar({
+      tipo: 'sessao',
+      meta: {
+        titulo: jInicial ? jInicial.title : null, cwd: null, contexto: null, sessaoId: null,
+        reiniciada: false,
+        job: {
+          estado: jInicial ? jInicial.state : null,
+          desfecho: jInicial ? desfechoDoJob(jInicial) : null,
+          desde: jInicial ? (jInicial.created_at || null) : null,
+          fim: jInicial ? (jInicial.fim || null) : null,
+        },
+      },
+    });
+
+    let lido = 0;
+    const lida = await adaptadorJob.lerConversa(caminho, 0, { subagentes });
+    if (morto) return;
+    if (lida === null) {
+      mandar({ tipo: 'erro', mensagem: 'não sei ler esta conversa — o formato do job mudou' });
+    } else {
+      const { eventos, tamanho, cortado, inicio } = lida;
+      if (cortado) mandar({ tipo: 'historico_cortado', inicio });
+      for (const evento of eventos) mandar(evento);
+      lido = tamanho;
+    }
+    if (morto) return;
+
+    let estadoAtual = jInicial ? jInicial.state : null;
+    mandar({ tipo: 'sincronizado', turnoEmAndamento: estadoAtual === 'running' });
+
+    // Quanto da janela do agente já está ocupado (card `contexto-da-sessao-do-job`, 22/09) —
+    // a sessão PRINCIPAL do job, nunca a do subagente (D1). ANTES do `setInterval` abaixo e
+    // ANTES do `if (ESTADOS_TERMINAIS…)`: entre o `sincronizado` e o terminal existe o relógio
+    // de 700 ms, e pôr este bloco DEPOIS dele faria os dois escreverem `ultimoContexto`
+    // concorrentemente; e num job já terminado ao abrir (D4) o relógio nem chega a nascer —
+    // este `doArquivo` é a ÚNICA medição que acontece nesse caso. `doArquivo` varre do FIM do
+    // arquivo para trás — não depende de onde a leitura inicial (`lida`, acima) parou; bytes
+    // entre `lido` e agora acabam medidos duas vezes, e `chaveDoContexto` dedupa, que é para o
+    // que ela existe.
+    const longa = await contexto.janelaLongaConfigurada();
+    if (morto) return;
+    const ctxInicial = await adaptadorJob.doArquivo(caminho);
+    if (morto) return;
+    let ultimoContexto = contexto.chaveDoContexto(ctxInicial);
+    if (ctxInicial) mandar({ tipo: 'contexto', contexto: ctxInicial });
+
+    // Vira `true` no INÍCIO do término (síncrono, antes de qualquer `await` de término) para
+    // que uma batida do relógio de arquivo que já estava no ar seja descartada ao voltar —
+    // sem isso, a última fala sairia duas vezes (§5.3.2/G-J4: ler antes de parar deixa duas
+    // leituras no mesmo offset).
+    let terminando = false;
+    // `true` depois que o término JÁ foi processado uma vez. Separado de `terminando` de
+    // propósito: aquele dura só a leitura final; este diz que ela não se repete. `done →
+    // merged → teardown` continuam chegando à tela como `job_estado`.
+    let encerrado = false;
+
+    // A allowlist é dos TERMINAIS (§5.3.1) — tudo o mais (`blocked`, `orfao`, desconhecido)
+    // segue lendo. Errar para o lado de continuar custa um relógio de 700 ms parado à toa;
+    // errar para o outro lado perde a conversa.
+    const ESTADOS_TERMINAIS = new Set(['done', 'merged', 'teardown', 'failed']);
+
+    // O arquivo é a conversa; olhar rápido nele é o que faz a fala aparecer enquanto o job
+    // ainda escreve. Sem contador de geração — a armadilha #33 NÃO se aplica aqui (§7.10 da
+    // spec): o caminho do `claude.log` de um job nunca muda, não há `/clear` num `claude -p`.
+    // Declarado para ninguém reimplementar a troca de arquivo por analogia.
+    //
+    // TENTATIVAS_DE_ABERTURA — a GARANTIA da medição (achado dos DOIS avaliadores,
+    // independente, nas duas rodadas). Nem o `doArquivo` da abertura (acima) nem a medição do
+    // ramo inicial de `lerConversa` bastam sozinhos: o primeiro pode ter achado o log VAZIO, e
+    // o segundo tem a régua de 80 eventos (`ALVO_MENSAGENS`) — uma rajada de subagente pode
+    // engolir o principal antes dela. Enquanto NUNCA se mediu nada (`!ultimoContexto`), e só
+    // quando o arquivo CRESCEU, o relógio refaz a varredura FUNDA (`doArquivo`, sem a régua de
+    // 80). Com TETO de tentativas: sem ele, um job que nunca tem `usage` (21% dos jobs, spec
+    // D4) pagaria uma varredura de até 4 MB a cada 700 ms, para sempre. Esgotado o teto, o
+    // medidor fica sem número e o incremental continua valendo — degrada, não quebra.
+    const TENTATIVAS_DE_ABERTURA = 5;
+    let tentativasDeAbertura = 0;
+    const relogioArquivo = setInterval(async () => {
+      if (morto || terminando) return;
+      try {
+        const antesDoLote = lido;
+        const parcial = await adaptadorJob.lerConversa(caminho, lido, { subagentes, contexto: { longa } });
+        if (morto || terminando || !parcial) return;
+        const { eventos, tamanho, contexto: ctxDoLote } = parcial;
+        lido = tamanho;
+        for (const evento of eventos) mandar(evento);
+
+        let ctx = ctxDoLote;
+        const cresceu = tamanho > antesDoLote;
+        if (!ctx && !ultimoContexto && cresceu && tentativasDeAbertura < TENTATIVAS_DE_ABERTURA) {
+          tentativasDeAbertura += 1;
+          ctx = await adaptadorJob.doArquivo(caminho);
+          if (morto || terminando) return;
+        }
+
+        // `ctx` nulo nunca vira evento (mesma régua de `server.js:557-560`): um lote só de
+        // subagente não tem número novo do principal, e mandar `null` apagaria o medidor para
+        // ele voltar depois — pisca-pisca justo quando o usuário está olhando. Sem número
+        // novo, o topo mantém o último, que é verdade.
+        if (ctx) {
+          const chaveCtx = contexto.chaveDoContexto(ctx);
+          if (chaveCtx !== ultimoContexto) {
+            mandar({ tipo: 'contexto', contexto: ctx });
+            ultimoContexto = chaveCtx;
+          }
+        }
+      } catch { /* arquivo sumiu ou está sendo reescrito: a próxima batida pega */ }
+    }, 700);
+    aoParar.push(() => clearInterval(relogioArquivo));
+
+    // Job que JÁ nasce terminado (o caso comum: abrir a conversa de um job de ontem) não tem
+    // término a processar — a leitura inicial já pegou o arquivo inteiro, e ele não cresce
+    // mais. Sem isto o relógio de 700 ms ficaria lendo 0 byte para sempre, e o término nunca
+    // dispararia (não há MUDANÇA de estado para detectar). Achado do painel de execução.
+    if (ESTADOS_TERMINAIS.has(estadoAtual)) {
+      encerrado = true;
+      clearInterval(relogioArquivo);
+    }
+
+    // O que o relógio consolidado do cano chama a cada 2 s (server.js, seção SSE).
+    //
+    // `linha` pode ser: um job da lista (objeto de `jobs.listar().jobs`), `null` (sumiu da
+    // LISTA — só vira `removida` depois de conferir a pasta no DISCO, §7.13b: a janela de
+    // 24 h tira da lista sem apagar nada) ou `undefined` ("não sei": a raiz existe e o
+    // `readdir` falhou, `lib/jobs.js:300` — mantém o que estava, nunca `removida`).
+    bater = async (linha) => {
+      // 🔴 TUDO dentro de um `try`: o relógio consolidado chama `bater(...)` SEM `await` e sem
+      // `.catch` (`server.js`, seção SSE) — o `try` de lá só pega exceção síncrona. Uma
+      // rejeição aqui (o `claude.log` apagado no meio da leitura final, por exemplo) seria
+      // `unhandledRejection`, e em Node 22 isso MATA O PROCESSO: o cockpit inteiro cai por
+      // causa de um job. Achado do painel de execução, 12/09.
+      try {
+        if (morto || terminando) return;
+        if (linha === undefined) return; // "não sei" — nada muda
+        if (linha === null) {
+          if (!(await adaptadorJob.existe(id))) {
+            mandar({ tipo: 'removida', id: chave });
+            return aoEncerrar();
+          }
+          return;
+        }
+
+        const mudou = linha.state !== estadoAtual;
+        if (!mudou) return;
+
+        // O TÉRMINO acontece UMA vez — na PRIMEIRA transição para um estado terminal.
+        // `done → merged → teardown` são transições DEPOIS dele, e continuam valendo: o que
+        // não se repete é a leitura final. Sem separar as duas coisas, o cabeçalho congelava
+        // no primeiro terminal e o resto da vida do job sumia da tela (painel de execução).
+        const primeiroTermino = ESTADOS_TERMINAIS.has(linha.state) && !encerrado;
+        estadoAtual = linha.state;
+
+        if (primeiroTermino) {
+          // Ordem obrigatória (§5.3.2/G-J4): PARAR antes de ler de novo. Ler o resto primeiro
+          // deixaria duas leituras vivas no mesmo offset, e a última fala sairia duas vezes.
+          terminando = true;
+          encerrado = true;
+          clearInterval(relogioArquivo);
+          const final = await adaptadorJob.lerConversa(caminho, lido, { subagentes, contexto: { longa } });
+          if (morto) return;
+          if (final) {
+            for (const evento of final.eventos) mandar(evento);
+            lido = final.tamanho;
+            // A leitura FINAL também mede (R2): sem isto o medidor congela no PENÚLTIMO
+            // valor quando o job acaba — o sintoma pior possível, porque nada quebra e a tela
+            // mostra um número plausível e errado, e ninguém vai olhar de novo depois.
+            //
+            // 🔴 E aqui NÃO existe um `doArquivo` de última chance, de propósito. O painel de
+            // execução levantou o caso ("job que termina antes de qualquer medição acabaria
+            // `done` sem número") e eu cheguei a escrever a rede. O gate `G-i` de
+            // `testes/gate-job-fluxo.js` REFUTOU: ele passa com a rede removida, e só fica
+            // vermelho quando se remove `TENTATIVAS_DE_ABERTURA` (acima). O motivo é a
+            // aritmética dos relógios — o de ARQUIVO bate a cada 700 ms e o de ESTADO (quem
+            // detecta o término) a cada 2 s, então a rede do relógio SEMPRE roda primeiro.
+            // Guarda cuja condição outra regra impede é a armadilha #30, e conserto que "deve
+            // ajudar" é hipótese: foi revertido.
+            if (final.contexto) {
+              const chaveCtxFinal = contexto.chaveDoContexto(final.contexto);
+              if (chaveCtxFinal !== ultimoContexto) {
+                mandar({ tipo: 'contexto', contexto: final.contexto });
+                ultimoContexto = chaveCtxFinal;
+              }
+            }
+          }
+          terminando = false; // a leitura final acabou; transições seguintes voltam a valer
+          mandar({
+            tipo: 'job_estado',
+            job: { estado: linha.state, desfecho: desfechoDoJob(linha), desde: linha.created_at || null, fim: linha.fim || null },
+          });
+          // O fluxo fica ABERTO — quem fecha o painel é o usuário, nunca o servidor.
+          mandar({ tipo: 'sincronizado', turnoEmAndamento: false });
+          return;
+        }
+
+        // Toda outra MUDANÇA — `running`, `blocked`, `orfao`, desconhecido, e também
+        // `done → merged → teardown` depois do término. Só na mudança: sem isso sairia um
+        // `job_estado` a cada 2 s, e cada um parte o grupo de ferramentas seguidas ao meio no
+        // cliente (`encerrarGrupoFerramentas()` roda para todo evento fora de
+        // `NEUTROS_DO_GRUPO`). O relógio de arquivo NUNCA para por aqui.
+        mandar({
+          tipo: 'job_estado',
+          job: { estado: linha.state, desfecho: desfechoDoJob(linha), desde: linha.created_at || null, fim: linha.fim || null },
+        });
+      } catch (e) {
+        // Batida que estourou é batida perdida; a próxima vem em 2 s. O que não pode é a
+        // rejeição subir para lugar nenhum (ver o comentário no topo desta função).
+        console.error('bater do job', chave, e.message);
+      }
+    };
+  })().catch((e) => {
+    // Mesma régua de `acompanharAba`: os DOIS eventos, sempre — sem o `sincronizado`, a fita
+    // do cliente fica presa no fragmento que `segurarFita()` criou.
+    mandar({ tipo: 'erro', mensagem: `não deu para acompanhar este job: ${e.message}` });
+    mandar({ tipo: 'sincronizado', turnoEmAndamento: false });
+    parar();
+    console.error('acompanharJob', chave, e.message);
+  });
+
+  return alvo;
+}
+
+// `undefined` = não sei (a fonte não respondeu — a raiz existe e o `readdir` falhou,
+// `lib/jobs.js:300`); `null` = não está lá. São coisas DIFERENTES para o `bater` de
+// `acompanharJob`, e trocá-las fecharia o painel do usuário por um soluço de disco.
+//
+// Intencional e declarado: `jobs.listar()` NÃO filtra `origin === 'capitao'` — quem filtra é
+// a rota `/api/jobs`. O `bater` usa o módulo direto, então acharia um job de outra origem.
+// Não é buraco: a lista lateral só oferece jobs de `capitao`, e um id que o usuário não vê
+// ele não clica. Errar para o lado de achar é melhor do que fechar um painel aberto.
+function linhaDoJob(dados, chave) {
+  if (!dados || !Array.isArray(dados.jobs)) return undefined;
+  return dados.jobs.find((j) => j && j.id === chave.slice(4)) || null;
+}
+
 // ─── Rotas ───────────────────────────────────────────────────────────────────
 
 async function api(req, res, rota, url) {
@@ -673,6 +1022,41 @@ async function api(req, res, rota, url) {
     return enviarJson(res, 200, { projetos: (await listarProjetos()).map(({ nome }) => ({ nome })) });
   }
 
+  // Criar a pasta pela aba nova (card `criar-pasta-na-aba-nova`): "quando eu digitar e não achar, me dê a
+  // opção de criar". Só o NOME vai e volta (#22) — o caminho é montado aqui, e a resposta não o leva. A
+  // pasta nasce VAZIA: sem git init, sem CLAUDE.md. A política de acesso é a de todas as rotas: token em
+  // `api()`, Origin/Host em `atender()`. Ordem de propósito: nome inválido nunca lê o disco.
+  if (rota === '/api/projetos' && req.method === 'POST') {
+    let corpo;
+    try { corpo = await lerCorpo(req); }
+    catch (erro) { return enviarJson(res, 400, { erro: erro.message }); }
+    const nome = corpo && typeof corpo.nome === 'string' ? corpo.nome : '';
+    if (!NOME_DE_PASTA.test(nome)) {
+      return enviarJson(res, 400, { erro: 'nome de pasta inválido: use letras, números, - e _ (até 64)' });
+    }
+    const raiz = path.resolve(RAIZ_PROJETOS);
+    const destino = path.join(raiz, nome);
+    // A regex já impede `/` e `..`; conferir o pai é a segunda trava (#22), não a primeira.
+    if (path.dirname(destino) !== raiz) return enviarJson(res, 400, { erro: 'nome de pasta inválido' });
+    // S16: checar e criar em fila — o segundo pedido só lê a lista depois do `mkdir` do primeiro.
+    const vez = filaDePastas.then(async () => {
+      if ((await listarProjetos()).some((p) => chaveDePasta(p.nome) === chaveDePasta(nome))) {
+        return [409, { erro: 'já existe uma pasta com esse nome' }];
+      }
+      try {
+        await fsp.mkdir(destino);       // sem `recursive`: a raiz tem de existir, e EEXIST é sinal
+        return [201, { nome }];
+      } catch (erro) {
+        if (erro.code === 'EEXIST') return [409, { erro: 'já existe uma pasta com esse nome' }];
+        if (erro.code === 'ENOENT') return [500, { erro: 'a pasta de projetos não existe no servidor' }];
+        return [500, { erro: 'não deu para criar a pasta' }];
+      }
+    });
+    filaDePastas = vez.catch(() => {});  // a fila nunca para por um pedido que falhou
+    const [status, resposta] = await vez;
+    return enviarJson(res, status, resposta);
+  }
+
   // A faixa de "tem job rodando" no topo do chat, e (com `?tudo=1`) o grupo JOBS da lista
   // lateral (spec 2026-09-08, §4.1/§4.2). Só os disparados pelo capitão: telegram e cli não
   // são trabalho que o usuário mandou desta tela e só fariam ruído — filtro mantido de propósito,
@@ -682,6 +1066,53 @@ async function api(req, res, rota, url) {
   // rota de arquivos — a árvore do disco não vai para o navegador.
   if (rota === '/api/jobs' && req.method === 'GET') {
     const dados = await jobs.listar();
+
+    // A tela "Pra revisar" (plano 2026-10-04): jobs terminados cuja branch ainda tem algo
+    // fora da `develop` do repo deles. Tratamento PRÓPRIO — alarga o filtro de origem só
+    // para esta chamada (docs/arquitetura.md) — e retorna antes do resto da rota, que nunca
+    // manda `worktree`/`branch`/`source_repo` pro navegador.
+    if (url.searchParams.get('revisar') === '1') {
+      if (dados && dados.ausente) return enviarJson(res, 200, { jobs: [], atencao: [], habilitado: false });
+      if (!dados || !Array.isArray(dados.jobs)) return enviarJson(res, 200, { jobs: [], atencao: [], erro: true });
+
+      const { principal, atencao } = await revisar.filtrarPraRevisar(dados.jobs);
+      // `parou-no-limite` só é calculado para quem ENTRA (e para as relações deles) — nunca lê
+      // `result.md` de quem saiu por VAZIO/SQUASH_OK/ancestralidade.
+      const miolo = async (item) => {
+        const etiquetas = [];
+        if (item.motivo) etiquetas.push(item.motivo);
+        if (item.estado === 'needs-review') etiquetas.push('pede-revisao');
+        if (await paraNoLimite(item.job.id)) etiquetas.push('parou-no-limite');
+        return { id: item.job.id, titulo: item.job.title, estado: item.estado, fim: revisar.fimDoJob(item.job), temResultado: item.job.hasResult, etiquetas };
+      };
+      const resumo = async (item) => {
+        const base = await miolo(item);
+        if (item.retomou.length) base.etiquetas.push('retomada');
+        // Prévia do merge (só leitura, card pra-revisar-aviso-de-conflito-no-merge). Só o item de topo:
+        // retomou[]/inclui[] estão contidos na branch dele. Não vira etiqueta — o filtro não muda.
+        const previa = await revisar.previaDoMerge({
+          repo: item.job.source_repo, base: item.base, shaBase: item.shaBase,
+          branch: item.branchEfetiva, shaBranch: item.shaBranch,
+        });
+        return {
+          id: base.id, titulo: base.titulo, projeto: item.job.project, estado: base.estado, fim: base.fim,
+          temResultado: base.temResultado, etiquetas: base.etiquetas,
+          retomou: await Promise.all(item.retomou.map(miolo)),
+          inclui: await Promise.all(item.inclui.map(miolo)),
+          merge: previa && { estado: previa.estado, base: item.base, n: previa.n, arquivos: previa.arquivos },
+        };
+      };
+      const ordenar = (lista) => lista.sort((a, b) => String(b.fim || '').localeCompare(String(a.fim || ''))
+        || String(b.id || '').localeCompare(String(a.id || '')));
+      const doItem = async (lista) => ordenar(await Promise.all(lista.map(resumo)));
+
+      return enviarJson(res, 200, {
+        jobs: await doItem(principal),
+        atencao: await doItem(atencao),
+        habilitado: true,
+      });
+    }
+
     // Pasta de jobs inexistente é o estado NORMAL de quem clonou este repositório e não usa
     // orquestrador nenhum: `habilitado: false` é o mesmo contrato que a variável de ambiente
     // vazia produzia antes, e a tela desenha "nenhum job" em vez de um erro.
@@ -733,21 +1164,45 @@ async function api(req, res, rota, url) {
 
     // `?tudo=1` — os sete estados do painel, e o que o cockpit não conhece também (§4.2):
     //   running, blocked, orfao          → sempre, SEM janela (são os que exigem AÇÃO)
-    //   done, failed, merged, teardown   → só se terminaram dentro da JANELA
+    //   done, merged, teardown           → só se terminaram dentro da JANELA (o fim feliz)
+    //   failed                           → terminou, mas EXIGE AÇÃO: isento desta janela
+    //                                       (ver a isenção logo abaixo — o prazo dele é outro)
     //   estado fora dos sete             → entra sempre, como protegido — não dá para saber
     //                                       se exige ação, e no escuro se mostra
     const agora = Date.now();
     const comFim = visiveis.map((j) => {
       const protegido = j.state === 'running' || j.state === 'blocked' || j.state === 'orfao'
         || !ESTADOS_CONHECIDOS.has(j.state);
-      return { j, fim: j.event?.at || null, protegido };
+      // `j.fim` é o TÉRMINO do trabalho (`lib/jobs.js`, `eventoDoTermino`), não a última linha
+      // do `status.log` — a faxina do teardown vinha depois e ressuscitava job de semanas atrás
+      // nesta janela (card `lista-de-agentes-ressuscita-job-na-limpeza`, 06/10/2026).
+      return { j, fim: j.fim || null, protegido };
     });
     // 🔴 `j.arquivado` isenta da JANELA sem virar `protegido`: quem pediu `?arquivados=1`
     // quer ver justamente os velhos, e a janela de 24 h os cortaria na entrada. Mas mexer em
     // `protegido` mudaria o `rank` lá embaixo e faria um job arquivado subir na frente de um
     // `running` — a urgência não é a mesma coisa que a visibilidade.
+    //
+    // `failed` terminou, mas EXIGE AÇÃO — é justamente o que não pode sumir enquanto você dormia
+    // (decisão do dono, 11/09). Ele é ISENTO desta janela, e não ganha uma segunda: quem já
+    // cuida do prazo dele é `estaArquivado()`/`horasArquiva()` (24 h, `lib/jobs.js:244`), que
+    // corta em `visiveis` (`:941`) antes daqui. Uma constante de 24 h nesta linha seria código
+    // morto — a condição dela nunca é alcançada (armadilha #30).
+    //
+    // 🔴 A guarda da isenção mede DATA, não "tem alguma coisa". `estaArquivado()` devolve
+    // `false` quando não consegue ler carimbo nenhum (`lib/jobs.js:248` — "na dúvida, aparecer é
+    // o erro barato"), então um `failed` sem data legível NUNCA é arquivado, e uma isenção sem
+    // guarda o deixaria na tela PARA SEMPRE. Hoje quem o corta é a aritmética da janela, que
+    // vira `NaN <= …` ⇒ false.
+    //
+    // E `fim` NÃO é uma data validada: `lib/jobs.js:97` tira o `at` do PRIMEIRO TOKEN da última
+    // linha do `status.log` (`return m ? { at: m[1], … }`). Uma linha `lixo failed: x` casa o
+    // regex e produz `at: 'lixo'` — truthy. Por isso `Number.isFinite(Date.parse(fim))`, e não
+    // `fim &&`: com o teste de verdade, o job de carimbo podre voltaria a ficar eterno.
+    const dataBoa = (fim) => Number.isFinite(Date.parse(fim));
     const naJanela = comFim.filter(({ j, fim, protegido }) => (
-      protegido || j.arquivado || (fim && agora - new Date(fim).getTime() <= JANELA_ENCERRADOS_MS)
+      protegido || j.arquivado || (j.state === 'failed' && dataBoa(fim))
+      || (dataBoa(fim) && agora - Date.parse(fim) <= JANELA_FIM_FELIZ_MS)
     ));
 
     const protegidos = naJanela.filter((x) => x.protegido);
@@ -790,7 +1245,7 @@ async function api(req, res, rota, url) {
         // constante). Chave SEMPRE presente, com valor `null`: ausente e vazio são a mesma
         // coisa (§4.1). O `?? null` importa — `JSON.stringify` APAGA chave com valor
         // `undefined` (`j.event.text` ausente viraria a chave sumindo, não `desfecho: null`).
-        desfecho: KINDS_DE_DESFECHO.has(j.event?.kind) ? (j.event.text ?? null) : null,
+        desfecho: desfechoDoJob(j),
         abas: abas.abasDoProjeto(j.project, abertas),
       })),
       painel: true,
@@ -802,10 +1257,86 @@ async function api(req, res, rota, url) {
     });
   }
 
+  // O relatório (`result.md`) de um job, pra tela "Pra revisar" (plano 2026-10-04). Duas
+  // travas, não uma (§7.8 da spec de jobs): `idValido` barra a FORMA, `existe` barra o id
+  // inventado que passe na forma mas não exista no disco.
+  if (rota === '/api/jobs/resultado' && req.method === 'GET') {
+    const id = url.searchParams.get('id') || '';
+    if (!adaptadorJob.idValido(id) || !(await adaptadorJob.existe(id))) {
+      return enviarJson(res, 404, { erro: 'não achei este job' });
+    }
+    const caminho = path.join(limite.dirJobs(), id, 'result.md');
+    let buf;
+    try { buf = await fsp.readFile(caminho); } catch { return enviarJson(res, 200, { texto: '', cortado: false }); }
+    const cortado = buf.length > TETO_RESULTADO;
+    const aparado = revisar.cortarUtf8Seguro(cortado ? buf.subarray(0, TETO_RESULTADO) : buf);
+    return enviarJson(res, 200, { texto: aparado.toString('utf8'), cortado });
+  }
+
   // As conversas que rodam nas abas do terminal do usuário, fora do cockpit. Leitura vem do
   // arquivo do CLI; escrita é `send-keys` na aba viva, sem criar processo. Ver lib/abas.js.
   if (rota === '/api/abas' && req.method === 'GET') {
-    return enviarJson(res, 200, { abas: (await abas.listar()).map(abas.paraCliente) });
+    const [lista, carimbos] = await Promise.all([listarAbasComFim(), lidas.mapa()]);
+    return enviarJson(res, 200, {
+      abas: lista.map((a) => ({
+        ...abas.paraCliente(a),
+        // O carimbo desta conversa, ou null se nunca foi lida em aparelho nenhum. Sai só
+        // para as abas VIVAS: o mapa inteiro nunca cruza a rede (card, Fase 1). `?? null`,
+        // não `|| null`: carimbo 0 nunca é gravado (lib/lidas.js exige > 0), e `??` diz a
+        // intenção exata — "ausente vira null", não "falsy vira null".
+        lidoEm: a.sessaoId ? (carimbos[a.sessaoId] ?? null) : null,
+      })),
+    });
+  }
+
+  // Marcar uma conversa como lida, do aparelho que está com ela na tela. O estado saiu do
+  // localStorage e virou do servidor (D53): ler no celular apaga o destaque no note, e
+  // vice-versa. A LEITURA não tem rota — ela pega carona no GET /api/abas acima, que o tique
+  // de 5s já busca.
+  if (rota === '/api/lidas' && req.method === 'POST') {
+    // `lerCorpo` DENTRO do try: ela rejeita com `new Error('json inválido')` SEM `codigo`, e
+    // fora daqui essa rejeição sobe até o catch geral do request handler e vira 500 — aqui a
+    // validação de lib/lidas.js promete 400.
+    let corpo;
+    try { corpo = await lerCorpo(req); }
+    catch (erro) { return enviarJson(res, 400, { erro: erro.message }); }
+    try {
+      // `corpo?.` porque `JSON.parse('null')` devolve `null`, e `null.sessaoId` lançaria um
+      // TypeError sem `codigo` — que subiria como 500 onde a tabela promete 400. A validação
+      // de `lib/lidas.js` já recusa `undefined` e devolve o 400 certo.
+      return enviarJson(res, 200, await lidas.marcar(corpo?.sessaoId, corpo?.carimbo));
+    } catch (erro) {
+      if (erro.codigo === 400) return enviarJson(res, 400, { erro: erro.message });
+      throw erro;
+    }
+  }
+
+  // As trilhas de leitura (card `leituras-trilhas`, D59). O catálogo é de outro projeto e só é
+  // LIDO; o progresso é deste servidor (molde /api/lidas). GET sempre 200 — o estado do
+  // catálogo vai dentro, para a tela dizer "não encontrado" sem parecer erro de rede.
+  // + lendo, D61.
+  if (rota === '/api/leituras' && req.method === 'GET') {
+    return enviarJson(res, 200, await leituras.estado());
+  }
+  if (rota === '/api/leituras' && req.method === 'POST') {
+    let corpo;
+    try { corpo = await lerCorpo(req); }
+    catch (erro) { return enviarJson(res, 400, { erro: erro.message }); }
+    try {
+      // D61: o corpo diz a ação — `lendo` OU `terminado`. A guarda vem antes do `hasOwn`:
+      // `Object.hasOwn(null, …)` lança TypeError, que viraria 500 (R6 crava `null` ⇒ 400).
+      const ehObjeto = corpo !== null && typeof corpo === 'object' && !Array.isArray(corpo);
+      const temLendo = ehObjeto && Object.hasOwn(corpo, 'lendo');
+      if (temLendo && Object.hasOwn(corpo, 'terminado')) {
+        return enviarJson(res, 400, { erro: 'mande terminado OU lendo, não os dois' });
+      }
+      return enviarJson(res, 200, temLendo
+        ? await leituras.marcarLendo(corpo.livroId, corpo.lendo)
+        : await leituras.marcar(corpo?.livroId, corpo?.terminado));
+    } catch (erro) {
+      if ([400, 404, 409, 500].includes(erro.codigo)) return enviarJson(res, erro.codigo, { erro: erro.message });
+      throw erro;
+    }
   }
 
   /**
@@ -834,8 +1365,18 @@ async function api(req, res, rota, url) {
     const agente = corpo && typeof corpo.agente === 'string' && corpo.agente
       ? corpo.agente : agentes.AGENTE_PADRAO;
     if (!agentes.existe(agente)) return enviarJson(res, 400, { erro: 'escolha um agente da lista' });
+    // O modelo segue a regra do agente, com uma diferença: agente SEM lista (Codex) IGNORA o
+    // campo em vez de recusar — o campo some da tela com Codex (P4), e um cliente velho ou um
+    // select que não limpou o valor não pode virar 400 para quem não escolheu modelo nenhum.
+    const temLista = agentes.modelosDe(agente).length > 0;
+    // `pedidoModelo`, não `pedido`: este bloco já declara `const pedido` para o projeto.
+    const pedidoModelo = corpo && typeof corpo.modelo === 'string' && corpo.modelo ? corpo.modelo : null;
+    const modelo = temLista ? pedidoModelo : null;
+    if (modelo !== null && !agentes.modeloExiste(agente, modelo)) {
+      return enviarJson(res, 400, { erro: 'escolha um modelo da lista' });
+    }
     try {
-      return enviarJson(res, 201, await abas.criar({ cwd: escolhido.cwd, nome: escolhido.nome, agente }));
+      return enviarJson(res, 201, await abas.criar({ cwd: escolhido.cwd, nome: escolhido.nome, agente, modelo }));
     } catch (erro) {
       // O `codigo` que o módulo pendura no erro é o que se traduz aqui — sem `regex` em
       // cima de mensagem. Erro SEM código é falha operacional de verdade: 500, e nunca
@@ -845,7 +1386,7 @@ async function api(req, res, rota, url) {
   }
 
   /**
-   * Quais agentes o campo `Agente` oferece. Só `{id, rotulo}`.
+   * Quais agentes o campo `Agente` oferece. Só `{id, rotulo, modelos}`.
    *
    * O caminho do binário NUNCA sai daqui — mesmo hábito da `/api/projetos`, que manda o
    * nome do projeto e nunca o `cwd` (#22). O navegador não precisa saber onde o `codex`
@@ -853,7 +1394,16 @@ async function api(req, res, rota, url) {
    */
   if (rota === '/api/agentes' && req.method === 'GET') {
     return enviarJson(res, 200, {
-      agentes: agentes.ids().map((id) => ({ id, rotulo: agentes.de(id).rotulo })),
+      // Só quem EXECUTA — o `job` está na tabela para ser LIDO (o campo `executavel: false`
+      // de `lib/agentes.js`), e este seletor é para escolher com quem abrir uma aba nova.
+      agentes: agentes.ids()
+        .filter((id) => agentes.de(id).executavel !== false)
+        .map((id) => ({
+          id,
+          rotulo: agentes.de(id).rotulo,
+          // Cópia RASA — nunca o array do registro, para ninguém mutar a constante pelo JSON.
+          modelos: agentes.modelosDe(id).map(({ id: m, rotulo }) => ({ id: m, rotulo })),
+        })),
       padrao: agentes.AGENTE_PADRAO,
     });
   }
@@ -979,12 +1529,16 @@ async function api(req, res, rota, url) {
     };
     const paradas = new Map();
     for (const chave of chaves) {
-      paradas.set(chave, acompanharAba(
+      // O prefixo `job-` é a declaração de tipo (§7.1) — desviado ANTES de `abas.buscar`.
+      paradas.set(chave, (chave.startsWith('job-') ? acompanharJob : acompanharAba)(
         chave,
         (e) => mandar({ aba: chave, evento: e }),
         () => paradas.get(chave)?.parar(),
       ));
     }
+    // `jobs.listar()` só é pago quando há job no cano — calculado UMA vez, fora do relógio,
+    // porque a lista de chaves não muda enquanto o cano vive.
+    const temJob = chaves.some((c) => c.startsWith('job-'));
     // Um relógio de estado só para o cano inteiro (R22): `abas.listar()` varre o tmux UMA
     // vez por batida, não N — N `acompanharAba` liam a MESMA tabela N vezes por segundo.
     //
@@ -997,9 +1551,12 @@ async function api(req, res, rota, url) {
       if (res.writableEnded) return;
       try {
         const linhas = await abas.listar();
+        const dadosJobs = temJob ? await jobs.listar() : null;
         if (res.writableEnded) return;
         for (const chave of chaves) {
-          paradas.get(chave)?.bater(linhas.find((l) => l.chave === chave) || null);
+          paradas.get(chave)?.bater(chave.startsWith('job-')
+            ? linhaDoJob(dadosJobs, chave)
+            : (linhas.find((l) => l.chave === chave) || null));
         }
       } catch (e) {
         console.error('relógio de estado do cano:', e.message);
@@ -1012,6 +1569,58 @@ async function api(req, res, rota, url) {
       for (const p of paradas.values()) p.parar();
     });
     return;
+  }
+
+  // O histórico ANTERIOR ao que já chegou pelo `/api/eventos` — o botão do chip `início`
+  // (card `carregar-mais-historico`). Pedido sob demanda, resposta única, pode falhar sozinho:
+  // por isso é HTTP, irmã de `/api/eventos`, e não mais um tipo de evento no SSE.
+  if (rota === '/api/historico' && req.method === 'GET') {
+    const chave = url.searchParams.get('chave') || '';
+    if (!/^[\w-]+$/.test(chave)) return enviarJson(res, 400, { erro: `chave inválida: ${chave}` });
+    // `searchParams.get` devolve STRING: `Number.isInteger('4194304')` é `false`. A conversão
+    // é obrigatória ANTES da checagem — senão a rota daria 400 em 100% dos pedidos.
+    const ate = Number(url.searchParams.get('ate'));
+    if (!Number.isInteger(ate) || ate <= 0) return enviarJson(res, 400, { erro: 'ate= precisa ser um inteiro > 0' });
+
+    let arquivo;
+    let leitor;
+    let aba = null;
+    if (chave.startsWith('job-')) {
+      const id = chave.slice(4);
+      if (!adaptadorJob.idValido(id)) return enviarJson(res, 400, { erro: `id de job inválido: ${id}` });
+      arquivo = adaptadorJob.caminhoDoLog(id);
+      leitor = adaptadorJob;
+    } else {
+      aba = await abas.buscar(chave);
+      if (!aba || !aba.arquivo) return enviarJson(res, 404, { erro: 'conversa não está mais aberta' });
+      arquivo = aba.arquivo;
+      leitor = agentes.de(aba.agente).leitor;
+    }
+
+    let info;
+    try {
+      info = await fsp.stat(arquivo);
+    } catch {
+      // Arquivo sumiu: sem este `stat`, o leitor SANEIA em vez de recusar e a rota voltaria
+      // 200 dizendo "este é o começo da conversa" — mentira que o achado do painel apontou.
+      return enviarJson(res, 404, { erro: 'conversa não está mais aberta' });
+    }
+    // A âncora é de um arquivo que o `/clear` já trocou (armadilha #33). Não sanear para
+    // `info.size`: isso devolveria a cauda de novo, duplicada na tela.
+    if (ate > info.size) return enviarJson(res, 409, { erro: 'a conversa mudou' });
+
+    // A mesma guarda de identidade que o `/status` do Codex já usa — só vale para aba: job
+    // não tem `sessaoId` e o caminho do `claude.log` nunca muda.
+    const sessao = url.searchParams.get('sessao');
+    if (aba && sessao && aba.sessaoId && sessao !== aba.sessaoId) {
+      return enviarJson(res, 409, { erro: 'a conversa mudou' });
+    }
+
+    const lida = await leitor.lerConversa(arquivo, 0, { ate });
+    // `null` aqui só pode ser o `stat` do job falhando (§3.2 da spec) — como a rota SEMPRE
+    // passa `ate`, a abstenção por formato deixou de existir neste caminho.
+    if (lida === null) return enviarJson(res, 404, { erro: 'conversa não está mais aberta' });
+    return enviarJson(res, 200, { eventos: lida.eventos, inicio: lida.inicio, cortado: lida.cortado });
   }
 
   // A tela da pane — a ÚNICA leitura de TUI do projeto, e só com a aba em `waiting`.
@@ -1066,7 +1675,13 @@ async function api(req, res, rota, url) {
       });
     } catch (erro) {
       if (!erro.codigo) console.error('status codex: falhou —', erro.message);
-      return enviarJson(res, erro.codigo || 500, { erro: erro.codigo ? erro.message : 'não consegui consultar o status' });
+      // `/status` tem rota PRÓPRIA — não passa pela de `/turnos` acima, e sem esta linha o
+      // marcador `colado` morria aqui (o caminho do `/status` também cola texto na TUI).
+      // O código HTTP continua sendo o `erro.codigo` de sempre: o que viaja é o `colado`.
+      return enviarJson(res, erro.codigo || 500, {
+        erro: erro.codigo ? erro.message : 'não consegui consultar o status',
+        ...(erro.colado ? { colado: true } : {}),
+      });
     }
   }
 
@@ -1105,6 +1720,30 @@ async function api(req, res, rota, url) {
     }
   }
 
+  // Responder a pergunta do agente pelo cartão (D74). A lista de teclas é FECHADA no módulo (lib/abas.js
+  // + lib/pergunta.js): dígitos 1-4, Down, Enter e o texto validado contra a pergunta pendente, com a
+  // tela conferida a cada passo. Os três códigos dizem coisas diferentes: 400 é pedido malformado
+  // (corpo ou resposta fora da pergunta), 404 aba que não existe, 409 estado do mundo (a pergunta mudou,
+  // a tela não bateu) — com `parcial` quando alguma tecla já saiu.
+  const mAbaPergunta = rota.match(/^\/api\/abas\/([\w-]+)\/pergunta$/);
+  if (mAbaPergunta && req.method === 'POST') {
+    let corpo;
+    try {
+      corpo = await lerCorpo(req);
+    } catch (erro) {
+      return enviarJson(res, 400, { erro: erro.message });
+    }
+    try {
+      return enviarJson(res, 200, await abas.responderPergunta(mAbaPergunta[1], corpo));
+    } catch (erro) {
+      if (!erro.codigo) console.error('pergunta: falhou —', erro.message);
+      return enviarJson(res, erro.codigo || 500, {
+        erro: erro.codigo ? erro.message : 'não consegui responder a pergunta',
+        ...(erro.parcial ? { parcial: true } : {}),
+      });
+    }
+  }
+
   // Anexo do navegador para uma aba: corpo binário cru, tipo no content-type, nome na query.
   // Fica em ~/.cockpit/anexos/ e a mensagem recebe só o CAMINHO — o CLI abre com o Read.
   const mAbaAnexo = rota.match(/^\/api\/abas\/([\w-]+)\/anexos$/);
@@ -1117,6 +1756,9 @@ async function api(req, res, rota, url) {
     const dados = await lerBinario(req, TETO_ANEXO);
     if (!dados.length) return enviarJson(res, 400, { erro: 'arquivo vazio' });
     const guardado = await abas.guardarAnexo({ nome: url.searchParams.get('nome'), extensao, dados });
+    // Par com o log do turno logo abaixo: foto que subiu e não aparece num turno depois dela
+    // foi largada pelo NAVEGADOR (medido em 23/09 — upload no disco, mensagem sem cabeçalho).
+    console.log(`anexo: ${guardado.nome} subiu para ${mAbaAnexo[1]} (${guardado.bytes} bytes)`);
     return enviarJson(res, 201, guardado);
   }
 
@@ -1130,6 +1772,8 @@ async function api(req, res, rota, url) {
     if (id !== undefined && !abas.idValido(id)) {
       return enviarJson(res, 400, { erro: 'id de envio inválido' });
     }
+    const nomesDosAnexos = (Array.isArray(anexos) ? anexos : []).map((a) => path.basename(String(a)));
+    console.log(`anexo: turno ${id || '-'} para ${chave} com ${nomesDosAnexos.length} anexo(s)${nomesDosAnexos.length ? ': ' + nomesDosAnexos.join(', ') : ''}`);
     try {
       const { ficha, ...publico } = await abas.enviar(chave, texto, anexos || [], id);
       // Só avisa se a ficha AINDA estiver registrada: entre o `await` acima e esta linha o
@@ -1141,7 +1785,11 @@ async function api(req, res, rota, url) {
     } catch (erro) {
       // 409 e não 500: "a aba não está rodando claude" é estado do mundo, não bug daqui —
       // e é o que o cliente precisa distinguir para mostrar o recado certo.
-      return enviarJson(res, 409, { erro: erro.message });
+      // `colado` é ADITIVO e o contrato é "ausente ou `true`, nunca `false`": ausente
+      // responde "nada saiu da fila" (o cliente pode devolver o texto para a caixa),
+      // `true` responde "o texto JÁ está no composer da TUI" (devolver duplicaria — #21).
+      // Quem o produz é o `catch` de escopo dos caminhos de texto em `lib/abas.js`.
+      return enviarJson(res, 409, { erro: erro.message, ...(erro.colado ? { colado: true } : {}) });
     }
   }
 
@@ -1161,6 +1809,18 @@ async function api(req, res, rota, url) {
   if (mAbaMatar && req.method === 'DELETE') {
     try {
       return enviarJson(res, 200, await abas.matar(mAbaMatar[1]));
+    } catch (erro) {
+      return enviarJson(res, erro.codigo || 500, { erro: erro.message });
+    }
+  }
+
+  // Renomear a aba — a JANELA do tmux (card `renomear-a-aba`, decisão de 05/09). Mesmo matcher do
+  // DELETE, outro método: não há regex nova. A validação (400), a guarda da sessão (404) e o
+  // escape para o tmux moram em `abas.renomear` — o nome passa inteiro, sem tocar nele aqui.
+  if (mAbaMatar && req.method === 'PATCH') {
+    const corpo = await lerCorpo(req);
+    try {
+      return enviarJson(res, 200, await abas.renomear(mAbaMatar[1], corpo && corpo.nome));
     } catch (erro) {
       return enviarJson(res, erro.codigo || 500, { erro: erro.message });
     }
@@ -1230,6 +1890,36 @@ async function api(req, res, rota, url) {
     }
   }
 
+  // Monitor do servidor (card do monitor, D64): CPU, RAM e disco do servidor. Três rotas
+  // porque três ritmos — a faixa bate a cada 15 s e só precisa do "agora"; o histórico (~35 KB)
+  // e a varredura de /proc só quando o painel está aberto. Nenhum parâmetro de entrada; nenhum
+  // caminho de disco no corpo (#22 — `comandoCurto` só deixa passar nome de flag e basename).
+  if (rota === '/api/monitor' && req.method === 'GET') {
+    await monitor.pronto;
+    const agora = await monitor.agora();
+    return enviarJson(res, 200, { agora, aviso: monitor.historicoAtual().aviso, limites: monitor.limites(), relogio: monitor.estado().relogio, maquina: os.hostname() });
+  }
+  if (rota === '/api/monitor/historico' && req.method === 'GET') {
+    await monitor.pronto;
+    const fim = Math.floor(Date.now() / 1000);
+    return enviarJson(res, 200, { amostras: monitor.historicoAtual().amostras, inicio: fim - 86400, fim });
+  }
+  if (rota === '/api/monitor/processos' && req.method === 'GET') {
+    await monitor.pronto;
+    return enviarJson(res, 200, await monitor.processos());
+  }
+  // D68: a medida do disco. O GET devolve o que há e dispara a medição se estiver velha ("ao abrir o
+  // painel"); o POST é o "medir agora", idempotente. O corpo só traz `~/<nome>`, `/<nome>` e números.
+  if (rota === '/api/monitor/disco' && req.method === 'GET') {
+    await monitor.pronto;
+    return enviarJson(res, 200, await disco.estado({ disparar: true }));
+  }
+  if (rota === '/api/monitor/disco' && req.method === 'POST') {
+    await monitor.pronto;
+    disco.medirAgora();                       // sem await: a medida leva dezenas de segundos
+    return enviarJson(res, 202, await disco.estado());
+  }
+
   // Para onde vão os tokens — quanto cada projeto/worktree gastou (card
   // `para-onde-vao-meus-tokens`). Vizinho temático de /api/limite: os dois falam de consumo,
   // um da assinatura como um todo, este do recorte por projeto. `DIAS_ACEITOS` é whitelist
@@ -1238,7 +1928,23 @@ async function api(req, res, rota, url) {
   if (rota === '/api/uso' && req.method === 'GET') {
     const pedido = Number(url.searchParams.get('dias'));
     const dias = DIAS_ACEITOS.has(pedido) ? pedido : 1;
-    return enviarJson(res, 200, await uso.relatorio({ dias }));
+    // Quem valida o fuso é fusoValido(), dentro de montar() (um dono só) — nunca validação
+    // duplicada aqui.
+    const fuso = url.searchParams.get('fuso') || undefined;
+    return enviarJson(res, 200, await uso.relatorio({ dias, fuso }));
+  }
+
+  // A metade CODEX do relatório acima (card `codex-no-relatorio-de-tokens`) — rota IRMÃ, não
+  // um campo dentro de `/api/uso`: os dois disparam em paralelo e a varredura fria de um lado
+  // (medida: ~7 s) não pode segurar o relatório do outro, que hoje funciona (D5 da spec).
+  // Mesma whitelist `DIAS_ACEITOS`, nunca `Number()` livre.
+  if (rota === '/api/uso-codex' && req.method === 'GET') {
+    const pedido = Number(url.searchParams.get('dias'));
+    const dias = DIAS_ACEITOS.has(pedido) ? pedido : 1;
+    // Quem valida o fuso é fusoValido(), dentro de montar() (um dono só) — nunca validação
+    // duplicada aqui.
+    const fuso = url.searchParams.get('fuso') || undefined;
+    return enviarJson(res, 200, await usoCodex.relatorio({ dias, fuso }));
   }
 
   // O nível de esforço GLOBAL do CLI, para o painel de Configuração. É LEITURA e só: quem
@@ -1273,13 +1979,31 @@ async function api(req, res, rota, url) {
     const corpo = await lerCorpo(req);
     try {
       const r = await avisos.inscrever(corpo);
-      console.log(`push: inscrito ${new URL(corpo.endpoint).hostname} (${r.inscritos} no total)`);
+      // `r.nome` (limpo, como ficou no disco), nunca `corpo.aparelho`, que é cru e vem da
+      // rede: um `\n` ali fabricaria uma linha de journal inteira. E o endpoint não é
+      // opcional — sem ele o id seria o hash da string "undefined", igual para todo aparelho.
+      console.log(`push: inscrito ${avisos.rotuloDeLog(r.nome, corpo.endpoint)} — ${new URL(corpo.endpoint).hostname} (${r.inscritos} no total)`);
       return enviarJson(res, 201, r);
     } catch (erro) {
       console.error('push: inscrição recusada:', erro.message);
       if (erro.codigo === 503) return enviarJson(res, 503, { erro: erro.message });
       throw erro;
     }
+  }
+  // A lista de aparelhos para a tela (spec 2026-09-12). GET sem corpo é seguro aqui porque o
+  // `id` NÃO é credencial: ele é `sha256(endpoint)`, irreversível — o motivo que obrigou o
+  // `consulta` abaixo a ser POST (endpoint em linha de log de acesso) não se aplica.
+  if (rota === '/api/push/inscricoes' && req.method === 'GET') {
+    return enviarJson(res, 200, await avisos.listar());
+  }
+  // Renomear é POST porque ESCREVE. Troca só o campo `aparelho`: endpoint e keys não são
+  // lidos nem reescritos, então renomear nunca invalida a inscrição.
+  if (rota === '/api/push/inscricao/nome' && req.method === 'POST') {
+    const { id, nome } = await lerCorpo(req);
+    if (!id || typeof id !== 'string') return enviarJson(res, 400, { erro: 'id ausente' });
+    const r = await avisos.renomear(id, nome);
+    if (!r.renomeados) return enviarJson(res, 404, { erro: 'aparelho não encontrado' });
+    return enviarJson(res, 200, r);
   }
   // "O cockpit conhece a inscrição que este aparelho tem?" — só isto, sim ou não. É a
   // pergunta que faltava no diagnóstico: permissão concedida e service worker ativo não
@@ -1297,12 +2021,17 @@ async function api(req, res, rota, url) {
   }
   // Botão "testar" do cliente: prova o caminho inteiro sem precisar rodar um turno.
   if (rota === '/api/push/teste' && req.method === 'POST') {
-    return enviarJson(res, 200, await avisos.avisar({
+    const r = await avisos.avisar({
       titulo: 'Cockpit de Agentes',
       corpo: 'Se você está lendo isto no celular, a notificação funciona.',
       sessaoId: null,
       tag: 'teste',
-    }));
+    });
+    // `enviados` = o serviço ACEITOU (2xx), não que apareceu na tela. Aparelho inscrito e nenhum
+    // aceito NÃO é "nenhum aparelho inscrito" — responder 200 fazia a tela dizer isso. 502, não 503
+    // (já é "contato não configurado" aqui) nem 401 (a tela pede o token de novo).
+    if (r.inscritos > 0 && r.enviados === 0) return enviarJson(res, 502, { ...r, erro: avisos.explicarRecusa(r) });
+    return enviarJson(res, 200, r);
   }
 
   if (rota === '/api/sessoes' && req.method === 'GET') {
@@ -1459,6 +2188,15 @@ function semTimeoutDeRequisicao(servidor) {
   return servidor;
 }
 
+// O cache de uso de versão anterior sai do disco no BOOT, não na primeira visita à tela de
+// uso: o v2 guardava a cauda de cada conversa em hex (card assinatura-do-cache-guarda-
+// conteudo-em-hex). A promessa nunca rejeita.
+uso.descartarCacheDeOutraVersao();
+
+// O monitor carrega o histórico e semeia a CPU ANTES do `listen`: a promessa `pronto` (que as
+// rotas aguardam) fecha a janela entre o socket aberto e o estado carregado. Nunca rejeita.
+monitor.preparar();
+
 if (!certificado) {
   semTimeoutDeRequisicao(http.createServer(atender)).listen(PORT, HOST, () => {
     console.log(`cockpit-agentes em http://${HOST}:${PORT}${TOKEN ? ' (token exigido)' : ''}`);
@@ -1469,7 +2207,10 @@ if (!certificado) {
     //
     // A posição NÃO protege teste nenhum: `server.js` sobe o `listen` no próprio `require`
     // (testes/gate-ui.js registra isso). Quem protege é a trava de `COCKPIT_CONTATO` do módulo.
-    vigiaAbas.iniciar();
+    vigiaAbas.iniciar({ listar: listarAbasComFim });
+    // O relógio do monitor, pelo mesmo motivo (ver o comentário do vigia acima).
+    monitor.iniciar();
+    disco.iniciar();
   });
 } else {
   // Uma porta, dois esquemas. O primeiro byte de um handshake TLS é sempre 0x16; qualquer
@@ -1494,6 +2235,9 @@ if (!certificado) {
     console.log(`http na mesma porta redireciona para o endereço seguro`);
     // Ver o comentário do ramo sem TLS acima. Produção roda ESTE ramo (30-caminhos.conf traz
     // COCKPIT_TLS_CERT/KEY), então fiar só o `if` deixaria a feature morta em produção.
-    vigiaAbas.iniciar();
+    vigiaAbas.iniciar({ listar: listarAbasComFim });
+    // O relógio do monitor, pelo mesmo motivo (ver o comentário do vigia acima).
+    monitor.iniciar();
+    disco.iniciar();
   });
 }

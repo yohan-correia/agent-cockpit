@@ -25,7 +25,11 @@ self.addEventListener('push', (evento) => {
   evento.waitUntil(self.registration.showNotification(aviso.titulo || 'Cockpit de Agentes', {
     body: aviso.corpo || '',
     icon: 'icone-192.png',
-    badge: 'icone-192.png',
+    // O badge é o ícone MINÚSCULO da barra de status do Android, e lá ele é recolorido: o
+    // sistema joga fora as cores e pinta o CANAL ALFA de branco. `icone-192.png` tem fundo
+    // opaco no quadrado inteiro, então virava um quadrado branco sólido (visto no aparelho do
+    // dono em 11/09). Por isso um arquivo só de silhueta: fundo transparente, desenho branco.
+    badge: 'icone-badge-96.png',
     // A tag é o id da conversa: um aviso novo da mesma conversa SUBSTITUI o anterior em
     // vez de empilhar. Turno longo com várias etapas não vira quinze notificações.
     tag: aviso.tag || aviso.sessaoId || 'cockpit',

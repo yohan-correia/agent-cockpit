@@ -1,0 +1,19 @@
+{
+  "versao": 1,
+  "gerado_por": "fixture do gate — campo extra de propósito (whitelist)",
+  "trilhas": [
+    { "id": "ia", "titulo": "IA",
+      "livros": [
+        { "id": "ia-0", "n": "0", "titulo": "Cointeligência", "original": "Co-Intelligence",
+          "autor": "Ethan Mollick · Intrínseca, 2025", "preco": "R$ 34,23", "isbn": "extra-ignorado" },
+        { "id": "ia-1", "n": "1", "titulo": "A Era da IA", "autor": "Kissinger, Schmidt, Huttenlocher",
+          "na_estante": true },
+        { "id": "ia-2", "n": "2", "titulo": "Superinteligência", "autor": "Nick Bostrom", "opcional": true }
+      ] },
+    { "id": "economia", "titulo": "Economia",
+      "livros": [
+        { "id": "eco-0", "n": "0", "titulo": "Economia Básica", "autor": "Thomas Sowell", "gratis": true },
+        { "id": "eco-1", "n": "1", "titulo": "Rápido e Devagar", "autor": "Daniel Kahneman" }
+      ] }
+  ]
+}

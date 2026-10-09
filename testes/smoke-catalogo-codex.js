@@ -136,9 +136,15 @@ const servidor = http.createServer(async (req, res) => {
   const semQuery = rota.split('?')[0];
 
   if (semQuery === '/api/abas') {
+    // `lidoEm` igual a `atualizadoEm`, do MESMO instante: com o carimbo no servidor, a guarda
+    // `if (aba.lidoEm >= carimbo) return;` de marcarLido (public/app.js) faz o cliente sair
+    // ANTES do POST — preservando a invariante "este smoke bloqueia toda escrita" (linha 133
+    // acima responde 405 a todo não-GET). Um `Date.now()` por campo os deixaria em
+    // milissegundos diferentes de vez em quando, e o smoke falharia 1 vez em N.
+    const agora = Date.now();
     return enviarJson(res, 200, { abas: [{
       chave: CHAVE, titulo: TITULO, cwd: cwdFixture, agente: 'codex',
-      temAgente: true, temClaude: true, rodando: false, sessaoId: 'sess-codex-smoke', atualizadoEm: Date.now(),
+      temAgente: true, temClaude: true, rodando: false, sessaoId: 'sess-codex-smoke', atualizadoEm: agora, lidoEm: agora,
     }] });
   }
   if (semQuery === '/api/eventos') {
