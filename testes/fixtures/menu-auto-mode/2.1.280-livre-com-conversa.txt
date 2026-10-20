@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.280
+▝▜██████▀  Sonnet 5 · Claude Max
+  ▝▝ ▝▝    ~/projeto
+
+  Get to finished work sooner with Opus 5.5. Switch anytime with /model.
+  1 more notice hidden
+
+❯ responda apenas: oi
+
+● oi
+
+✻ Brewed for 3s · done 2:07 PM
+
+❯ responda apenas: tchau
+
+● tchau
+
+✻ Cogitated for 2s · done 2:07 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

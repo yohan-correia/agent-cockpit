@@ -11,6 +11,7 @@
 #   testes/print-revisar-real.sh <pasta-de-saida> <sufixo> [cena ...]
 #     cena = lateral | lista | lista-atencao | lista-detalhe | job-relacionado (default: lista lista-atencao)
 #   ex.: testes/print-revisar-real.sh ~/.cockpit/smoke-shots/2026-10-06-pra-revisar-v2 ANTES
+#   PRINT_ARGS="--ausente <id>"  argumentos extras repassados ao print-celular-revisar.mjs (ex.: --ausente)
 #
 # Saídas: 0 = todos os PNGs gravados · 1 = algum print reprovou · 2 = ambiente indisponível.
 # Imprime também a contagem da rota (`jobs` e `atencao`) — é o número que o PNG tem de mostrar.
@@ -77,6 +78,6 @@ N=0
 for cena in "${CENAS[@]}"; do
   N=$((N + 1))
   ARQ="$SAIDA_DIR/$N-$cena-$SUFIXO.png"
-  if ! node "$AQUI/print-celular-revisar.mjs" --porta "$PORTA" --saida "$ARQ" --cena "$cena"; then RC=1; fi
+  if ! node "$AQUI/print-celular-revisar.mjs" --porta "$PORTA" --saida "$ARQ" --cena "$cena" ${PRINT_ARGS:-}; then RC=1; fi
 done
 exit $RC

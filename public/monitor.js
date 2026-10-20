@@ -124,8 +124,73 @@ function tituloDoMonitor(maquina, tr) {
   return typeof maquina === 'string' && maquina.trim() ? tr('Monitor de {0}', maquina.trim().slice(0, 64)) : tr('Monitor do servidor');
 }
 
+// ── Faixa PROD FORA (D87) — puras ──
+// Mesma conta do aviso que o vigia de prod manda por mensagem (minutos TRUNCADOS, mínimo 1), para o
+// número da tela bater com o que já chegou lá — nunca "0 min".
+function duracaoCurta(seg) {
+  if (typeof seg !== 'number' || !Number.isFinite(seg)) return '';
+  const s = Math.max(0, Math.floor(seg));
+  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))} min`;
+  return `${Math.floor(s / 3600)} h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')} min`;
+}
+
+/** `''` sem site fora; senão "PROD FORA — <site> há <dur> (<detalhe>) · ..." + o sufixo do vigia. */
+function textoProdFora(resp, tr) {
+  const foras = ((resp && resp.sites) || []).filter((s) => s.fora);
+  if (!foras.length) return '';
+  const itens = foras.map((s) => {
+    let item = typeof s.foraHaS === 'number' ? tr`${s.nome} há ${duracaoCurta(s.foraHaS)}` : s.nome;
+    if (s.detalhe) item += ` (${s.detalhe})`;
+    return item;
+  });
+  let texto = `${tr('PROD FORA')} — ${itens.join(' · ')}`;
+  if (resp && resp.arquivo === 'ilegivel') texto += ` · ${tr('vigia de prod ilegível')}`;
+  else if (foras.some((s) => s.parado)) texto += ` · ${tr('vigia parado')}`;
+  return texto;
+}
+
+/** As bolinhas (P3): uma por site. Vazio quando `arquivo === 'ausente'` — o servidor já manda `sites: []`. */
+function bolinhasDe(resp) {
+  return ((resp && resp.sites) || []).map((s) => ({ nome: s.nome, situacao: s.situacao }));
+}
+
+/** A nota sob as bolinhas, em ordem de prioridade: ilegível > parado com duração > parado sem duração > nada. */
+function notaDosSites(resp, tr) {
+  if (resp && resp.arquivo === 'ilegivel') return tr('vigia de prod ilegível');
+  const parados = ((resp && resp.sites) || []).filter((s) => s.parado);
+  if (!parados.length) return '';
+  const comDuracao = parados.filter((s) => typeof s.checadoHaS === 'number');
+  if (!comDuracao.length) return tr('vigia parado'); // sem duração inventada
+  const maior = Math.max(...comDuracao.map((s) => s.checadoHaS));
+  return tr`vigia parado há ${duracaoCurta(maior)}`;
+}
+
+/** O tom da faixa vermelha do topo: 'fora' > 'parado' (vigia morto ou arquivo ilegível) > '' (nada). */
+function tomDaFaixa(resp) {
+  const sites = (resp && resp.sites) || [];
+  if (sites.some((s) => s.fora)) return 'fora';
+  if (sites.some((s) => s.parado) || (resp && resp.arquivo === 'ilegivel')) return 'parado';
+  return '';
+}
+
+/** O texto da faixa vermelha do topo, conforme `tomDaFaixa` (P5: vigia parado nunca "parece tudo no ar"). */
+function textoDaFaixa(resp, tr) {
+  const tom = tomDaFaixa(resp);
+  if (tom === 'fora') return textoProdFora(resp, tr);
+  if (tom === 'parado') {
+    // Arquivo ilegível: o retrato guardado é velho — dizer "parado há 1 min" seria inventar.
+    if (resp && resp.arquivo === 'ilegivel') return tr('Vigia de prod sem leitura — sem notícia de prod');
+    const comDuracao = ((resp && resp.sites) || []).filter((s) => s.parado && typeof s.checadoHaS === 'number');
+    if (!comDuracao.length) return tr('Vigia de prod sem leitura — sem notícia de prod');
+    const maior = Math.max(...comDuracao.map((s) => s.checadoHaS));
+    return tr`Vigia de prod parado há ${duracaoCurta(maior)} — sem notícia de prod`;
+  }
+  return '';
+}
+
 globalThis.cockpitMonitor = { faixaDe, caminhosDoGrafico, textoDoAviso, formatarBytes, ticksDeHora, LACUNA_S,
-  alternarEixo, linhasDePastas, linhasDoDocker, textoMedidoEm, estadoDoBotao, tituloDoMonitor };
+  alternarEixo, linhasDePastas, linhasDoDocker, textoMedidoEm, estadoDoBotao, tituloDoMonitor,
+  duracaoCurta, textoProdFora, bolinhasDe, notaDosSites, tomDaFaixa, textoDaFaixa };
 
 // O resto é SÓ DOM — guardado pra este arquivo continuar `require`-ável em Node puro (gate U1-U7)
 // e não quebrar numa página sem a faixa.
@@ -337,6 +402,7 @@ async function carregarPainel({ comHistorico }) {
 }
 
 async function atualizar() {
+  atualizarSites(); // sem `await`: uma chamada lenta não atrasa a outra (#32, cada uma com seu try)
   try {
     ultimo = await api('api/monitor');
     faixa.removeAttribute('data-estado');
@@ -354,6 +420,42 @@ async function atualizar() {
     faixa.setAttribute('data-estado', 'sem-dado');
     for (const n of faixa.querySelectorAll('.monitor-pct')) n.textContent = '—';
   }
+}
+
+// Faixa PROD FORA (D87). Mora aqui porque divide o relógio de 15 s e a pausa da aba oculta com a
+// faixa do monitor — e por isso depende do `#monitor-faixa` existir (o guard do bloco). A faixa do
+// topo NÃO depende da faixa do monitor estar visível: `/api/monitor` pode falhar e `/api/sites` não.
+const prodFora = $('prod-fora');
+const linhaSites = $('monitor-sites');
+
+async function atualizarSites() {
+  try {
+    const resp = await api('api/sites');
+    linhaSites.removeAttribute('data-estado');
+    pintarSites(resp);
+  } catch {
+    // Rede caída: mantém o último estado pintado (inclusive a faixa vermelha) — apagar seria
+    // mentir "voltou". Não mexe em #prod-fora.
+    linhaSites.setAttribute('data-estado', 'sem-dado');
+  }
+}
+
+function pintarSites(resp) {
+  const bolinhas = bolinhasDe(resp);
+  const nota = notaDosSites(resp, tr);
+  linhaSites.replaceChildren();
+  for (const b of bolinhas) {
+    const s = el('span', 'monitor-site', b.nome);
+    s.dataset.situacao = b.situacao;
+    linhaSites.appendChild(s);
+  }
+  if (nota) linhaSites.appendChild(el('span', 'monitor-sites-nota', nota));
+  linhaSites.hidden = bolinhas.length === 0 && !nota;
+
+  const texto = textoDaFaixa(resp, tr);
+  if (prodFora.textContent !== texto) prodFora.textContent = texto; // aria-live não anuncia a cada 15 s
+  prodFora.dataset.tom = tomDaFaixa(resp);
+  prodFora.hidden = !texto;
 }
 
 function abrir() {

@@ -37,17 +37,29 @@ const abaBase = (extra) => ({
  */
 async function rodar({
   aba, texto = 'oi, tudo bem?', motivoDeRecusaResultado = null, mesmaIdentidadeResultado = null,
-  estadoDoMenuSequencia = [], autorizarEscritaResultado = null,
+  mesmaIdentidadeSequencia = null, estadoDoMenuSequencia = [], composerSequencia = [null],
+  autorizarEscritaResultado = null,
 }) {
   const chamadas = [];
   let registrouPendente = 0;
+  let esqueceu = 0;
   let indiceEstado = 0;
   let chamouEstadoDoMenu = 0;
+  let indiceIdentidade = 0;
+  let indiceComposer = 0;
   const contexto = {
     path, PASTA_ANEXOS: '/tmp', limpar: (x) => x,
     buscar: async () => aba,
     motivoDeRecusa: () => motivoDeRecusaResultado,
-    mesmaIdentidade: async () => mesmaIdentidadeResultado,
+    mesmaIdentidade: async () => {
+      if (!mesmaIdentidadeSequencia) return mesmaIdentidadeResultado;
+      // Por ÍNDICE, nunca `??`: `null` aqui é resposta ("é o mesmo processo"), não "acabou a lista" —
+      // com `??` o caso k rejeitava ANTES da leitura e não testava a corrida (painel de execução).
+      const v = indiceIdentidade < mesmaIdentidadeSequencia.length
+        ? mesmaIdentidadeSequencia[indiceIdentidade] : mesmaIdentidadeSequencia.at(-1);
+      indiceIdentidade += 1;
+      return v;
+    },
     estadoDoMenu: async () => {
       chamouEstadoDoMenu += 1;
       const v = estadoDoMenuSequencia[indiceEstado] ?? estadoDoMenuSequencia.at(-1);
@@ -61,10 +73,14 @@ async function rodar({
     // gate é sobre o GESTO do Escape, e a conferência do Enter tem gate próprio.
     TENTATIVAS_DE_ENTER: abasReal.TENTATIVAS_DE_ENTER,
     ESPERA_CONFIRMACAO: abasReal.ESPERA_CONFIRMACAO,
-    composerTemTexto: async () => null,
+    composerTemTexto: async () => {
+      const v = composerSequencia[indiceComposer] ?? composerSequencia.at(-1);
+      indiceComposer += 1;
+      return v;
+    },
     espera: async () => {},
     registrarPendente: (chave, dados) => { registrouPendente += 1; return dados; },
-    esquecerPendente: () => {},
+    esquecerPendente: () => { esqueceu += 1; },
     tmux: async (args) => { chamadas.push(args); },
     tmuxDoStatus: async (args) => { chamadas.push(args); return ''; },
     autorizarEscrita: async () => autorizarEscritaResultado,
@@ -74,7 +90,7 @@ async function rodar({
   let rejeitou = null;
   let resultado = null;
   try { resultado = await contexto.digitarNaAba(aba.chave, texto); } catch (e) { rejeitou = e; }
-  return { rejeitou, chamadas, resultado, registrouPendente, chamouEstadoDoMenu };
+  return { rejeitou, chamadas, resultado, registrouPendente, chamouEstadoDoMenu, esqueceu };
 }
 
 const teclasEnviadas = (chamadas) => chamadas.map((a) => a.at(-1));
@@ -186,6 +202,167 @@ const todasNaPane = (chamadas, pane) => chamadas.every((a) => a[a.indexOf('-t') 
     assert.equal(r.chamadas.length, 0, `/compact: ZERO send-keys (achei ${r.chamadas.length})`);
     assert.ok(!teclasEnviadas(r.chamadas).includes('Escape'), '/compact: nenhum Escape — o gesto não vale para comandos nativos (§4.5)');
     console.log("  ✅ /compact com menu aberto: recusa por autorizarEscrita('texto'), zero Escape");
+  }
+
+  // ── D85b/D85d (card mensagem-some-no-menu-do-auto-mode): Claude com esperando:false — o
+  //    gesto roda mesmo sem pergunta vista, e nenhum Enter confirma um menu que abriu sozinho ──
+
+  // a) menu → livre → livre: Esc, cola, Enter, e o retorno avisa que fechou um menu sozinho
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['menu', 'livre', 'livre'] });
+    assert.equal(r.rejeitou, null, `menu→livre→livre não deveria rejeitar (${r.rejeitou && r.rejeitou.message})`);
+    assert.deepEqual(teclasEnviadas(r.chamadas), ['Escape', '\x1b[200~oi, tudo bem?\x1b[201~', 'Enter'],
+      'send-keys na ordem Escape, texto, Enter');
+    assert.equal(r.resultado.menuFechado, true, 'o retorno avisa menuFechado: true');
+    console.log('  ✅ Claude esperando:false — menu→livre→livre: Esc, cola, Enter, menuFechado: true');
+  }
+
+  // b) menu → menu: o Esc não fechou — recusa sem colar, sem ficha
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['menu', 'menu'] });
+    assert.ok(r.rejeitou, 'menu→menu: rejeita');
+    assert.match(r.rejeitou.message, /mandei Esc/, 'a mensagem é a do Esc que não fechou');
+    assert.equal(r.registrouPendente, 0, 'nenhuma ficha pendente nasceu');
+    assert.ok(!('colado' in r.rejeitou) || !r.rejeitou.colado, "'colado' AUSENTE/false — nada foi colado");
+    assert.equal(r.chamadas.length, 1, `só o Escape sai (achei ${r.chamadas.length})`);
+    console.log('  ✅ Claude esperando:false — menu→menu: só o Escape, recusa sem colar, zero ficha');
+  }
+
+  // c) menu → nao-sei: idem b) — depois do Esc, só 'livre' positivo libera
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['menu', 'nao-sei'] });
+    assert.ok(r.rejeitou, 'menu→nao-sei: rejeita');
+    assert.match(r.rejeitou.message, /mandei Esc/, 'a mensagem é a do Esc que não fechou');
+    assert.equal(r.registrouPendente, 0, 'nenhuma ficha pendente nasceu');
+    assert.ok(!('colado' in r.rejeitou) || !r.rejeitou.colado, "'colado' AUSENTE/false — nada foi colado");
+    assert.equal(r.chamadas.length, 1, `só o Escape sai (achei ${r.chamadas.length})`);
+    console.log('  ✅ Claude esperando:false — menu→nao-sei: só o Escape, recusa sem colar');
+  }
+
+  // d) nao-sei no passo 0, sem esperando: segue como hoje (D13) — sem Escape
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['nao-sei'] });
+    assert.equal(r.rejeitou, null, `nao-sei sem esperando não deveria rejeitar (${r.rejeitou && r.rejeitou.message})`);
+    assert.ok(!teclasEnviadas(r.chamadas).includes('Escape'), 'nenhum Escape saiu');
+    assert.equal(r.chamadas.length, 2, `os dois send-keys de sempre (achei ${r.chamadas.length})`);
+    assert.equal(r.resultado.menuFechado, undefined, 'sem Esc, sem menuFechado');
+    console.log("  ✅ Claude esperando:false — 'nao-sei' no passo 0: segue como hoje, sem Escape");
+  }
+
+  // e) livre no passo 0: segue sem Escape, sem menuFechado
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['livre'] });
+    assert.equal(r.rejeitou, null, `livre no passo 0 não deveria rejeitar (${r.rejeitou && r.rejeitou.message})`);
+    assert.ok(!teclasEnviadas(r.chamadas).includes('Escape'), 'nenhum Escape saiu');
+    assert.equal(r.resultado.menuFechado, undefined, 'sem menuFechado');
+    console.log('  ✅ Claude esperando:false — livre no passo 0: segue sem Escape, sem menuFechado');
+  }
+
+  // f) menu antes do Enter, caixa vazia: a colagem foi descartada — erro SEM colado, ficha esquecida
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['livre', 'menu'], composerSequencia: [false] });
+    assert.ok(r.rejeitou, 'menu antes do Enter, caixa vazia: rejeita');
+    assert.equal(r.rejeitou.descartado, true, 'descartado === true');
+    assert.ok(!r.rejeitou.colado, "'colado' NÃO veio — a flag é posta pelo catch, e descartado bloqueia");
+    assert.ok(!teclasEnviadas(r.chamadas).includes('Enter'), 'nenhum Enter saiu');
+    assert.equal(r.esqueceu, 1, 'a ficha foi esquecida');
+    console.log('  ✅ Claude esperando:false — menu antes do Enter, caixa vazia: descartado, sem colado, sem Enter');
+  }
+
+  // g) menu antes do Enter, caixa com texto: o texto pode estar na TUI — colado: true
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['livre', 'menu'], composerSequencia: [true] });
+    assert.ok(r.rejeitou, 'menu antes do Enter, caixa com texto: rejeita');
+    assert.equal(r.rejeitou.colado, true, 'colado === true');
+    assert.ok(!teclasEnviadas(r.chamadas).includes('Enter'), 'nenhum Enter saiu');
+    console.log('  ✅ Claude esperando:false — menu antes do Enter, caixa com texto: colado, sem Enter');
+  }
+
+  // h) com Esc mandado, nao-sei antes do Enter também bloqueia (só 'livre' positivo libera)
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({
+      aba, estadoDoMenuSequencia: ['menu', 'livre', 'nao-sei'], composerSequencia: [false],
+    });
+    assert.ok(r.rejeitou, 'com Esc mandado, nao-sei antes do Enter: rejeita');
+    assert.ok(!teclasEnviadas(r.chamadas).includes('Enter'), 'nenhum Enter saiu');
+    console.log('  ✅ Claude esperando:false — com Esc mandado, nao-sei antes do Enter: bloqueia');
+  }
+
+  // i) sem Esc, nao-sei antes do Enter segue (D13 outra vez, agora no 2º ponto)
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['livre', 'nao-sei'] });
+    assert.equal(r.rejeitou, null, `sem Esc, nao-sei antes do Enter não deveria rejeitar (${r.rejeitou && r.rejeitou.message})`);
+    assert.ok(teclasEnviadas(r.chamadas).includes('Enter'), 'o Enter saiu');
+    console.log('  ✅ Claude esperando:false — sem Esc, nao-sei antes do Enter: segue, tem Enter');
+  }
+
+  // j) menu no reenvio: o 1º Enter já saiu — para, erro com colado, só UM Enter
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({
+      aba, estadoDoMenuSequencia: ['livre', 'livre', 'menu'], composerSequencia: [true, true],
+    });
+    assert.ok(r.rejeitou, 'menu no reenvio: rejeita');
+    assert.equal(r.rejeitou.colado, true, 'colado === true');
+    const enters = teclasEnviadas(r.chamadas).filter((t) => t === 'Enter');
+    assert.equal(enters.length, 1, `exatamente UM Enter saiu (achei ${enters.length})`);
+    console.log('  ✅ Claude esperando:false — menu no reenvio: para, colado, exatamente um Enter');
+  }
+
+  // j2) menu no reenvio com a caixa já vazia: o 1º Enter já saiu — NUNCA descartado (duplicaria)
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({
+      aba, estadoDoMenuSequencia: ['livre', 'livre', 'menu'], composerSequencia: [true, false],
+    });
+    assert.ok(r.rejeitou, 'menu no reenvio, caixa vazia: rejeita');
+    assert.equal(r.rejeitou.colado, true, 'colado === true');
+    assert.ok(!r.rejeitou.descartado, 'SEM descartado — devolver o texto duplicaria o envio (#21)');
+    const enters = teclasEnviadas(r.chamadas).filter((t) => t === 'Enter');
+    assert.equal(enters.length, 1, `exatamente UM Enter saiu (achei ${enters.length})`);
+    console.log('  ✅ Claude esperando:false — menu no reenvio, caixa vazia: colado, sem descartado, um Enter');
+  }
+
+  // k) o processo troca DURANTE a 1ª leitura: a identidade repetida antes do Esc pega a troca
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, pane: '%60' });
+    const r = await rodar({
+      aba,
+      mesmaIdentidadeSequencia: [null, 'a aba mudou de processo; confira o terminal antes de tentar novamente'],
+      estadoDoMenuSequencia: ['menu'],
+    });
+    assert.ok(r.rejeitou, 'processo trocou na leitura: rejeita');
+    assert.match(r.rejeitou.message, /mudou de processo/, 'a mensagem é de mesmaIdentidade');
+    assert.equal(r.chamouEstadoDoMenu, 1, 'a tela FOI lida antes da rejeição — é a 2ª identidade que pega a troca');
+    assert.equal(r.chamadas.length, 0, `ZERO send-keys — nenhum Escape saiu (achei ${r.chamadas.length})`);
+    console.log('  ✅ Claude esperando:false — processo trocou entre a leitura e o Esc: zero send-keys');
+  }
+
+  // l) preSessao: true continua FORA do gesto — recusa em motivoDeRecusa, gesto nem roda
+  {
+    const aba = abaBase({ agente: 'claude', esperando: false, preSessao: true, pane: '%60' });
+    const r = await rodar({ aba, motivoDeRecusaResultado: 'x' });
+    assert.ok(r.rejeitou, 'preSessao: rejeita');
+    assert.equal(r.chamouEstadoDoMenu, 0, 'preSessao: o gesto nem chega a chamar estadoDoMenu');
+    console.log('  ✅ Claude esperando:false, preSessao: recusa em motivoDeRecusa, gesto nem roda');
+  }
+
+  // m) D58 intacto: Claude esperando:true continua sem menuFechado (o dono já estava vendo)
+  {
+    const aba = abaBase({ agente: 'claude', esperando: true, pane: '%60' });
+    const r = await rodar({ aba, estadoDoMenuSequencia: ['menu', 'livre', 'livre'] });
+    assert.equal(r.rejeitou, null, `D58 menu→livre→livre não deveria rejeitar (${r.rejeitou && r.rejeitou.message})`);
+    assert.equal(r.resultado.menuFechado, undefined, 'D58 (esperando:true): sem menuFechado');
+    console.log('  ✅ D58 intacto — Claude esperando:true: menuFechado continua undefined');
   }
 
   // ── Dois envios concorrentes na mesma aba: os seis send-keys não se intercalam (#28) ──

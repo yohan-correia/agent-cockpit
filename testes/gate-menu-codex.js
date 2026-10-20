@@ -390,6 +390,124 @@ grupo("Parte 3 — esperando acompanha a régua (exige a captura ligada em lista
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  Parte 3b — preSessao do Codex sem rollout segue a régua (card codex-primeira-mensagem-pelo-celular)
+// ═════════════════════════════════════════════════════════════════════════════
+
+grupo('Parte 3b — preSessao do Codex sem rollout segue a régua (card codex-primeira-mensagem-pelo-celular)', async () => {
+  const procComCodex = arvoreProc({
+    10: { comm: 'bash', pgrp: 10, tpgid: 11, filhos: [11] },
+    11: { comm: 'codex', argv: ['/usr/bin/codex'], pgrp: 11, tpgid: 11 },
+  });
+
+  // Cada caso usa um CODEX_HOME VAZIO (sem config.toml) ⇒ `confianca.estadoDaPasta('codex', …)`
+  // dá 'nao-confiada' ⇒ `pedeConfianca` nasce `true` sempre que `preSessao` também nasce `true`.
+  // Exceção: `configCodex` planta o config.toml (a pasta da pane, `/home/y/projetos/x`, confiada).
+  const CONFIG_CONFIADA = '[projects."/home/y/projetos/x"]\ntrust_level = "trusted"\n';
+  const casos = [
+    {
+      rotulo: 'composer livre',
+      captura: TXT_LIVRE,
+      configCodex: CONFIG_CONFIADA,
+      preSessao: false,
+      pedeConfianca: false,
+      motivo: null,
+    },
+    {
+      // Medido em 14/10 (codex 0.153.4, pasta nova, carga alta): o composer livre aparece de 0,8 s
+      // a 2,9 s e só em 3,7 s o menu de confiança abre por cima. Liberar nessa janela deixa o Enter
+      // do envio responder "1. Yes, continue" — confiar na pasta sem o dono escolher.
+      rotulo: 'composer livre com a pasta ainda não confiada (janela antes do menu)',
+      captura: TXT_LIVRE,
+      preSessao: true,
+      pedeConfianca: true,
+      motivoRegex: /não é confiável/,
+    },
+    {
+      rotulo: 'menu de confiança',
+      captura: fs.readFileSync(path.join(DIR_FIXTURES, '0.153.4-menu-confianca-pasta-nova.txt'), 'utf8'),
+      preSessao: true,
+      pedeConfianca: true,
+      motivoRegex: /não é confiável/,
+    },
+    {
+      rotulo: 'menu de update',
+      captura: fs.readFileSync(path.join(DIR_FIXTURES, '0.153.4-menu-update-disponivel.txt'), 'utf8'),
+      preSessao: true,
+      motivoNaoNull: true,
+    },
+    {
+      rotulo: 'captura vazia (desconhecido)',
+      captura: '',
+      preSessao: true,
+      motivoRegex: /pedindo uma confirmação|não é confiável/,
+    },
+  ];
+
+  for (const caso of casos) {
+    const env = {
+      COCKPIT_PROC_RAIZ: procComCodex,
+      HOME: temporario('gate-menu-codex-home-'),
+      CODEX_HOME: temporario('gate-menu-codex-codexhome-'),
+      COCKPIT_TMUX_SOCKET: 'gate-menu-codex-fake',
+      COCKPIT_TMUX_SESSAO: 'main',
+    };
+    if (caso.configCodex) fs.writeFileSync(path.join(env.CODEX_HOME, 'config.toml'), caso.configCodex);
+    const roteiro = [{ saida: linhaPane({ janela: '@7', pane: '%11', pid: 10 }) }];
+    const { lista, mod } = await comEspiaoAbas(
+      env,
+      roteiro,
+      async (modulo) => ({ lista: await modulo.listar(), mod: modulo }),
+      { capturaPane: () => caso.captura },
+    );
+    const aba = lista.find((a) => a.agente === 'codex');
+    if (!ok(Boolean(aba), `${caso.rotulo}: a aba de Codex apareceu na lista`)) continue;
+    ok(aba.preSessao === caso.preSessao, `${caso.rotulo}: preSessao === ${caso.preSessao} (saiu ${aba.preSessao})`);
+    if ('pedeConfianca' in caso) {
+      ok(aba.pedeConfianca === caso.pedeConfianca, `${caso.rotulo}: pedeConfianca === ${caso.pedeConfianca} (saiu ${aba.pedeConfianca})`);
+    }
+    const motivo = mod.motivoDeRecusa(aba);
+    if (caso.motivo === null) {
+      ok(motivo === null, `${caso.rotulo}: motivoDeRecusa ⇒ null (saiu ${JSON.stringify(motivo)})`);
+    } else if (caso.motivoRegex) {
+      ok(caso.motivoRegex.test(motivo || ''), `${caso.rotulo}: motivoDeRecusa casa ${caso.motivoRegex} (saiu ${JSON.stringify(motivo)})`);
+    } else if (caso.motivoNaoNull) {
+      ok(motivo !== null, `${caso.rotulo}: motivoDeRecusa não-null (saiu ${JSON.stringify(motivo)})`);
+    }
+
+    if (caso.rotulo === 'composer livre') {
+      const recusaTecla = mod.motivoDeRecusaDeTecla(aba, 'Down');
+      ok(recusaTecla !== null,
+        `${caso.rotulo}: sem pergunta aberta, motivoDeRecusaDeTecla(aba,'Down') recusa (saiu ${JSON.stringify(recusaTecla)})`);
+      const status = mod.motivoDeRecusaDeStatus(aba);
+      ok(status?.codigo === 409 && /Sessão ainda não identificada/.test(status.mensagem || ''),
+        `${caso.rotulo}: motivoDeRecusaDeStatus ⇒ 409 /Sessão ainda não identificada/ (saiu ${JSON.stringify(status)})`);
+    }
+  }
+
+  // Controle Claude: mesmo grupo — o Claude vivo sem sessão publicada continua preSessao:true
+  // (inalterado), mesmo com a MESMA captura que libera o Codex — e nenhuma captura de pane
+  // acontece nele (a régua, desde a Fase 4 do card irmão, só captura pane de Codex).
+  const procComClaude = arvoreProc({
+    20: { comm: 'bash', pgrp: 20, tpgid: 21, filhos: [21] },
+    21: { comm: 'claude', argv: ['claude'], pgrp: 21, tpgid: 21, starttime: 4242 },
+  });
+  const { lista: listaClaude, chamadas } = await comEspiaoAbas(
+    {
+      COCKPIT_PROC_RAIZ: procComClaude, HOME: temporario('gate-menu-codex-home-'),
+      COCKPIT_TMUX_SOCKET: 'gate-menu-codex-fake', COCKPIT_TMUX_SESSAO: 'main',
+    },
+    [{ saida: linhaPane({ janela: '@6', pane: '%21', pid: 20 }) }],
+    async (modulo, chamadasReais) => ({ lista: await modulo.listar(), chamadas: chamadasReais }),
+    { capturaPane: () => TXT_LIVRE },
+  );
+  const abaClaude = listaClaude.find((a) => a.agente === 'claude');
+  ok(abaClaude?.preSessao === true,
+    'Claude: preSessao continua true (inalterado) mesmo com a mesma captura que liberaria o Codex');
+  const capturasClaude = chamadas.filter((c) => c[1].includes('capture-pane'));
+  ok(capturasClaude.length === 0, `Claude: nenhuma chamada de capture-pane na pane dele (${capturasClaude.length})`);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  Parte 4 — as guardas que passam a valer com esperando:true numa aba de Codex
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -818,6 +936,12 @@ grupo('Parte 6d1 — sessão MISTA (Claude+Codex): captura da pane de Codex pend
         TENTATIVAS_DE_ENTER: abasDoEnter.TENTATIVAS_DE_ENTER,
         ESPERA_CONFIRMACAO: abasDoEnter.ESPERA_CONFIRMACAO,
         composerTemTexto: async () => null,
+        // o gesto D85b roda para Claude `esperando:false`: sem estas o recorte estoura
+        // ReferenceError e o assert passaria pelo motivo errado (#53). A identidade do GESTO
+        // é dublada como 'mesma' de propósito: este grupo mede o `autorizarEscrita` REAL com
+        // a captura do Codex pendurada, e é ELE quem tem de rejeitar.
+        mesmaIdentidade: async () => null, estadoDoMenu: async () => 'livre',
+        RECUSA_PERGUNTA: mod.RECUSA_PERGUNTA, ESPERA_REPINTAR: 250,
 
         buscar: async () => abaClaude,
         motivoDeRecusa: () => null,
@@ -833,6 +957,7 @@ grupo('Parte 6d1 — sessão MISTA (Claude+Codex): captura da pane de Codex pend
       try { await ctx.digitarNaAba('aba-claude', 'oi, tudo bem?'); } catch (e) { rejeitou = e; }
       ok(Boolean(rejeitou),
         'sessão mista: o Claude morto no intervalo faz a promessa REJEITAR — a melhoria do Codex não pode custar uma regressão no Claude');
+      ok(rejeitou && /mudou de processo/.test(rejeitou.message), `a rejeição veio do autorizarEscrita real, não de ReferenceError (veio: ${rejeitou && rejeitou.message})`);
       ok(chamadas.length === 0, `ZERO send-keys na pane do Claude (achei ${chamadas.length})`);
 
       resolverCodex(TXT_LIVRE);

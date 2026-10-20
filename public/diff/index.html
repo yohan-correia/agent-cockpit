@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" id="meta-tema" content="#0f1115">
+<title>Commits</title>
+<!-- Tema guardado no aparelho, aplicado ANTES da primeira pintura (cópia literal de
+     public/index.html:18-27 — a casca da diff não tem <base>, então os scripts/estilos abaixo
+     são relativos por ../, sem a armadilha do `<base>` sob /cockpit). -->
+<script>
+  (function () {
+    try {
+      var tema = localStorage.getItem('cockpit-tema');
+      if (tema) document.documentElement.setAttribute('data-tema', tema);
+    } catch (e) { /* modo privado: fica no tema padrão, e tudo bem */ }
+  })();
+</script>
+<link rel="stylesheet" href="../estilo.css">
+<link rel="stylesheet" href="../diff.css">
+</head>
+<body class="diff-pagina">
+<header id="diff-topo"></header>
+<main id="diff-raiz">
+<div id="diff-aviso" role="status"></div>
+<div id="diff-palco"></div>
+</main>
+<!-- Scripts no FIM do body (molde do public/index.html): o diff.js só desenha se achar
+     #diff-raiz, e no <head> ele rodaria antes do body existir — a página ficava em branco. -->
+<script src="../traducoes.js"></script>
+<script src="../i18n.js"></script>
+<script src="../diff.js"></script>
+</body>
+</html>

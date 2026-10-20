@@ -23,7 +23,7 @@ Instale Codex CLI e tmux para esse teste. Ele usa provider HTTP local, CODEX_HOM
 python3 testes/smoke-clear-codex.py
 ```
 
-O smoke imprime a pasta de evidências em `/tmp`. Ele nunca deve receber seu CODEX_HOME real nem sua sessão tmux de trabalho. Os gates `gate-fase-1.js`, `gate-fase-2.js` e `gate-fase-3.js` chamam modelos reais e não fazem parte da CI.
+O smoke imprime a pasta de evidências em `/tmp`. Ele nunca deve receber seu CODEX_HOME real nem sua sessão tmux de trabalho. Os gates `gate-fase-2.js` e `gate-fase-3.js` chamam modelos reais e não fazem parte da CI.
 
 ## Contratos que precisam sobreviver
 

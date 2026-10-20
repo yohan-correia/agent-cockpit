@@ -669,6 +669,7 @@ async function main() {
     };
     const reprovados = [];
     const semDu = [];
+    const semGh = [];
     let examinados = 0;
     for (const nome of fs.readdirSync(dirTestes).filter((n) => /\.(js|mjs|py)$/.test(n))) {
       if (allowlist[nome]) continue;
@@ -680,10 +681,15 @@ async function main() {
       // D68: abrir o painel (ou a rota do disco) dispara `du /` e `docker system df` de verdade — quem
       // faz isso tem de injetar o falso.
       if ((texto.includes('monitor/disco') || texto.includes('dialogo-monitor')) && !texto.includes('COCKPIT_DU_BIN')) semDu.push(nome);
+      // D97: a raiz do /diff/ chama `api/diff/prs`, que roda `gh` (rede, GitHub). Quem abre a diff NUM NAVEGADOR
+      // (puppeteer) injeta o falso. Só citar `/diff/` não basta: `gate-diff.js` pede a casca por HTTP sem navegador e
+      // `gate-grafo-rota.js:281` cita "diff/config" num rótulo (falsos positivos medidos pelo painel do plano).
+      if (texto.includes('puppeteer') && /\/diff\//.test(texto) && !texto.includes('COCKPIT_GH_BIN')) semGh.push(nome);
     }
     ok(examinados >= 15, `M-rede: examinou ${examinados} scripts que citam server.js (esperado ≥ 15 — o critério não pode ter ficado cego)`);
     ok(reprovados.length === 0, `M-rede: todo script que sobe server.js isola o monitor (sem isolamento: ${reprovados.join(', ') || 'nenhum'})`);
     ok(semDu.length === 0, `M-rede: quem abre o painel do disco injeta COCKPIT_DU_BIN (sem: ${semDu.join(', ') || 'nenhum'})`);
+    ok(semGh.length === 0, `M-rede: quem abre /diff/ injeta COCKPIT_GH_BIN (sem: ${semGh.join(', ') || 'nenhum'})`);
     ok(fs.readFileSync(path.join(dirTestes, 'fixtures-arquivos.js'), 'utf8').includes('COCKPIT_MONITOR_'), 'M-rede: o helper fixtures-arquivos.js cita COCKPIT_MONITOR_');
   }
 

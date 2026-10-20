@@ -14,6 +14,10 @@
 //   lista-merge      a lista com os três selos de merge (limpo, conflito, só-roadmap) DENTRO do viewport
 //   job-merge        a tela de um job com conflito: a seção "Merge na develop" com os arquivos na vista
 //                    (as duas cenas pedem o cenário de `testes/cenario-revisar-merge.js`)
+//   atencao-decisao  o filtro "Atenção" com o chip "pede decisão" na vista; com --ausente ID confere
+//                    também que esse id NÃO está na lista (card já fechado no meta)
+//   job-decisao      a tela de UM job (--job-id) com o veredito "Pede decisão" na vista
+//                    (as duas cenas pedem o cenário de `testes/cenario-revisar-falso-pronto.js`)
 //
 // A rota é conferida ANTES do obturador (mesma disciplina do print-celular-jobs.mjs): 401,
 // `habilitado:false` ou lista vazia encerram com exit 2 e NENHUM PNG — cenário não montado
@@ -35,7 +39,10 @@ import { spawn, execFileSync } from 'node:child_process';
 
 const AQUI = path.dirname(fileURLToPath(import.meta.url));
 const IMAGEM = process.env.IMAGEM || 'cockpit-smoke:latest';
-const CENAS = new Set(['lateral', 'lista', 'lista-atencao', 'lista-detalhe', 'job-relacionado', 'job-smoke', 'painel-job', 'job', 'lista-merge', 'job-merge']);
+const PUPPETEER_CORE = process.env.PUPPETEER_CORE || '';
+const CHROME_BIN = process.env.CHROME_BIN || '';
+const NO_HOST = Boolean(PUPPETEER_CORE && CHROME_BIN);
+const CENAS = new Set(['lateral', 'lista', 'lista-atencao', 'lista-detalhe', 'job-relacionado', 'job-smoke', 'painel-job', 'job', 'lista-merge', 'job-merge', 'atencao-decisao', 'job-decisao']);
 const TEMAS = new Set(['claro', 'escuro']);
 
 const AJUDA = `print-celular-revisar — print 390×844 da tela "Pra revisar"
@@ -43,11 +50,12 @@ const AJUDA = `print-celular-revisar — print 390×844 da tela "Pra revisar"
   --porta N          monta a base http://127.0.0.1:N (servidor de teste)
   --base URL         a base inteira; sobrepõe --porta
   --saida CAMINHO    o .png a gravar. Recusa sobrescrever.
-  --cena NOME        lateral | lista | lista-atencao | lista-detalhe | job-relacionado | job-smoke | painel-job | job | lista-merge | job-merge
+  --cena NOME        lateral | lista | lista-atencao | lista-detalhe | job-relacionado | job-smoke | painel-job | job | lista-merge | job-merge | atencao-decisao | job-decisao
   --job-id ID        obrigatório para job-smoke/painel-job/job — o id do card a abrir
   --tema claro|escuro  opcional — força o tema antes do boot (localStorage cockpit-tema)
   --token-file ARQ   arquivo com COCKPIT_TOKEN=<valor>. O valor NUNCA vira argv.
   --inseguro         aceita certificado que não valida
+  --ausente ID       (atencao-decisao) id que NÃO pode estar na lista
   --ajuda            isto
 `;
 
@@ -144,10 +152,14 @@ async function conferirRota() {
     return { ok: false, motivo: 'cenário não montado: nenhum job com merge em conflito na rota' };
   }
   const conflito = jobConflito ? { id: jobConflito.id, n: jobConflito.merge.arquivos.length } : null;
-  const TOM_NAO_OK = new Set(['sem-base', 'nao-sei', 'pede-revisao', 'parou-no-limite']);
+  const decisao = dados.jobs.find((j) => (j.etiquetas || []).includes('pede-decisao')) || null;
+  const TOM_NAO_OK = new Set(['sem-base', 'nao-sei', 'pede-revisao', 'parou-no-limite', 'pede-decisao', 'relatorio-ilegivel']);
   const esperaAtencao = (dados.atencao || []).length
     + dados.jobs.filter((j) => (j.etiquetas || []).some((e) => TOM_NAO_OK.has(e))).length;
-  return { ok: true, rel, conflito, esperaAtencao, nota: `rota: 200 com habilitado:true e ${dados.jobs.length} job(s), ${(dados.atencao || []).length} em atencao[]` };
+  return {
+    ok: true, rel, conflito, decisaoId: decisao ? decisao.id : '', esperaAtencao,
+    nota: `rota: 200 com habilitado:true e ${dados.jobs.length} job(s), ${(dados.atencao || []).length} em atencao[]`,
+  };
 }
 
 // ─── 2) O roteiro que roda DENTRO do container ───────────────────────────────────────────
@@ -155,7 +167,7 @@ async function conferirRota() {
 function montarRoteiro() {
   return `'use strict';
 const fs = require('node:fs');
-const puppeteer = require('/app/node_modules/puppeteer-core');
+const puppeteer = require(process.env.PUPPETEER_PATH || '/app/node_modules/puppeteer-core');
 
 const BASE = process.env.BASE;
 const CENA = process.env.CENA;
@@ -167,13 +179,16 @@ const REL_TITULO = process.env.REL_TITULO || '';
 const ESPERA_ATENCAO = Number(process.env.ESPERA_ATENCAO || 0);
 const CONFLITO_ID = process.env.CONFLITO_ID || '';
 const N_ARQUIVOS = Number(process.env.N_ARQUIVOS || 0);
+const DECISAO_ID = process.env.DECISAO_ID || '';
+const AUSENTE_ID = process.env.AUSENTE_ID || '';
 const TEMA = process.env.TEMA || '';
 const INSEGURO = process.env.INSEGURO === '1';
+const OUT = process.env.OUT_DIR || '/out';
 const VIEWPORT = { width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
 const MAPA_TEMA = { claro: 'catppuccin-latte', escuro: 'abyss' };
 
 let token = '';
-try { token = fs.readFileSync('/w/token.txt', 'utf8').trim(); } catch { /* sem token: rota pública */ }
+try { token = fs.readFileSync((process.env.W_DIR || '/w') + '/token.txt', 'utf8').trim(); } catch { /* sem token: rota pública */ }
 
 const problemas = [];
 const feitos = [];
@@ -184,7 +199,7 @@ const exigir = (cond, msg) => {
 
 (async () => {
   const navegador = await puppeteer.launch({
-    executablePath: '/usr/bin/chromium',
+    executablePath: process.env.CHROME_PATH || '/usr/bin/chromium',
     headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage'].concat(INSEGURO ? ['--ignore-certificate-errors'] : []),
   });
@@ -216,16 +231,19 @@ const exigir = (cond, msg) => {
         return Boolean(selo) && !selo.hidden && selo.textContent.trim() !== '' && selo.textContent.trim() !== '0';
       });
       exigir(temSelo, 'o contador do #btn-revisar está visível e > 0');
-      await pagina.screenshot({ path: '/out/print.png' });
+      await pagina.screenshot({ path: OUT + '/print.png' });
       feitos.push('PNG gravado');
     } else {
       await pagina.click('#btn-revisar');
       await pagina.waitForSelector('#dialogo-revisar[open]', { timeout: 5000 });
+      // O <dialog> entra com fade de 160 ms (estilo.css, T2): sem esperar a opacidade chegar a 1, o
+      // obturador pega o app de fundo vazando pelo diálogo (visto nos PNGs de 16/10).
+      await pagina.waitForFunction(() => getComputedStyle(document.getElementById('dialogo-revisar')).opacity === '1', { timeout: 5000 });
       await pagina.waitForSelector('.rv-card', { timeout: 10000 });
 
       if (CENA === 'lista') {
         exigir((await pagina.$$('.rv-card')).length > 0, 'a lista abriu com cards de verdade');
-        await pagina.screenshot({ path: '/out/print.png' });
+        await pagina.screenshot({ path: OUT + '/print.png' });
         feitos.push('PNG gravado');
       } else if (CENA === 'lista-atencao') {
         const clicou = await pagina.evaluate(() => {
@@ -238,7 +256,58 @@ const exigir = (cond, msg) => {
         exigir(clicou, 'o filtro "Atenção" existe e foi clicado');
         await new Promise((r) => setTimeout(r, 200));
         exigir((await pagina.$$('.rv-card')).length >= (ESPERA_ATENCAO > 0 ? 1 : 0), 'a lista redesenhou no filtro Atenção com ' + ESPERA_ATENCAO + ' item(ns) esperado(s) pela rota');
-        await pagina.screenshot({ path: '/out/print.png' });
+        await pagina.screenshot({ path: OUT + '/print.png' });
+        feitos.push('PNG gravado');
+      } else if (CENA === 'atencao-decisao') {
+        if (AUSENTE_ID) {
+          exigir((await pagina.$('.rv-card[data-id="' + AUSENTE_ID + '"]')) === null,
+            'o job ' + AUSENTE_ID + ' (ciclo fechado) NÃO está na lista');
+        }
+        const clicouAtencao = await pagina.evaluate(() => {
+          const botoes = [...document.querySelectorAll('.rv-filtro')];
+          const atencao = botoes.find((b) => b.textContent.includes('Atenção'));
+          if (!atencao) return false;
+          atencao.click();
+          return true;
+        });
+        exigir(clicouAtencao, 'o filtro "Atenção" existe e foi clicado');
+        await new Promise((r) => setTimeout(r, 200));
+        const n = (await pagina.$$('.rv-card')).length;
+        exigir(n === ESPERA_ATENCAO, 'o filtro Atenção tem exatamente ' + ESPERA_ATENCAO + ' card(s) (veio ' + n + ')');
+        exigir(Boolean(DECISAO_ID), 'a rota tem um job com a etiqueta pede-decisao');
+        const chip = await pagina.evaluate((id) => {
+          const c = document.querySelector('.rv-card[data-id="' + id + '"]');
+          if (!c) return null;
+          const el = [...c.querySelectorAll('.rv-chip')].find((x) => x.textContent.trim() === 'pede decisão');
+          if (!el) return null;
+          const f = el.getBoundingClientRect();
+          return { top: f.top, bottom: f.bottom, altura: window.innerHeight };
+        }, DECISAO_ID);
+        exigir(chip !== null, 'o chip "pede decisão" existe dentro do card ' + DECISAO_ID);
+        exigir(chip.top >= 0 && chip.bottom <= chip.altura, 'o chip "pede decisão" está dentro do viewport 390×844');
+        await pagina.screenshot({ path: OUT + '/print.png' });
+        feitos.push('PNG gravado');
+      } else if (CENA === 'job-decisao') {
+        exigir(Boolean(DECISAO_ID), 'a rota tem um job com a etiqueta pede-decisao');
+        const clicouCard = await pagina.evaluate((id) => {
+          const c = document.querySelector('.rv-card[data-id="' + id + '"]');
+          if (!c) return false;
+          c.click();
+          return true;
+        }, DECISAO_ID);
+        exigir(clicouCard, 'o card do job com pede-decisao existe e foi clicado (' + DECISAO_ID + ')');
+        await pagina.waitForSelector('.rv-veredito', { timeout: 10000 });
+        const v = await pagina.evaluate(() => {
+          const el = document.querySelector('.rv-veredito');
+          if (!el) return null;
+          const f = el.getBoundingClientRect();
+          return { titulo: el.querySelector('strong').textContent, tom: el.dataset.tom, top: f.top, bottom: f.bottom, altura: window.innerHeight };
+        });
+        exigir(v !== null, 'o veredito está na vista');
+        exigir(v.titulo === 'Pede decisão', 'o veredito mostra "Pede decisão" (veio "' + (v && v.titulo) + '")');
+        exigir(v.tom === 'aviso', 'o tom do veredito é aviso (veio "' + (v && v.tom) + '")');
+        exigir(v.top >= 0 && v.bottom <= v.altura, 'o veredito está dentro do viewport 390×844');
+        await pagina.screenshot({ path: OUT + '/print.png' });
         feitos.push('PNG gravado');
       } else if (CENA === 'lista-merge') {
         for (const e of ['limpo', 'conflito', 'so-roadmap']) {
@@ -251,7 +320,7 @@ const exigir = (cond, msg) => {
           exigir(r !== null, 'o selo de merge "' + e + '" existe na lista');
           exigir(r.top >= 0 && r.bottom <= r.altura, 'o selo ' + e + ' está dentro do viewport 390×844');
         }
-        await pagina.screenshot({ path: '/out/print.png' });
+        await pagina.screenshot({ path: OUT + '/print.png' });
         feitos.push('PNG gravado');
       } else if (CENA === 'job-merge') {
         const clicou = await pagina.evaluate((id) => {
@@ -270,7 +339,7 @@ const exigir = (cond, msg) => {
         });
         exigir(r.n === N_ARQUIVOS, 'a seção de merge lista ' + N_ARQUIVOS + ' arquivo(s) (veio ' + r.n + ')');
         exigir(r.top >= 0 && r.bottom <= r.altura, 'o último arquivo em conflito está dentro do viewport 390×844');
-        await pagina.screenshot({ path: '/out/print.png' });
+        await pagina.screenshot({ path: OUT + '/print.png' });
         feitos.push('PNG gravado');
       } else if (CENA === 'lista-detalhe') {
         // Presença no DOM não basta: a sublinha tem de estar DENTRO do viewport 390x844. Rola até ela se preciso.
@@ -285,7 +354,7 @@ const exigir = (cond, msg) => {
         exigir(r !== null, 'a sublinha .rv-sub do relacionado ' + REL_ID + ' existe na lista');
         exigir(r.top >= 0 && r.bottom <= r.altura, 'a sublinha ' + REL_ID + ' está dentro do viewport 390×844');
         await new Promise((res) => setTimeout(res, 200));
-        await pagina.screenshot({ path: '/out/print.png' });
+        await pagina.screenshot({ path: OUT + '/print.png' });
         feitos.push('PNG gravado');
       } else if (CENA === 'job-relacionado') {
         const clicou = await pagina.evaluate((relId) => {
@@ -299,7 +368,7 @@ const exigir = (cond, msg) => {
         const h2 = await pagina.$eval('.rv-hero h2', (e) => e.textContent);
         exigir(h2 === REL_TITULO, 'abriu o relacionado (título "' + REL_TITULO + '", veio "' + h2 + '")');
         exigir(h2 !== PAI_TITULO, 'não abriu a de cima');
-        await pagina.screenshot({ path: '/out/print.png' });
+        await pagina.screenshot({ path: OUT + '/print.png' });
         feitos.push('PNG gravado');
       } else if (CENA === 'job-smoke' || CENA === 'painel-job' || CENA === 'job') {
         const achouCard = await pagina.evaluate((id) => {
@@ -313,12 +382,12 @@ const exigir = (cond, msg) => {
 
         if (CENA === 'job') {
           exigir((await pagina.$('.rv-veredito')) !== null, 'o veredito está na vista');
-          await pagina.screenshot({ path: '/out/print.png' });
+          await pagina.screenshot({ path: OUT + '/print.png' });
           feitos.push('PNG gravado (veredito: ' + (await pagina.$eval('.rv-veredito', (v) => v.dataset.tom + ' · ' + v.querySelector('strong').textContent)) + ')');
         } else if (CENA === 'job-smoke') {
           exigir((await pagina.$('.rv-veredito')) !== null, 'o veredito está na vista');
           exigir((await pagina.$('.rv-passos')) !== null, 'os passos de smoke estão na vista');
-          await pagina.screenshot({ path: '/out/print.png' });
+          await pagina.screenshot({ path: OUT + '/print.png' });
           feitos.push('PNG gravado');
         } else {
           const clicouAbrir = await pagina.evaluate(() => {
@@ -332,7 +401,7 @@ const exigir = (cond, msg) => {
           await new Promise((r) => setTimeout(r, 500));
           exigir((await pagina.evaluate(() => document.getElementById('dialogo-revisar').open)) === false,
             'o diálogo fechou depois de abrir a conversa');
-          await pagina.screenshot({ path: '/out/print.png' });
+          await pagina.screenshot({ path: OUT + '/print.png' });
           feitos.push('PNG gravado');
         }
       }
@@ -354,6 +423,18 @@ const exigir = (cond, msg) => {
 
 // ─── 3) Corrida ─────────────────────────────────────────────────────────────
 
+// O parser do marcador, comum às duas corridas (container e host).
+function lerRelatorio(bruto, codigo) {
+  const MARCADOR = '@@PRINT-REVISAR@@';
+  const abre = bruto.indexOf(MARCADOR);
+  let relatorio = null;
+  if (abre >= 0) {
+    try { relatorio = JSON.parse(bruto.slice(abre + MARCADOR.length)); } catch { relatorio = null; }
+  }
+  process.stdout.write(abre >= 0 ? bruto.slice(0, abre) : bruto);
+  return relatorio || { feitos: [], problemas: [`o roteiro não devolveu JSON (código ${codigo})`] };
+}
+
 function rodarContainer(scratch, outDir) {
   return new Promise((resolve) => {
     const docker = spawn('docker', [
@@ -368,6 +449,8 @@ function rodarContainer(scratch, outDir) {
       '-e', `ESPERA_ATENCAO=${conferencia.esperaAtencao || 0}`,
       '-e', `CONFLITO_ID=${conferencia.conflito?.id || ''}`,
       '-e', `N_ARQUIVOS=${conferencia.conflito?.n || ''}`,
+      '-e', `DECISAO_ID=${conferencia.decisaoId || ''}`,
+      '-e', `AUSENTE_ID=${o.ausente || ''}`,
       '-e', `TEMA=${o.tema || ''}`,
       '-e', `INSEGURO=${o.inseguro ? '1' : '0'}`,
       '-v', `${scratch}:/w:ro`,
@@ -378,26 +461,55 @@ function rodarContainer(scratch, outDir) {
     let bruto = '';
     docker.stdout.on('data', (d) => { bruto += d; });
     docker.stderr.on('data', (d) => { bruto += d; });
-    docker.on('close', (codigo) => {
-      const MARCADOR = '@@PRINT-REVISAR@@';
-      const abre = bruto.indexOf(MARCADOR);
-      let relatorio = null;
-      if (abre >= 0) {
-        try { relatorio = JSON.parse(bruto.slice(abre + MARCADOR.length)); } catch { relatorio = null; }
-      }
-      process.stdout.write(abre >= 0 ? bruto.slice(0, abre) : bruto);
-      resolve(relatorio || { feitos: [], problemas: [`o roteiro não devolveu JSON (código ${codigo})`] });
+    docker.on('close', (codigo) => resolve(lerRelatorio(bruto, codigo)));
+  });
+}
+
+// Navegador no HOST (D79-D83): a imagem docker não existe mais — mesmo roteiro, mesmo
+// marcador, rodando como processo filho com PUPPETEER_CORE/CHROME_BIN por env.
+function rodarNoHost(scratch, outDir) {
+  return new Promise((resolve) => {
+    const filho = spawn(process.execPath, [path.join(scratch, 'pane.js')], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        BASE: base,
+        CENA: o.cena,
+        JOB_ID: o.job_id || '',
+        PAI_ID: conferencia.rel?.paiId || '',
+        PAI_TITULO: conferencia.rel?.paiTitulo || '',
+        REL_ID: conferencia.rel?.relId || '',
+        REL_TITULO: conferencia.rel?.relTitulo || '',
+        ESPERA_ATENCAO: String(conferencia.esperaAtencao || 0),
+        CONFLITO_ID: conferencia.conflito?.id || '',
+        N_ARQUIVOS: String(conferencia.conflito?.n || ''),
+        DECISAO_ID: conferencia.decisaoId || '',
+        AUSENTE_ID: o.ausente || '',
+        TEMA: o.tema || '',
+        INSEGURO: o.inseguro ? '1' : '0',
+        PUPPETEER_PATH: PUPPETEER_CORE,
+        CHROME_PATH: CHROME_BIN,
+        W_DIR: scratch,
+        OUT_DIR: outDir,
+      },
     });
+
+    let bruto = '';
+    filho.stdout.on('data', (d) => { bruto += d; });
+    filho.stderr.on('data', (d) => { bruto += d; });
+    filho.on('close', (codigo) => resolve(lerRelatorio(bruto, codigo)));
   });
 }
 
 let scratch = null;
 let outDir = null;
-try {
-  execFileSync('docker', ['image', 'inspect', IMAGEM], { stdio: 'ignore' });
-} catch {
-  console.error(`🟡 ambiente indisponível: a imagem docker ${IMAGEM} não existe.`);
-  process.exit(2);
+if (!NO_HOST) {
+  try {
+    execFileSync('docker', ['image', 'inspect', IMAGEM], { stdio: 'ignore' });
+  } catch {
+    console.error(`🟡 ambiente indisponível: a imagem docker ${IMAGEM} não existe.`);
+    process.exit(2);
+  }
 }
 
 const conferencia = await conferirRota();
@@ -414,7 +526,7 @@ try {
   if (token) fs.writeFileSync(path.join(scratch, 'token.txt'), token, { mode: 0o600 });
   fs.chmodSync(outDir, 0o777);
 
-  const relatorio = await rodarContainer(scratch, outDir);
+  const relatorio = NO_HOST ? await rodarNoHost(scratch, outDir) : await rodarContainer(scratch, outDir);
   for (const f of relatorio.feitos) console.log(`  ✅ ${f}`);
   for (const p of relatorio.problemas) console.error(`  ❌ ${p}`);
 

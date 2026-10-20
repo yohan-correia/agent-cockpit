@@ -44,7 +44,19 @@ const adaptadorJob = require('./lib/adaptador-job');
 const acesso = require('./lib/acesso');
 const monitor = require('./lib/monitor');
 const disco = require('./lib/monitor-disco');
+// Faixa PROD FORA (D87): só leitura do estado do vigia de prod.
+const sites = require('./lib/sites');
+const financas = require('./lib/financas');
 const terminou = require('./lib/terminou');
+const confianca = require('./lib/confianca');
+const subagente = require('./lib/subagente');
+const grafoLoja = require('./lib/grafo-loja');
+const grafoGit = require('./lib/grafo-git');
+const grafoInventario = require('./lib/grafo-inventario');
+const grafoFazer = require('./lib/grafo-fazer');
+const grafoMapa = require('./lib/grafo-mapa');
+const diff = require('./lib/diff');
+const github = require('./lib/github');
 // Um escritor, dois leitores (D69, S6): o GET /api/abas e o vigia de push chamam `abas.listar()`
 // por esta função, que anota `terminouEm` em cada aba.
 const listarAbasComFim = terminou.listarComFim({ listar: abas.listar, mapaDeLidas: lidas.mapa });
@@ -100,6 +112,7 @@ const TIPOS = {
   '.csv': 'text/csv; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
 };
 
 function enviarJson(res, status, corpo) {
@@ -144,6 +157,21 @@ async function enviarArquivo(res, arquivo) {
       'content-type': TIPOS[path.extname(arquivo)] || 'application/octet-stream',
       'content-length': dados.length,
       'cache-control': 'no-cache',
+    });
+    res.end(dados);
+  } catch {
+    enviarJson(res, 404, { erro: 'nao encontrado' });
+  }
+}
+
+/** Mesma coisa, mas com cache longo: assets do dashboard do grafo têm hash de conteúdo no nome. */
+async function enviarArquivoImutavel(res, arquivo) {
+  try {
+    const dados = await fsp.readFile(arquivo);
+    res.writeHead(200, {
+      'content-type': TIPOS[path.extname(arquivo)] || 'application/octet-stream',
+      'content-length': dados.length,
+      'cache-control': 'public, max-age=31536000, immutable',
     });
     res.end(dados);
   } catch {
@@ -222,6 +250,222 @@ const chaveDePasta = (s) => String(s).normalize('NFD').replace(/\p{M}/gu, '').to
 // criariam os dois — o Linux distingue caixa e o EEXIST só pega o nome exato.
 let filaDePastas = Promise.resolve();
 
+// ─── /grafo/<projeto>/ — dashboard do grafo (sempre o da develop) ───────────
+// Spec `2026-10-16-grafo-do-projeto-no-cockpit`, #16/#18/#22: casca estática responde 200/404 só
+// pelo FORMATO do nome (NOME_DE_PASTA), sem oráculo de existência; os dados (com token) é que
+// conferem se o projeto existe e tem grafo. Nomes de dado iguais aos que `public/grafo/ponte.js`
+// reescreve.
+const DADOS_DO_GRAFO = new Set(['/knowledge-graph.json', '/meta.json', '/config.json', '/staleness.json',
+  '/domain-graph.json', '/diff-overlay.json', '/file-content.json']);
+
+const LINGUAGEM_POR_EXTENSAO = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx',
+  ts: 'typescript', tsx: 'tsx', mts: 'typescript', cts: 'typescript',
+  py: 'python', html: 'markup', htm: 'markup', css: 'css', json: 'json', md: 'markdown', txt: 'text',
+};
+function linguagemPorExtensao(caminho) {
+  const ext = path.posix.extname(caminho).slice(1).toLowerCase();
+  return LINGUAGEM_POR_EXTENSAO[ext] || 'text';
+}
+
+/** `{graphs:{knowledge: <GraphFreshnessResult>}}` — envelope que o dashboard valida (`freshness.ts`). */
+async function rotaDeStaleness(res, repo, grafo) {
+  const d = await grafoGit.refDaDevelop(repo);
+  if (!d) {
+    return enviarJson(res, 200, { graphs: { knowledge: {
+      status: 'unknown', reason: 'graph-commit-unavailable', graphCommitHash: grafo.sha,
+    } } });
+  }
+  const resultado = await grafoInventario.freshnessDoGrafo(repo, grafo.sha, d.sha, grafo.analyzedAt);
+  return enviarJson(res, 200, { graphs: { knowledge: resultado } });
+}
+
+/** O conteúdo é sempre da VERSÃO do grafo (nunca do checkout) — #18, `git show <sha>:<caminho>`. */
+async function rotaDeFileContent(res, repo, pasta, grafoAtual, url) {
+  const caminhoRaw = url.searchParams.get('path') || '';
+  if (!caminhoRaw || caminhoRaw.includes('\0') || path.posix.isAbsolute(caminhoRaw)) {
+    return enviarJson(res, 400, { erro: 'path invalido' });
+  }
+  const normalizado = path.posix.normalize(caminhoRaw);
+  if (normalizado === '..' || normalizado.startsWith('../') || path.posix.isAbsolute(normalizado)) {
+    return enviarJson(res, 400, { erro: 'path invalido' });
+  }
+
+  const shaParam = url.searchParams.get('sha');
+  let grafoEscolhido = grafoAtual;
+  if (shaParam) {
+    if (shaParam === grafoAtual.sha) {
+      grafoEscolhido = grafoAtual;
+    } else {
+      const anterior = grafoLoja.resumoDoGrafo(pasta, { anterior: true });
+      if (anterior && shaParam === anterior.sha) grafoEscolhido = anterior;
+      else return enviarJson(res, 409, { erro: 'o grafo mudou, recarregue' });
+    }
+  }
+
+  if (!grafoEscolhido.arquivos.has(normalizado)) return enviarJson(res, 404, { erro: 'arquivo fora do grafo' });
+
+  const conteudoBuf = await grafoGit.conteudo(repo, grafoEscolhido.sha, normalizado);
+  if (conteudoBuf === null) return enviarJson(res, 404, { erro: 'nao encontrado' });
+  if (conteudoBuf.length > 1024 * 1024) return enviarJson(res, 413, { erro: 'arquivo grande demais' });
+  if (conteudoBuf.includes(0)) return enviarJson(res, 415, { erro: 'arquivo binario' });
+
+  const content = conteudoBuf.toString('utf8');
+  return enviarJson(res, 200, {
+    path: normalizado,
+    language: linguagemPorExtensao(normalizado),
+    content,
+    sizeBytes: conteudoBuf.length,
+    lineCount: content.length === 0 ? 0 : content.split(/\r\n|\n|\r/).length,
+  });
+}
+
+/** Dado do grafo (com token): existência (repo em `listarProjetos()`, é repo, tem grafo) só aqui. */
+async function rotaDeDadosDoGrafo(req, res, nome, resto, url) {
+  if (!tokenDoPedidoOk(req, url)) return enviarJson(res, 401, { erro: 'token inválido' });
+  const projeto = (await listarProjetos()).find((p) => p.nome === nome);
+  if (!projeto) return enviarJson(res, 404, { erro: 'sem grafo' });
+  const repo = await grafoGit.repoPrincipal(projeto.cwd);
+  if (!repo) return enviarJson(res, 404, { erro: 'sem grafo' });
+  const pasta = grafoLoja.pastaDo(nome);
+  // Só o resumo enxuto fica em memória (sha, data, arquivos); o grafo inteiro sai direto do disco.
+  const grafo = grafoLoja.resumoDoGrafo(pasta);
+  if (!grafo) return enviarJson(res, 404, { erro: 'sem grafo' });
+
+  if (resto === '/knowledge-graph.json') return enviarArquivo(res, grafoLoja.arquivoDoGrafo(pasta, false));
+  if (resto === '/meta.json') return enviarJson(res, 200, JSON.parse(await fsp.readFile(path.join(pasta, 'meta.json'), 'utf8')));
+  if (resto === '/domain-graph.json') return enviarJson(res, 200, null);
+  if (resto === '/diff-overlay.json' || resto === '/config.json') return enviarJson(res, 200, {});
+  if (resto === '/staleness.json') return rotaDeStaleness(res, repo, grafo);
+  if (resto === '/file-content.json') return rotaDeFileContent(res, repo, pasta, grafo, url);
+  return enviarJson(res, 404, { erro: 'nao encontrado' });
+}
+
+/**
+ * Tabela fechada do mapa (M6): fora de `token`, só `{}` (nível 1), `{camada}`/`{camada,pasta}`
+ * (nível 2) ou `{arquivo}`/`{arquivo,completo=1}` (nível 3) passam; qualquer outra combinação,
+ * chave fora da lista ou chave repetida → `null` (o chamador devolve 400 ANTES de ler a loja).
+ */
+function validarParametrosDoMapa(url) {
+  const permitidas = new Set(['camada', 'pasta', 'arquivo', 'completo']);
+  const vistas = new Set();
+  for (const chave of url.searchParams.keys()) {
+    if (chave === 'token') continue;
+    if (!permitidas.has(chave) || vistas.has(chave)) return null;
+    vistas.add(chave);
+  }
+  const tem = (k) => vistas.has(k);
+  if (vistas.size === 0) return { modo: 1 };
+  if (tem('camada') && !tem('arquivo') && !tem('completo') && (vistas.size === 1 || (vistas.size === 2 && tem('pasta')))) {
+    return { modo: 2, camada: url.searchParams.get('camada'), pasta: tem('pasta') ? url.searchParams.get('pasta') : undefined };
+  }
+  if (tem('arquivo') && !tem('camada') && !tem('pasta')
+    && (vistas.size === 1 || (vistas.size === 2 && tem('completo') && url.searchParams.get('completo') === '1'))) {
+    return { modo: 3, arquivo: url.searchParams.get('arquivo'), completo: tem('completo') };
+  }
+  return null;
+}
+
+/**
+ * Tabela fechada genérica (molde `validarParametrosDoMapa`, sem mexer nela): chave fora da
+ * lista `permitidas` ou repetida → `null` (o chamador devolve 400 ANTES de ler disco/git).
+ * `token` sempre ignorado.
+ */
+function parametrosFechados(url, permitidas) {
+  const mapa = new Map();
+  for (const chave of url.searchParams.keys()) {
+    if (chave === 'token') continue;
+    if (!permitidas.includes(chave) || mapa.has(chave)) return null;
+    mapa.set(chave, url.searchParams.get(chave));
+  }
+  return mapa;
+}
+
+/** Projeto pelo NOME (card `ver-a-diff-do-codigo`, D95) — `{nome, repo}` ou `null`. Nada do cliente vira caminho (#22). */
+async function projetoDoNome(nome) {
+  if (!NOME_DE_PASTA.test(nome)) return null;
+  const projeto = (await listarProjetos()).find((p) => p.nome === nome);
+  if (!projeto) return null;
+  const repo = await grafoGit.repoPrincipal(projeto.cwd);
+  if (!repo) return null;
+  return { nome: projeto.nome, repo };
+}
+
+/** Dados do mapa (card `grafo-mapa-simples`, D91): existência pelas MESMAS travas de `rotaDeDadosDoGrafo`. */
+async function rotaDeMapaDoGrafo(res, nomeCru, url) {
+  const pedido = validarParametrosDoMapa(url);
+  if (!pedido) return enviarJson(res, 400, { erro: 'pedido inválido' });
+
+  let nome;
+  try { nome = decodeURIComponent(nomeCru); } catch { return enviarJson(res, 404, { erro: 'sem grafo' }); }
+  if (!NOME_DE_PASTA.test(nome)) return enviarJson(res, 404, { erro: 'sem grafo' });
+
+  const projeto = (await listarProjetos()).find((p) => p.nome === nome);
+  if (!projeto) return enviarJson(res, 404, { erro: 'sem grafo' });
+  const repo = await grafoGit.repoPrincipal(projeto.cwd);
+  if (!repo) return enviarJson(res, 404, { erro: 'sem grafo' });
+  const lido = grafoMapa.indiceDo(grafoLoja.pastaDo(nome));
+  if (!lido) return enviarJson(res, 404, { erro: 'sem grafo' });
+  const { indice, bytes } = lido;
+
+  let corpo;
+  if (pedido.modo === 1) corpo = grafoMapa.nivel1(indice);
+  else if (pedido.modo === 2) corpo = grafoMapa.nivel2(indice, pedido.camada, pedido.pasta);
+  else corpo = grafoMapa.nivel3(indice, pedido.arquivo, { completo: pedido.completo });
+  if (!corpo) return enviarJson(res, 404, { erro: 'fora do grafo' });
+
+  corpo.cabecalho.bytes = bytes;
+  corpo.cabecalho.projeto = nome; // o nome validado da rota vence o `project.name` do grafo
+  return enviarJson(res, 200, corpo);
+}
+
+/** Casca do dashboard: `/grafo` sem nome é 404 (sem página-índice — quem lista é o diálogo). */
+async function rotaDoGrafo(req, res, rota, url) {
+  const m = rota.match(/^\/grafo\/([^/]+)(\/.*)?$/);
+  if (!m) return enviarJson(res, 404, { erro: 'nao encontrado' });
+  let nome;
+  try { nome = decodeURIComponent(m[1]); } catch { return enviarJson(res, 404, { erro: 'nao encontrado' }); }
+  if (!NOME_DE_PASTA.test(nome)) return enviarJson(res, 404, { erro: 'nao encontrado' });
+  const resto = m[2] || '';
+
+  if (!resto) {
+    res.writeHead(301, { location: `${nome}/${url.search || ''}` });
+    return res.end();
+  }
+  if (resto === '/' || resto === '/index.html') return enviarArquivo(res, path.join(PUBLIC_DIR, 'grafo', 'ua', 'index.html'));
+  if (resto === '/ponte.js') return enviarArquivo(res, path.join(PUBLIC_DIR, 'grafo', 'ponte.js'));
+  if (DADOS_DO_GRAFO.has(resto)) return rotaDeDadosDoGrafo(req, res, nome, resto, url);
+
+  // Estático dentro de public/grafo/ua/, preso à pasta — mesma trava de `:2242` (com separador).
+  const baseUa = path.resolve(path.join(PUBLIC_DIR, 'grafo', 'ua'));
+  const pedido = path.resolve(path.join(baseUa, resto));
+  if (pedido !== baseUa && !pedido.startsWith(baseUa + path.sep)) return enviarJson(res, 403, { erro: 'fora do dashboard' });
+  // Assets com hash de conteúdo no nome: cache longo (2,6 MB por abertura pesaria no celular).
+  // index.html e ponte.js (acima) continuam no-cache.
+  if (resto.startsWith('/assets/')) return enviarArquivoImutavel(res, pedido);
+  return enviarArquivo(res, pedido);
+}
+
+/** Casca do mapa simples (D91): 200/404 só pelo FORMATO do nome, sem oráculo — igual à do dashboard. */
+async function rotaDoMapa(res, rota, url) {
+  const m = rota.match(/^\/mapa\/([^/]+)(\/.*)?$/);
+  if (!m) return enviarJson(res, 404, { erro: 'nao encontrado' });
+  let nome;
+  try { nome = decodeURIComponent(m[1]); } catch { return enviarJson(res, 404, { erro: 'nao encontrado' }); }
+  if (!NOME_DE_PASTA.test(nome)) return enviarJson(res, 404, { erro: 'nao encontrado' });
+  const resto = m[2] || '';
+  if (!resto) { res.writeHead(301, { location: `${nome}/${url.search || ''}` }); return res.end(); }
+  if (resto === '/') return enviarArquivo(res, path.join(PUBLIC_DIR, 'mapa', 'index.html'));
+  return enviarJson(res, 404, { erro: 'nao encontrado' });
+}
+
+/** Casca da diff de commit e de job (card `ver-a-diff-do-codigo`, D95): mesmo molde do mapa. */
+async function rotaDoDiff(res, rota, url) {
+  if (rota === '/diff') { res.writeHead(301, { location: `diff/${url.search || ''}` }); return res.end(); }
+  if (rota === '/diff/' || rota === '/diff/index.html') return enviarArquivo(res, path.join(PUBLIC_DIR, 'diff', 'index.html'));
+  return enviarJson(res, 404, { erro: 'nao encontrado' });
+}
+
 // Jobs do orquestrador. Até 2026-09-10 quem sabia o estado de um job era o `painel-externo`
 // (um serviço à parte, na 7878), e esta rota só fazia um `http.get` nele — o que deixava um
 // recurso do cockpit dependendo de um programa que não está neste repositório. Quem clonasse
@@ -280,6 +524,30 @@ async function paraNoLimite(id) {
       return RE_PAROU_NO_LIMITE.test(buf.toString('utf8', 0, bytesRead));
     } finally { await fd.close().catch(() => {}); }
   } catch { return false; }
+}
+
+// Até quanto do `result.md` a etiqueta "pede decisão" lê. O `needs-decision:` costuma vir no FIM do
+// relatório, depois de um `done:` (13 de 30 no disco, às vezes na linha 86) — por isso o arquivo inteiro,
+// não os 4 KB do limite. O maior `result.md` medido tem 20 KB; o teto só existe pro pior caso.
+const TETO_DECISAO = 1024 * 1024;
+
+/**
+ * 'pede' (há linha `needs-decision:`), 'nao' (não há, ou o job não deixou relatório) ou 'ilegivel'
+ * (maior que o teto sem a linha, ou erro de leitura que não é ENOENT). Spec D3: "não consegui ler"
+ * nunca vira "não pede decisão" — esse é o falso Pronto de volta.
+ */
+async function decisaoDoRelatorio(id) {
+  let fd;
+  try { fd = await fsp.open(path.join(limite.dirJobs(), id, 'result.md'), 'r'); } catch (e) {
+    return e && e.code === 'ENOENT' ? 'nao' : 'ilegivel';
+  }
+  try {
+    const { size } = await fd.stat();
+    const buf = Buffer.alloc(Math.min(size, TETO_DECISAO));
+    const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
+    if (revisar.pedeDecisaoNoTexto(buf.toString('utf8', 0, bytesRead))) return 'pede';
+    return size > TETO_DECISAO ? 'ilegivel' : 'nao';
+  } catch { return 'ilegivel'; } finally { await fd.close().catch(() => {}); }
 }
 
 // O teto do `/api/jobs/resultado` — o relatório inteiro do `result.md`, cortado em 64 KB.
@@ -506,9 +774,12 @@ function acompanharAba(chave, mandar, aoEncerrar) {
             // some, e é o ponto. Colapsá-las numa só é a #40.
             : (aba.casamento === 'ambiguo'
               ? 'não deu para saber qual conversa é desta aba (duas abas de Codex no mesmo projeto)'
-              : (aba.agente === 'codex'
-                ? (aba.reiniciada ? 'Conversa limpa. Envie uma mensagem para começar.' : 'ainda não achei a conversa desta aba de Codex')
-                : 'não achei o histórico desta aba no disco do CLI'))),
+              // O cliente não desenha este aviso (PL-3); ele existe para o relato do servidor não mentir.
+              : (aba.preSessao && aba.pedeConfianca
+                ? `esta pasta ainda não é confiável para o ${agentes.de(aba.agente).rotulo} — ele pergunta antes de abrir a conversa`
+                : (aba.agente === 'codex'
+                  ? (aba.reiniciada ? 'Conversa limpa. Envie uma mensagem para começar.' : 'ainda não achei a conversa desta aba de Codex')
+                  : 'não achei o histórico desta aba no disco do CLI')))),
       });
     }
     let rodando = Boolean(aba.rodando);
@@ -742,8 +1013,8 @@ function acompanharJob(chave, mandar, aoEncerrar) {
   let bater = () => {};
   const alvo = { parar, bater: (linha) => bater(linha) };
 
-  // `job-<id>` (§7.1): o prefixo é hífen, não `:`, porque a rota valida cada chave com
-  // `/^[\w-]+$/` e `:` cairia em 400 mudo (armadilha #17 — a mesma que fez `aba-N`).
+  // `job-<id>` (§7.1): o prefixo é hífen, não `:`, porque a rota valida cada chave por
+  // `chaveValida` e `:` cairia em 400 mudo (armadilha #17 — a mesma que fez `aba-N`).
   const id = chave.slice(4);
 
   (async () => {
@@ -1006,21 +1277,69 @@ function linhaDoJob(dados, chave) {
   return dados.jobs.find((j) => j && j.id === chave.slice(4)) || null;
 }
 
+/**
+ * A FORMA de uma chave de painel no cano (`/api/eventos`) e no histórico (`/api/historico`) —
+ * #17: aba casa `[\w-]+`; job é `job-` + o alfabeto do id de job, que tem `.` (card
+ * `job-com-underscore-ou-ponto-no-id`). `/` fica fora nos dois. A forma NÃO é a trava de
+ * caminho: quem barra `.` e `..` é `adaptadorJob.idValido`, adiante.
+ */
+function chaveValida(chave) {
+  return /^[\w-]+$/.test(chave) || /^job-[\w.-]+$/.test(chave);
+}
+
 // ─── Rotas ───────────────────────────────────────────────────────────────────
 
+/** `true` sem token configurado; com token, a mesma conferência de sempre (Bearer ou `?token=`). */
+function tokenDoPedidoOk(req, url) {
+  if (!TOKEN) return true;
+  const enviado = (req.headers.authorization || '').replace(/^Bearer /, '') || url.searchParams.get('token');
+  return acesso.tokenIgual(enviado, TOKEN);
+}
+
 async function api(req, res, rota, url) {
-  if (TOKEN) {
-    const enviado = (req.headers.authorization || '').replace(/^Bearer /, '') || url.searchParams.get('token');
-    if (!acesso.tokenIgual(enviado, TOKEN)) return enviarJson(res, 401, { erro: 'token inválido' });
-  }
+  if (!tokenDoPedidoOk(req, url)) return enviarJson(res, 401, { erro: 'token inválido' });
 
   // Rota MORTA desde a D17 — ninguém consumia. Ela ressuscita para o diálogo de abrir aba,
   // e volta no hábito da casa: só o NOME sai daqui. Quem resolve nome → caminho é o
   // servidor, e o navegador nunca vê `~/projetos/<x>`. É a #22 outra vez, e ela não
   // precisa ser reaprendida.
   if (rota === '/api/projetos' && req.method === 'GET') {
-    return enviarJson(res, 200, { projetos: (await listarProjetos()).map(({ nome }) => ({ nome })) });
+    // Só o booleano sai, nunca o `cwd` (#22).
+    return enviarJson(res, 200, {
+      projetos: (await listarProjetos()).map(({ nome, cwd }) => ({
+        nome,
+        codexPedeConfianca: confianca.estadoDaPasta('codex', cwd) === 'nao-confiada',
+      })),
+    });
   }
+
+  // O grafo mostrado é sempre o da develop (decisão do dono, spec `grafo-do-projeto-no-cockpit`):
+  // o diálogo do botão "Grafos" lista estado por projeto, nunca caminho/sha/ref (#22).
+  if (rota === '/api/grafos' && req.method === 'GET') {
+    const projetos = await grafoInventario.resumoParaTela(RAIZ_PROJETOS, listarProjetos);
+    return enviarJson(res, 200, { projetos: projetos.map((p) => (grafoFazer.gerando(p.nome) ? { ...p, gerando: true } : p)) });
+  }
+
+  // Botão "Fazer grafo" (card `grafo-botao-fazer-grafo`, D89): gera o grafo com o gerador
+  // determinístico (sem IA) e instala o hook do git do projeto. O caminho é sempre o `cwd` da
+  // lista do servidor, nunca do cliente (#22) — nome inválido/fora da lista nunca lê o disco.
+  if (rota === '/api/grafos/fazer' && req.method === 'POST') {
+    let corpo;
+    try { corpo = await lerCorpo(req); }
+    catch (erro) { return enviarJson(res, 400, { erro: erro.message }); }
+    const nome = corpo && typeof corpo.nome === 'string' ? corpo.nome : '';
+    if (!NOME_DE_PASTA.test(nome)) return enviarJson(res, 400, { erro: grafoFazer.MENSAGENS.nomeInvalido });
+    const projeto = (await listarProjetos()).find((p) => p.nome === nome);
+    if (!projeto) return enviarJson(res, 404, { erro: grafoFazer.MENSAGENS.naoEncontrado });
+    const { status, corpo: resposta } = await grafoFazer.fazer(projeto);
+    return enviarJson(res, status, resposta);
+  }
+
+  // Mapa simples do grafo (card `grafo-mapa-simples`, D91): o servidor agrega e manda só o pedaço do
+  // nível pedido. Nada do cliente vira caminho (#22): o nome passa pelas MESMAS três travas de
+  // `rotaDeDadosDoGrafo`; camada/pasta/arquivo só indexam Maps do próprio grafo (lib/grafo-mapa.js).
+  const mMapa = rota.match(/^\/api\/grafos\/([^/]+)\/mapa$/);
+  if (mMapa && req.method === 'GET') return rotaDeMapaDoGrafo(res, mMapa[1], url);
 
   // Criar a pasta pela aba nova (card `criar-pasta-na-aba-nova`): "quando eu digitar e não achar, me dê a
   // opção de criar". Só o NOME vai e volta (#22) — o caminho é montado aqui, e a resposta não o leva. A
@@ -1082,6 +1401,9 @@ async function api(req, res, rota, url) {
         const etiquetas = [];
         if (item.motivo) etiquetas.push(item.motivo);
         if (item.estado === 'needs-review') etiquetas.push('pede-revisao');
+        const decisao = await decisaoDoRelatorio(item.job.id);
+        if (item.estado === 'needs-decision' || decisao === 'pede') etiquetas.push('pede-decisao');
+        else if (decisao === 'ilegivel') etiquetas.push('relatorio-ilegivel');
         if (await paraNoLimite(item.job.id)) etiquetas.push('parou-no-limite');
         return { id: item.job.id, titulo: item.job.title, estado: item.estado, fim: revisar.fimDoJob(item.job), temResultado: item.job.hasResult, etiquetas };
       };
@@ -1271,6 +1593,122 @@ async function api(req, res, rota, url) {
     const cortado = buf.length > TETO_RESULTADO;
     const aparado = revisar.cortarUtf8Seguro(cortado ? buf.subarray(0, TETO_RESULTADO) : buf);
     return enviarJson(res, 200, { texto: aparado.toString('utf8'), cortado });
+  }
+
+  // Diff de commit e de job (card `ver-a-diff-do-codigo`, D95) — só leitura, três rotas GET.
+  // Tabela fechada de parâmetros (V3); nenhum caminho sai na resposta (nem `worktree`, `branch`,
+  // `source_repo`): V4/#22. Erro inesperado do git (`Error('git')` de lib/diff.js) → 502, nunca
+  // a mensagem crua do git nem 200 vazio (13b).
+  if (rota === '/api/diff/commits' && req.method === 'GET') {
+    const parametros = parametrosFechados(url, ['projeto', 'topo', 'pular']);
+    if (!parametros) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const nomeProjeto = parametros.get('projeto') || '';
+    if (!nomeProjeto) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const topoCru = parametros.get('topo');
+    const pularCru = parametros.get('pular');
+    if ((topoCru == null) !== (pularCru == null)) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    if (topoCru != null && !diff.RE_SHA.test(topoCru)) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    if (pularCru != null && !/^\d{1,6}$/.test(pularCru)) return enviarJson(res, 400, { erro: 'pedido inválido' });
+
+    const projeto = await projetoDoNome(nomeProjeto);
+    if (!projeto) return enviarJson(res, 404, { erro: 'projeto não encontrado' });
+
+    let topoReal;
+    if (topoCru != null) {
+      topoReal = await diff.resolverCommit(projeto.repo, topoCru);
+      if (!topoReal) return enviarJson(res, 404, { erro: 'commit não encontrado' });
+    }
+
+    let resultado;
+    try {
+      resultado = await diff.commitsDe(projeto.repo, topoReal ? { topo: topoReal, pular: Number(pularCru) } : {});
+    } catch { return enviarJson(res, 502, { erro: 'não consegui ler o git agora' }); }
+    if (resultado.semBase) return enviarJson(res, 404, { erro: 'este projeto não tem develop nem main' });
+
+    return enviarJson(res, 200, {
+      projeto: projeto.nome, base: resultado.base.nome, topo: resultado.topo,
+      commits: resultado.commits.map((c) => ({ sha: c.sha, autor: c.autor, data: c.data, assunto: c.assunto, merge: c.merge, arquivos: c.arquivos, mais: c.mais, menos: c.menos })),
+      mais: resultado.mais, cortado: resultado.cortado,
+    });
+  }
+
+  if (rota === '/api/diff/commit' && req.method === 'GET') {
+    const parametros = parametrosFechados(url, ['projeto', 'sha']);
+    if (!parametros) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const nomeProjeto = parametros.get('projeto') || '';
+    const shaCru = parametros.get('sha') || '';
+    if (!nomeProjeto || !shaCru) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    if (!diff.RE_SHA.test(shaCru)) return enviarJson(res, 400, { erro: 'sha inválido' });
+
+    const projeto = await projetoDoNome(nomeProjeto);
+    if (!projeto) return enviarJson(res, 404, { erro: 'projeto não encontrado' });
+
+    const shaCompleto = await diff.resolverCommit(projeto.repo, shaCru);
+    if (!shaCompleto) return enviarJson(res, 404, { erro: 'commit não encontrado' });
+
+    let resultado;
+    try { resultado = await diff.commitInteiro(projeto.repo, shaCompleto); }
+    catch { return enviarJson(res, 502, { erro: 'não consegui ler o git agora' }); }
+
+    return enviarJson(res, 200, { projeto: projeto.nome, ...resultado });
+  }
+
+  if (rota === '/api/diff/job' && req.method === 'GET') {
+    const parametros = parametrosFechados(url, ['id']);
+    if (!parametros) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const id = parametros.get('id') || '';
+    if (!id) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    if (!adaptadorJob.idValido(id) || !(await adaptadorJob.existe(id))) {
+      return enviarJson(res, 404, { erro: 'não achei este job' });
+    }
+
+    const SEM_PROJETO_CONHECIDO = { erro: 'o repo deste job não é de um projeto conhecido' };
+    let meta;
+    try { meta = JSON.parse(await fsp.readFile(path.join(limite.dirJobs(), id, 'meta.json'), 'utf8')); }
+    catch { return enviarJson(res, 404, { erro: 'não achei este job' }); }
+
+    let realDoJob;
+    try { realDoJob = fs.realpathSync(meta.source_repo); } catch { return enviarJson(res, 404, SEM_PROJETO_CONHECIDO); }
+    const nomeDaPasta = path.basename(realDoJob);
+    const projetoDaLista = (await listarProjetos()).find((p) => p.nome === nomeDaPasta);
+    if (!projetoDaLista) return enviarJson(res, 404, SEM_PROJETO_CONHECIDO);
+
+    // Um `rev-parse` por PEDIDO, não um por projeto (painel R2, Claude, residual).
+    let repoDoProjeto;
+    try { repoDoProjeto = fs.realpathSync(await grafoGit.repoPrincipal(projetoDaLista.cwd)); } catch { repoDoProjeto = null; }
+    if (!repoDoProjeto || repoDoProjeto !== realDoJob) return enviarJson(res, 404, SEM_PROJETO_CONHECIDO);
+
+    let resultado;
+    try { resultado = await diff.mudancasDoJob({ meta, repo: repoDoProjeto }); }
+    catch { return enviarJson(res, 502, { erro: 'não consegui ler o git agora' }); }
+
+    return enviarJson(res, 200, { id, titulo: meta.title || '', projeto: projetoDaLista.nome, ...resultado });
+  }
+
+  // PRs abertos do GitHub (card `ver-a-diff-do-codigo`, D97) — só leitura. A lista vem do `gh` com cache curto
+  // (lib/github.js); `gh` fora do ar NUNCA vira 5xx aqui: a tela "Em aberto" degrada pra só os jobs.
+  if (rota === '/api/diff/prs' && req.method === 'GET') {
+    if (!parametrosFechados(url, [])) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const l = await github.listarPrs();
+    if (!l.ok) return enviarJson(res, 200, { prs: [], limite: false, github: 'falhou' });
+    return enviarJson(res, 200, { prs: l.prs.map((p) => ({ repo: p.repo, numero: p.numero, titulo: p.titulo, autor: p.autor, atualizado: p.atualizado, rascunho: p.rascunho })), limite: l.limite, github: 'ok' });
+  }
+
+  // Um PR: o par (repo, número) só passa se estiver na lista que o PRÓPRIO servidor obteve (allowlist) — nada do
+  // cliente vira argumento do `gh` sem isso.
+  if (rota === '/api/diff/pr' && req.method === 'GET') {
+    const parametros = parametrosFechados(url, ['repo', 'numero']);
+    if (!parametros) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const repo = parametros.get('repo') || '';
+    const numeroCru = parametros.get('numero') || '';
+    if (!github.repoValido(repo) || !github.RE_NUMERO.test(numeroCru)) return enviarJson(res, 400, { erro: 'pedido inválido' });
+    const numero = Number(numeroCru);
+    const daLista = await github.prDaLista(repo, numero);
+    if (daLista && daLista.falhou) return enviarJson(res, 502, { erro: 'não consegui ler o GitHub agora' });
+    if (!daLista) return enviarJson(res, 404, { erro: 'este PR não está mais aberto no GitHub' });
+    const d = await github.detalheDoPr(repo, numero);
+    if (d.erro) return enviarJson(res, 502, { erro: 'não consegui ler o GitHub agora' });
+    return enviarJson(res, 200, d);
   }
 
   // As conversas que rodam nas abas do terminal do usuário, fora do cockpit. Leitura vem do
@@ -1516,7 +1954,7 @@ async function api(req, res, rota, url) {
     )];
     if (chaves.length === 0) return enviarJson(res, 400, { erro: 'abas= é obrigatório' });
     for (const chave of chaves) {
-      if (!/^[\w-]+$/.test(chave)) return enviarJson(res, 400, { erro: `chave inválida: ${chave}` });
+      if (!chaveValida(chave)) return enviarJson(res, 400, { erro: `chave inválida: ${chave}` });
     }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -1576,7 +2014,7 @@ async function api(req, res, rota, url) {
   // por isso é HTTP, irmã de `/api/eventos`, e não mais um tipo de evento no SSE.
   if (rota === '/api/historico' && req.method === 'GET') {
     const chave = url.searchParams.get('chave') || '';
-    if (!/^[\w-]+$/.test(chave)) return enviarJson(res, 400, { erro: `chave inválida: ${chave}` });
+    if (!chaveValida(chave)) return enviarJson(res, 400, { erro: `chave inválida: ${chave}` });
     // `searchParams.get` devolve STRING: `Number.isInteger('4194304')` é `false`. A conversão
     // é obrigatória ANTES da checagem — senão a rota daria 400 em 100% dos pedidos.
     const ate = Number(url.searchParams.get('ate'));
@@ -1621,6 +2059,32 @@ async function api(req, res, rota, url) {
     // passa `ate`, a abstenção por formato deixou de existir neste caminho.
     if (lida === null) return enviarJson(res, 404, { erro: 'conversa não está mais aberta' });
     return enviarJson(res, 200, { eventos: lida.eventos, inicio: lida.inicio, cortado: lida.cortado });
+  }
+
+  // Os passos de UM sub-agente da aba (card `ver-os-subagentes-da-aba`, D86) — pedido sob demanda, quando o dono
+  // abre o cartão `Agent` da fita. Só leitura. A fita principal não muda: o `isSidechain` continua de fora.
+  if (rota === '/api/subagente' && req.method === 'GET') {
+    const chave = url.searchParams.get('chave') || '';
+    if (!chaveValida(chave) || chave.startsWith('job-')) return enviarJson(res, 400, { erro: 'chave inválida' });
+    const ferramenta = url.searchParams.get('ferramenta') || '';
+    const id = url.searchParams.get('id');
+    if (!subagente.idValido(ferramenta) || (id !== null && !subagente.idValido(id))) {
+      return enviarJson(res, 400, { erro: 'id inválido' });
+    }
+    const aba = await abas.buscar(chave);
+    if (!aba || !aba.arquivo) return enviarJson(res, 404, { erro: 'conversa não está mais aberta' });
+    if (aba.agente !== 'claude') return enviarJson(res, 404, { erro: 'esta aba não tem sub-agentes' });
+    const sessao = url.searchParams.get('sessao');
+    if (sessao && aba.sessaoId && sessao !== aba.sessaoId) return enviarJson(res, 409, { erro: 'a conversa mudou' });
+    try {
+      const caminho = await subagente.acharArquivo(aba.arquivo, { ferramenta, id });
+      const lido = caminho ? await subagente.lerSubagente(caminho) : null;
+      if (!lido) return enviarJson(res, 404, { erro: 'sub-agente não encontrado' });
+      return enviarJson(res, 200, lido);
+    } catch (e) {
+      console.error('subagente:', e.code || e.name);
+      return enviarJson(res, 500, { erro: 'não deu para ler o sub-agente' });
+    }
   }
 
   // A tela da pane — a ÚNICA leitura de TUI do projeto, e só com a aba em `waiting`.
@@ -1920,6 +2384,59 @@ async function api(req, res, rota, url) {
     return enviarJson(res, 202, await disco.estado());
   }
 
+  // Faixa PROD FORA (D87): o estado do vigia de prod, só leitura. Sem parâmetro, sem URL nem
+  // caminho no corpo (#22) — `lib/sites.js` só deixa sair nome, situação, tempos e o código.
+  if (rota === '/api/sites' && req.method === 'GET') return enviarJson(res, 200, await sites.ler());
+
+  // Página de Finanças (D90 → D92, card pagina-financas): leitura do resumo diário, dos
+  // lançamentos linha por linha, o arquivo pra exportar (bytes idênticos ao disco) e o envio
+  // por destino da lista fixa. O `POST .../pdf` (D90, único cliente era o modal) saiu nesta
+  // fase — `enviar()` substitui. Nenhum caminho de disco no corpo (#22).
+  if (rota === '/api/financas/estado' && req.method === 'GET') return enviarJson(res, 200, await financas.estado());
+  if (rota === '/api/financas' && req.method === 'GET') return enviarJson(res, 200, await financas.ler());
+  if (rota === '/api/financas/lancamentos' && req.method === 'GET') {
+    const pessoa = url.searchParams.get('pessoa');
+    try {
+      return enviarJson(res, 200, await financas.lerLancamentos(pessoa));
+    } catch (erro) {
+      return enviarJson(res, erro.codigo || 500, { erro: erro.codigo ? erro.message : 'não consegui ler os lançamentos' });
+    }
+  }
+  if (rota === '/api/financas/arquivo' && req.method === 'GET') {
+    const pessoa = url.searchParams.get('pessoa');
+    const formato = url.searchParams.get('formato');
+    try {
+      const { real } = await financas.localizarArquivo({ pessoa, formato });
+      const conteudo = await fsp.readFile(real);
+      res.writeHead(200, {
+        'content-type': financas.FORMATOS[formato],
+        'content-length': conteudo.length,
+        'content-disposition': `attachment; filename="financas-${pessoa}.${formato}"`,
+        'cache-control': 'no-store',
+      });
+      return res.end(conteudo);
+    } catch (erro) {
+      return enviarJson(res, erro.codigo || 500, { erro: erro.codigo ? erro.message : 'não consegui ler o arquivo' });
+    }
+  }
+  if (rota === '/api/financas/enviar' && req.method === 'POST') {
+    let corpo;
+    try { corpo = await lerCorpo(req); } catch { return enviarJson(res, 400, { erro: 'corpo inválido' }); }
+    const pessoa = corpo && corpo.pessoa;
+    const formato = corpo && corpo.formato;
+    const destino = corpo && corpo.destino;
+    if (typeof pessoa !== 'string' || typeof formato !== 'string' || typeof destino !== 'string') {
+      return enviarJson(res, 400, { erro: 'pessoa, formato e destino têm que ser texto' });
+    }
+    req.setTimeout(0); // só depois do corpo lido e validado (molde /api/taildrop/enviar)
+    try {
+      return enviarJson(res, 200, await financas.enviar({ pessoa, formato, destino }));
+    } catch (erro) {
+      if (!erro.codigo) console.error('financas: enviar falhou —', erro.message);
+      return enviarJson(res, erro.codigo || 500, { erro: erro.codigo ? erro.message : 'não consegui enviar o arquivo' });
+    }
+  }
+
   // Para onde vão os tokens — quanto cada projeto/worktree gastou (card
   // `para-onde-vao-meus-tokens`). Vizinho temático de /api/limite: os dois falam de consumo,
   // um da assinatura como um todo, este do recorte por projeto. `DIAS_ACEITOS` é whitelist
@@ -2159,6 +2676,9 @@ const atender = async (req, res) => {
     }
     if (rota.startsWith('/api/')) return await api(req, res, rota, url);
     if (rota === '/' || rota === '/index.html') return enviarArquivo(res, path.join(PUBLIC_DIR, 'index.html'));
+    if (rota === '/grafo' || rota.startsWith('/grafo/')) return await rotaDoGrafo(req, res, rota, url);
+    if (rota === '/mapa' || rota.startsWith('/mapa/')) return await rotaDoMapa(res, rota, url);
+    if (rota === '/diff' || rota.startsWith('/diff/')) return await rotaDoDiff(res, rota, url);
 
     // Estático, preso ao public/: sem isso, "/../.." leria qualquer arquivo do usuário.
     const pedido = path.resolve(path.join(PUBLIC_DIR, rota));

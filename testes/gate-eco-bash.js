@@ -65,7 +65,10 @@ const linha = (texto, extra = {}) => ({ type:'user', timestamp:quando, message:{
     assert.equal(comBang.length, 1, 'um único humano começa com !');
     assert.equal(comBang[0].texto, '!echo x');
     assert.equal(consumidas.filter((c) => c === ficha).length, 1, 'a pendente "! echo x" sai exatamente uma vez');
-    assert.equal(humanos.length, 2, 'só o !echo x e o bash-stdout viram humano (enqueue/dequeue/system não)');
+    // Até 11/10 o bash-stdout também virava humano (2) — era o defeito do card `saida-do-comando-em-cartao`
+    // cravado aqui. Agora a saída é `saida_comando` (D79): 1 humano, 1 saída.
+    assert.equal(humanos.length, 1, 'só o !echo x vira humano (enqueue/dequeue/system/bash-stdout não)');
+    assert.equal(eventos.filter((e) => e.tipo === 'saida_comando').length, 1, 'o bash-stdout vira saida_comando');
   } catch (e) { console.error(e); falhas += 1; } finally { abas.esquecerPendentes(chaveFixture); }
   if (falhas) { console.error(`❌ GATE VERMELHO (${falhas})`); process.exitCode = 1; }
   else console.log('GATE VERDE — eco de !comando do Claude consome fila sem executar shell');

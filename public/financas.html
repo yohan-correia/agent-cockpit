@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" id="meta-tema" content="#0f1115">
+<title>Finanças</title>
+<!-- Tema guardado no aparelho, aplicado ANTES da primeira pintura (cópia de index.html:19-27).
+     Sem <base>: esta página mora no mesmo diretório do app, então "api/…" relativo já resolve
+     sob "/cockpit/" (D92 — a casca não tem dado, tudo continua atrás do token em /api/). -->
+<script>
+  (function () {
+    try {
+      var tema = localStorage.getItem('cockpit-tema');
+      if (tema) document.documentElement.setAttribute('data-tema', tema);
+    } catch (e) { /* modo privado: fica no tema padrão, e tudo bem */ }
+  })();
+</script>
+<link rel="stylesheet" href="estilo.css">
+<link rel="stylesheet" href="financas.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icone.svg" type="image/svg+xml">
+<link rel="icon" href="icone-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cockpit">
+<meta name="mobile-web-app-capable" content="yes">
+</head>
+<body class="pagina-financas">
+<main id="pagina-financas">
+  <header class="fin-topo">
+    <a class="fin-voltar" href="./">← Cockpit</a>
+    <h1>Finanças</h1>
+    <div class="fin-visoes" id="fin-visoes" role="group" aria-label="Ver de quem"></div>
+    <span class="fin-carimbo" id="fin-carimbo"></span>
+    <div class="fin-direita">
+      <select class="fin-periodo" id="fin-periodo" aria-label="Período">
+        <option value="3" selected>Últimos 3 meses</option>
+        <option value="6">Últimos 6 meses</option>
+        <option value="12">Últimos 12 meses</option>
+      </select>
+      <div class="fin-exportar">
+        <button type="button" class="btn btn-principal" id="fin-exportar" aria-expanded="false" aria-controls="fin-exportar-menu">Exportar ▾</button>
+        <div class="fin-menu" id="fin-exportar-menu" hidden>
+          <fieldset>
+            <legend>Formato</legend>
+            <label><input type="radio" name="fin-formato" value="pdf" checked> PDF (relatório)</label>
+            <label><input type="radio" name="fin-formato" value="xlsx"> Excel (planilha formatada)</label>
+          </fieldset>
+          <fieldset id="fin-destinos">
+            <legend>Pra onde</legend>
+            <label><input type="radio" name="fin-destino" value="baixar" checked> Baixar neste aparelho</label>
+          </fieldset>
+          <button type="button" class="btn btn-principal" id="fin-exportar-ir">Exportar</button>
+          <p class="fin-exportar-status" id="fin-exportar-status" aria-live="polite"></p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="fin-avisos fin-largo" id="fin-avisos" hidden></div>
+
+  <div class="fin-conteudo">
+    <section class="fin-cartao fin-largo" id="fin-kpis">
+      <h2>KPIs <small>saldo, renda, gasto e sobrou do último mês completo</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao" id="fin-rendagasto">
+      <h2>Renda × gasto <small>por mês</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao" id="fin-empilhado">
+      <h2>Pra onde vai o dinheiro <small>gasto por categoria</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao fin-largo" id="fin-detalhe">
+      <h2>Mês em detalhe <small>% de cada categoria no gasto · toque pra ver os lançamentos</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao fin-largo" id="fin-tabela">
+      <h2>Mês a mês <small>toque num valor pra ver os lançamentos</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao" id="fin-maiores">
+      <h2>Maiores gastos do mês <small>por loja/pessoa · débitos, sem abater estornos</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao" id="fin-fora">
+      <h2>Fora do gasto <small>não entra no total</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao" id="fin-contas">
+      <h2>Contas <small>saldo hoje</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+
+    <section class="fin-cartao" id="fin-reembolsos">
+      <h2>Reembolsos a receber <small>prazo de 30 dias</small></h2>
+      <div class="fin-corpo"></div>
+    </section>
+  </div>
+</main>
+
+<script src="traducoes.js"></script>
+<script src="i18n.js"></script>
+<script>cockpitI18n.estatico();</script>
+<script src="financas.js"></script>
+</body>
+</html>

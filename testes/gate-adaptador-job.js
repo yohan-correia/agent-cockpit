@@ -218,7 +218,45 @@ async function secao1() {
   // G-J2 — idValido e existe.
   ok(adaptador.idValido('../../etc/passwd') === false, 'G-J2: idValido rejeita "../../etc/passwd"');
   ok(adaptador.idValido('20260912-210000-projeto-abcd') === true, 'G-J2: idValido aceita um id no formato do orquestrador');
-  ok(adaptador.idValido('a'.repeat(121)) === false, 'G-J2: idValido rejeita id acima de 120 caracteres');
+  ok(adaptador.idValido('a'.repeat(161)) === false, 'G-J2: idValido rejeita id acima de 160 caracteres');
+  {
+    // Os dois formatos reais medidos em 13/10, com nome genérico (D78); e o pior caso do gerador (144).
+    const ID_SUBLINHADO = '20261013-145932-projeto-a-ataca-dataset-com-campo_novo-a33f';
+    const ID_PONTO = '20261004-154220-projeto-b-ataca-painel-em-exemplo.app.br-c561';
+    const ID_LONGO = `20261013-145932-${'p'.repeat(80)}-ataca-${'s'.repeat(36)}-a33f`;
+    ok(adaptador.idValido(ID_SUBLINHADO) === true, 'G-J2: idValido aceita id com _ (alfabeto do gerador)');
+    ok(adaptador.idValido(ID_PONTO) === true, 'G-J2: idValido aceita id com . (alfabeto do gerador)');
+    ok(ID_LONGO.length === 144 && adaptador.idValido(ID_LONGO) === true, 'G-J2: idValido aceita o pior caso do gerador (144 caracteres)');
+    for (const s of ['', '.', '..', '.x', '../x', 'a/b', 'a\\b', '_x', '-x', 'A1', 'a b']) {
+      ok(adaptador.idValido(s) === false, `G-J2: idValido rejeita ${JSON.stringify(s)}`);
+    }
+    ok(adaptador.idValido(null) === false, 'G-J2: idValido rejeita null');
+    ok(adaptador.idValido(42) === false, 'G-J2: idValido rejeita número');
+  }
+
+  // G-J2 (força bruta) — o fato do qual a segurança depende (§7 da spec): todo id ACEITO vira
+  // exatamente UM segmento filho de dirJobs() em caminhoDoLog — nunca a própria pasta, nunca
+  // fora dela. Alfabeto hostil, comprimento 1..4 (~16 mil strings, < 1 s).
+  {
+    const alfabeto = ['a', '0', '.', '_', '-', '/', '\\', 'A', ' ', '%'];
+    let aceitos = 0;
+    const escapes = [];
+    const visitar = (prefixo, resta) => {
+      if (resta === 0) return;
+      for (const c of alfabeto) {
+        const s = prefixo + c;
+        if (adaptador.idValido(s)) {
+          aceitos += 1;
+          const pasta = path.dirname(adaptador.caminhoDoLog(s));
+          if (path.dirname(pasta) !== RAIZ || path.basename(pasta) !== s) escapes.push(s);
+        }
+        visitar(s, resta - 1);
+      }
+    };
+    visitar('', 4);
+    ok(aceitos > 0, `G-J2 (força bruta): o alfabeto aceita algo (${aceitos} aceitos) — o critério não ficou cego`);
+    ok(escapes.length === 0, `G-J2 (força bruta): nenhum id aceito sai da pasta de jobs (escapes: ${JSON.stringify(escapes.slice(0, 5))})`);
+  }
   ok((await adaptador.existe('id-que-nao-existe')) === false, 'G-J2: existe() nega id sem pasta correspondente');
   const idFabricado = 'job-fabricado-para-o-gate';
   fs.mkdirSync(path.join(RAIZ, idFabricado), { recursive: true });

@@ -19,11 +19,17 @@ Object.assign(env, { HOME: temp, CODEX_HOME: path.join(temp, '.codex'), HOST: '1
   // O amostrador do monitor escreve desde o boot; a env vence o HOME (#62). Relógio desligado
   // e pasta temporária, como a COCKPIT_PUSH_DIR.
   COCKPIT_MONITOR_DIR: path.join(temp, 'monitor'), COCKPIT_MONITOR_MS: '0',
-  // #78: a medida do disco roda `du`/`docker`; gate que esquecer o falso cai em "indisponivel", nunca no real.
-  COCKPIT_DU_BIN: path.join(temp, 'sem-du'), COCKPIT_DOCKER_BIN: path.join(temp, 'sem-docker') });
+  // #78: `du`/`docker`/`gh` falsos; gate que esquecer cai em "indisponível", nunca no real (D97: o `gh` fala com o GitHub).
+  COCKPIT_DU_BIN: path.join(temp, 'sem-du'), COCKPIT_DOCKER_BIN: path.join(temp, 'sem-docker'),
+  COCKPIT_GH_BIN: path.join(temp, 'sem-gh'),
+  // Faixa PROD FORA (D87): a env VENCE o HOME falso (#62) — sem ela, qualquer gate que exporte a
+  // variável no shell leria o arquivo real do vigia de prod.
+  COCKPIT_VIGIA_PROD_ARQ: path.join(temp, 'sem-vigia', 'estado.json'),
+  // Painel de Finanças (D90): a env VENCE o HOME falso (#62).
+  COCKPIT_FINANCAS_DIR: path.join(temp, 'sem-financas') });
 delete env.PORT;
 delete env.PORTA_PAINEL;
-const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'gate-envio-skill-codex.js',
+const tests = ['gate-idioma.js', 'gate-confianca.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'gate-envio-skill-codex.js',
   'gate-fila-pendente.js', 'gate-jobs-disco.js', 'gate-jobs-rota.js',
   // A tela "Pra revisar" (plano 2026-10-04-tela-pra-revisar-plano.md) entrou em 04/10/2026.
   // Mesmo molde de portas do `gate-jobs-rota.js` — precisa da mesma guarda contra o
@@ -67,6 +73,12 @@ const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'g
   // dia em que o defeito foi medido no `.jsonl`.
   // O quarto eco (colagem embrulhada em <pasted_content>, Claude Code 2.1.280) entrou em 24/09/2026.
   'gate-eco-bash.js', 'gate-eco-comando.js', 'gate-eco-mid-turn.js', 'gate-colagem-embrulhada.js',
+  // A "\" final que a TUI do Claude come (card `fila-presa-com-barra-invertida-no-fim`, #100) entrou
+  // em 13/10/2026: Node puro, sem server, sem porta. Nasceu VERMELHO.
+  'gate-barra-final.js',
+  // A saída do `!` em cartão de terminal (card `saida-do-comando-em-cartao`, D79) entrou em 11/10/2026: Node
+  // puro, HOME falso. Nasceu VERMELHO — gate que não roda no `npm test` não é gate, é documentação.
+  'gate-saida-comando.js',
   // O vigia de abas (lib/vigia-abas.js) entrou em 11/09/2026. Ele domina COCKPIT_CONTATO e
   // COCKPIT_VIGIA_MS no PRÓPRIO processo (setando e removendo por caso) — sem isso, o
   // COCKPIT_VIGIA_MS:'0' que esta lista injeta para os outros gates faria iniciar() devolver
@@ -93,6 +105,14 @@ const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'g
   // Nasceu VERMELHO no código anterior (chave "sessão:@janela.%pane") e ficou verde com a
   // chave "@janela.%pane" — gate que não roda no `npm test` não é gate, é documentação.
   'gate-aba-movida.js',
+  // A aba com Agent em background segurava `status: busy` no CLI (card
+  // `trabalhando-nao-distingue-subagente`, 14/10/2026): tmux real em socket isolado + /proc
+  // falso + server.js filho na 7889. Nasceu VERMELHO — `emBackground` ainda não existe.
+  'gate-segundo-plano.js',
+  // O cartão vivo do sub-agente (card `ver-os-subagentes-da-aba`, D86, 16/10/2026): a parte
+  // pura (lib/externo.js/lib/subagente.js) mais tmux real em socket isolado + /proc falso +
+  // server.js filho na 7966 para GET /api/subagente. Nasceu VERMELHO.
+  'gate-subagente.js',
   // O progresso das trilhas de leitura (card `leituras-trilhas`, lib/leituras.js) entrou em
   // 02/10/2026: sobe server.js filho (COCKPIT_JOBS_DIR/COCKPIT_LIDAS_DIR/COCKPIT_LEITURAS_DIR/
   // COCKPIT_TRILHAS próprios) e traz junto a varredura durável (R10, molde do caso 14 acima).
@@ -104,6 +124,8 @@ const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'g
   // 18/09: mesma lição — sem ele nesta lista, a medição que sustenta a decisão de NÃO
   // interpretar a TUI (D-D) apodrece no dia em que o Claude Code mudar o formato do prompt.
   'gate-menu-claude.js',
+  // O diálogo que o Claude abre sozinho (card mensagem-some-no-menu-do-auto-mode, D85a) — 16/10/2026.
+  'gate-menu-claude-dialogo.js',
   // O gesto "sair do menu e falar" (card escrever-texto-na-pergunta-aberta) entrou em
   // 21/09/2026: `estadoDoMenu(aba)` e o gesto Escape → reconfere → cola → Enter em
   // `digitarNaAba`. Mesma lição do gate-eco-bash — gate que não roda no `npm test` não é
@@ -132,6 +154,12 @@ const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'g
   // A tela do monitor (faixa, selo, painel): funções puras de public/monitor.js em Node puro e
   // a costura (DIALOGOS, media queries do selo, catálogo de i18n) como texto. Sem servidor.
   'gate-monitor-ui.js',
+  // A faixa PROD FORA (D87): o leitor do estado do vigia de prod, a rota GET /api/sites e a
+  // costura da tela (faixa vermelha + bolinhas por site). Nasceu VERMELHO.
+  'gate-sites.js',
+  // O Painel de Finanças (D90): o leitor do resumo diário, a rota POST do PDF e a costura da
+  // tela. Nasceu VERMELHO (fase 1); entra aqui já com o F11 (fase 2).
+  'gate-financas.js',
   // Nome por painel (card `nome-por-painel`, 07/10/2026): tmux real em socket isolado, sem servidor.
   // Gate que não roda no npm test não é gate, é documentação.
   'gate-nome-por-painel.js',
@@ -153,7 +181,34 @@ const tests = ['gate-idioma.js', 'gate-instalacao.js', 'gate-clear-codex.js', 'g
   'gate-gancho-instalado.js',
   // Criar pasta na aba nova (card `criar-pasta-na-aba-nova`, 08/10/2026): a rota POST /api/projetos por
   // HTTP, com server.js filho e a raiz de projetos SEMPRE num mkdtemp. Nasceu VERMELHO (rota inexistente).
-  'gate-criar-pasta.js'];
+  'gate-criar-pasta.js',
+  // O extrator multi-linguagem do grafo do projeto (card `grafo-do-projeto-no-cockpit`, Fase 1,
+  // 16/10/2026) entrou em três unidades (1a JS/TS, 1b Python, 1c HTML/schema/herança). Node
+  // puro, sem servidor, sem porta — fixtures em memória. Nasceu VERMELHO em cada unidade.
+  'gate-grafo-extrator.js',
+  // Git/loja/hooks do grafo do projeto (mesmo card, Fase 2, 16/10/2026): repos de fixture em
+  // mkdtemp, HOME e COCKPIT_GRAFOS_DIR sempre no tmp. Separado em dois pelo orçamento de tempo —
+  // gate-grafo-gatilhos.js dispara commit/merge/fetch reais e espera o hook rodar em background.
+  'gate-grafo-hook.js', 'gate-grafo-gatilhos.js',
+  // O grafo do projeto (card `grafo-do-projeto-no-cockpit`) entrou em 16/10/2026: dashboard
+  // vendorizado (Fase 4, Node puro), rotas /api/grafos e /grafo/<projeto>/ (Fase 5, server.js
+  // filho na porta 7933, ambiente fechado) e a tela — botão + diálogo (Fase 6, Node puro/vm).
+  'gate-grafo-viewer.js', 'gate-grafo-rota.js', 'gate-grafo-tela.js',
+  // O botão "Fazer grafo" (card `grafo-botao-fazer-grafo`, 17/10/2026): rota POST /api/grafos/fazer,
+  // server.js filho numa release simulada (porta 7942/7944, sem `.git`, loja/cópia no tmp).
+  // Separado em dois pelo teto de 120 s — o segundo cobre hook, concorrência e janela do commit.
+  'gate-grafo-fazer.js', 'gate-grafo-fazer-hook.js',
+  // O mapa simples do grafo (card `grafo-mapa-simples`, D91, 17/10/2026): índice puro + rotas
+  // /api/grafos/<nome>/mapa e /mapa/<nome>/, server.js filho na porta 7973. Nasceu VERMELHO.
+  'gate-grafo-mapa.js',
+  // Diff de commit e de job (card `ver-a-diff-do-codigo`, D95, 19/10/2026): lib/diff.js (parser
+  // + git com teto), rotas /api/diff/* e casca /diff/, server.js filho na porta 7987.
+  'gate-diff.js',
+  // PRs do GitHub (D97): `gh` falso + server.js filho na 7981.
+  'gate-diff-prs.js',
+  // Regra da casa D96 (19/10/2026): toda tela do cockpit abre DENTRO do app — reprova window.open/_blank/target=
+  // fora da lista fechada (link externo de verdade). Node puro, sem servidor, sem porta.
+  'gate-dentro-do-app.js'];
 try {
   for (const test of tests) {
     console.log(`\n${test}`);

@@ -447,6 +447,64 @@ async function testeG_i() {
   ok(meus.some((e) => e.tipo === 'job_estado' && e.job.estado === 'done'), 'G-i (pré-condição): o job chegou a done');
 }
 
+// ─── G-J25 — id com `_` ou `.` (o alfabeto do gerador do orquestrador) abre o job ──────────
+//
+// Card `job-com-underscore-ou-ponto-no-id` (13/10): `idValido` só aceitava [0-9a-z-] e a chave
+// do cano recusava `.` com 400 — o painel abria com título "." e "não achei este job", e o
+// `.` derrubava o cano de TODOS os painéis abertos. O título vem de `jobs.listar()`, que lê o
+// `title` do meta.json; `escreverJob` grava `id` = nome da pasta e `title` = `título de <id>`.
+
+async function testeG_J25() {
+  console.log('\n── G-J25 — id com _ ou . abre o job, e o cano compartilhado fica de pé ──\n');
+  const ID_SUBLINHADO = '20261013-145932-projeto-a-ataca-dataset-com-campo_novo-a33f';
+  const ID_PONTO = '20261004-154220-projeto-b-ataca-painel-em-exemplo.app.br-c561';
+  const ID_COMUM = 'j-vizinho-do-ponto';
+  for (const id of [ID_SUBLINHADO, ID_PONTO, ID_COMUM]) {
+    escreverJob(id, { status: linhaStatus('working', 'x'), log: linhaEvento(`fala de ${id}`) });
+  }
+
+  // (a) `_`: 200, `sessao` com o título, a fala na fita e nenhum `erro`.
+  const a = await conectarSSE(`job-${ID_SUBLINHADO}`);
+  await espera(900);
+  a.encerrar();
+  const meusA = doJob(a.eventos, `job-${ID_SUBLINHADO}`);
+  ok(a.status === 200, `G-J25a: id com _ ⇒ 200 (veio ${a.status})`);
+  ok(meusA.some((e) => e.tipo === 'sessao' && e.meta && e.meta.titulo === `título de ${ID_SUBLINHADO}`),
+    `G-J25a: id com _ ⇒ sessao com o título do meta.json (tipos: ${JSON.stringify(meusA.map((e) => e.tipo))})`);
+  ok(meusA.some((e) => e.tipo === 'texto' && e.texto === `fala de ${ID_SUBLINHADO}`), 'G-J25a: e a fala do job chega à fita');
+  ok(!meusA.some((e) => e.tipo === 'erro'), 'G-J25a: e nenhum "não achei este job"');
+
+  // (a2) `.` sozinho no cano: 200 e `sessao` com o título.
+  const a2 = await conectarSSE(`job-${ID_PONTO}`);
+  await espera(900);
+  a2.encerrar();
+  const meusA2 = doJob(a2.eventos, `job-${ID_PONTO}`);
+  ok(a2.status === 200, `G-J25a2: id com . sozinho ⇒ 200, não 400 (veio ${a2.status})`);
+  ok(meusA2.some((e) => e.tipo === 'sessao' && e.meta && e.meta.titulo === `título de ${ID_PONTO}`),
+    `G-J25a2: id com . ⇒ sessao com o título (tipos: ${JSON.stringify(meusA2.map((e) => e.tipo))})`);
+
+  // (b) `.` junto com um job comum NO MESMO cano: 200, e os DOIS painéis recebem `sessao`.
+  const b = await conectarSSE(`job-${ID_PONTO},job-${ID_COMUM}`);
+  await espera(900);
+  b.encerrar();
+  ok(b.status === 200, `G-J25b: cano com id de . e um vizinho ⇒ 200, não 400 (veio ${b.status}, corpo ${JSON.stringify(b.corpo)})`);
+  const meusPonto = doJob(b.eventos, `job-${ID_PONTO}`);
+  const meusVizinho = doJob(b.eventos, `job-${ID_COMUM}`);
+  ok(meusPonto.some((e) => e.tipo === 'sessao' && e.meta && e.meta.titulo === `título de ${ID_PONTO}`),
+    `G-J25b: id com . ⇒ sessao com o título (tipos: ${JSON.stringify(meusPonto.map((e) => e.tipo))})`);
+  ok(meusVizinho.some((e) => e.tipo === 'sessao'), 'G-J25b: e o painel vizinho no MESMO cano também abre');
+
+  // (c) `job-..`: a FORMA passa, `idValido` barra — erro só naquele painel, com o par erro + sincronizado (#47).
+  const c = await conectarSSE('job-..');
+  await espera(600);
+  c.encerrar();
+  const meusC = doJob(c.eventos, 'job-..');
+  ok(c.status === 200, `G-J25c: job-.. ⇒ 200 (a forma passa; veio ${c.status})`);
+  ok(meusC.some((e) => e.tipo === 'erro' && e.mensagem === 'não achei este job'), 'G-J25c: e o painel recebe "não achei este job"');
+  ok(meusC.some((e) => e.tipo === 'sincronizado'), 'G-J25c: e o sincronizado que destrava a fita (#47)');
+  ok(!meusC.some((e) => e.tipo === 'sessao'), 'G-J25c: e NADA de sessao — nenhum arquivo foi lido');
+}
+
 // ─── G-J2b — o namespace de chave não abre porta para leitura fora da pasta ────────────────
 
 async function testeG_J2b() {
@@ -502,6 +560,7 @@ async function principal() {
     await testeG_f();
     await testeG11();
     await testeG_i();
+    await testeG_J25();
     await testeG_J2b();
   } finally {
     derrubarServidor();

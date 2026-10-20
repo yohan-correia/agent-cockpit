@@ -12,6 +12,7 @@ O navegador envia mensagens por HTTP e acompanha eventos por SSE. O servidor ide
 | `lib/clear-codex.js` / `lib/status-codex.js` | Reset confirmado e snapshots de status |
 | `public/app.js` | Fita de eventos, painéis, fila visual e interação |
 | `lib/arquivos.js` / `lib/avisos.js` | Arquivos e notificações |
+| `lib/grafo-*.js`, `bin/grafo.js` | Grafo do projeto: extrator multi-linguagem, loja fora do repo, hooks do git e CLI |
 
 A sessão tmux e o socket são configuração do servidor. O cliente manda uma chave de pane e um nome de projeto, não comandos livres de shell ou caminhos de executável. A criação de aba valida o binário e usa a lista de projetos do servidor.
 
@@ -26,3 +27,16 @@ O histórico é a fonte persistente da conversa. Pendentes ainda sem eco ficam n
 As CLIs mantêm o login e executam os turnos; o Cockpit não cria uma assinatura ou autenticação paralela. A tela não deve escolher um arquivo por recência para esconder ambiguidade. O conteúdo das conversas vem dos arquivos dos CLIs, não de parsing da tela do terminal. A captura de tela tem usos restritos: menus identificados e a resposta do `/status` nativo.
 
 No medidor, percentuais de `utilization` e frações de `used / total` são escalas diferentes. Preserve a unidade declarada na origem. Eventos de limite do stream `claude -p` não estão garantidos no arquivo JSONL da conversa. Esses contratos têm fixtures próprias nos gates de uso e limites.
+
+## Grafo do projeto
+
+A rota `/grafo/<projeto>/` serve um dashboard (vendorizado, código de terceiro) que desenha o grafo
+de conhecimento do repositório. O grafo é sempre o da `develop`, nunca do checkout: `bin/grafo.js
+gerar` lê o commit pelo banco de objetos do git (`ls-tree` + `cat-file`), monta o grafo com um
+extrator determinístico próprio (`lib/grafo-js.js`, `lib/grafo-python.py`, `lib/grafo-html.js`) e
+publica numa loja fora do repositório (`lib/grafo-loja.js`), nunca em `.git/` nem no checkout.
+Quatro hooks do git (`post-commit`, `post-merge`, `post-rewrite`, `reference-transaction`)
+regeneram o grafo em background quando a `develop` anda; `lib/grafo-inventario.js` decide o estado
+de cada grafo (em dia / atrás / fora da história) comparando o commit publicado com a `develop`
+atual. `public/grafo/ponte.js` adapta as URLs absolutas do dashboard de terceiro para o caminho
+relativo em que o Cockpit o serve.

@@ -201,11 +201,47 @@ function desenharBlocos(blocos) {
 
 function markdown(texto) { return desenharBlocos(blocosDoMarkdown(texto)); }
 
+function tomDoJob(etiquetas) {
+  if (etiquetas.includes('parou-no-limite') || etiquetas.includes('branch-sumiu')) return 'perigo';
+  if (etiquetas.includes('sem-base') || etiquetas.includes('nao-sei') || etiquetas.includes('pede-revisao')
+    || etiquetas.includes('pede-decisao') || etiquetas.includes('relatorio-ilegivel')) return 'aviso';
+  return 'ok';
+}
+
+function vereditoDoTexto(md, etiquetas) {
+  const primeiroBloco = (String(md || '').split('\n\n')[0] || '').trim();
+  const m = primeiroBloco.match(/^(?:\*\*)?(done|blocked|failed|needs-decision)\s*:\s*(?:\*\*(?=\s|$))?\s*/i);
+  // Sem prefixo conhecido NÃO é sucesso: o relatório de quem bateu no limite começa com
+  // "You've hit your session limit" e não pode sair verde ("Terminou bem").
+  let tipo = m ? m[1].toLowerCase() : 'nenhum';
+  if (tipo === 'needs-decision') tipo = 'decisao';
+  if ((etiquetas || []).includes('pede-decisao')) tipo = 'decisao';
+  if ((etiquetas || []).includes('parou-no-limite')) tipo = 'limite';
+  let resto = m ? primeiroBloco.slice(m[0].length) : primeiroBloco;
+  // "Pede decisão" com o `done:` embaixo é o título certo com a frase errada: a pergunta é a linha
+  // `needs-decision:` mais abaixo no relatório (o 1º bloco fica de reserva quando ela não existe).
+  if (tipo === 'decisao' && !(m && /^needs-decision$/i.test(m[1]))) {
+    const linha = String(md || '').match(/^(?:\*\*)?needs-decision\s*:\s*(?:\*\*(?=\s|$))?\s*(.*)$/im);
+    if (linha && linha[1].trim()) resto = linha[1].trim();
+  }
+  const POR_TIPO = {
+    done: ['✓', 'ok', 'Terminou bem'],
+    blocked: ['⚠', 'aviso', 'Travou'],
+    failed: ['✕', 'perigo', 'Falhou'],
+    decisao: ['?', 'aviso', 'Pede decisão'],
+    limite: ['✕', 'perigo', 'Parou no limite'],
+    nenhum: ['?', 'aviso', 'Sem veredito'],
+  };
+  const [selo, tom, titulo] = POR_TIPO[tipo];
+  return { selo, tom, titulo, texto: resto };
+}
+
 // Funções puras, exportadas pra teste (gate-revisar-md.js) — nada além delas atravessa a
 // fronteira: o resto é desenho, e desenho não se testa fora de um DOM de verdade. A linha
 // mora AQUI, antes de qualquer `$(...)`: é o que deixa este arquivo `require`-ável em Node
-// puro (sem `document`) pelo gate, que só precisa das duas funções de cima.
-globalThis.cockpitRevisar = { blocosDoMarkdown, blocosDoSmoke, pendenciasDe };
+// puro (sem `document`) pelo gate, que só precisa das funções puras de cima (markdown, smoke,
+// tom do card e veredito).
+globalThis.cockpitRevisar = { blocosDoMarkdown, blocosDoSmoke, pendenciasDe, tomDoJob, vereditoDoTexto };
 
 // O resto é SÓ DOM — dialog, botão, listeners. Guardado pra este arquivo continuar
 // `require`-ável em Node puro (o gate acima) e não quebrar numa página sem o diálogo.
@@ -290,14 +326,10 @@ function etiquetaChip(codigo) {
     'nao-sei': ['não sei', 'aviso'],
     'parou-no-limite': ['parou no limite', 'perigo'],
     'pede-revisao': ['pede revisão', 'info'],
+    'pede-decisao': ['pede decisão', 'aviso'],
+    'relatorio-ilegivel': ['relatório ilegível', 'aviso'],
   };
   return CATALOGO[codigo] || [codigo, 'info'];
-}
-
-function tomDoJob(etiquetas) {
-  if (etiquetas.includes('parou-no-limite') || etiquetas.includes('branch-sumiu')) return 'perigo';
-  if (etiquetas.includes('sem-base') || etiquetas.includes('nao-sei') || etiquetas.includes('pede-revisao')) return 'aviso';
-  return 'ok';
 }
 
 // ── prévia do merge (só leitura): o selo do card e a seção do detalhe ──
@@ -505,25 +537,6 @@ function desenharLista() {
 
 // ── tela 2: o job ────────────────────────────────────────────────────────────────────────
 
-function vereditoDoTexto(md, etiquetas) {
-  const primeiroBloco = (String(md || '').split('\n\n')[0] || '').trim();
-  const m = primeiroBloco.match(/^(done|blocked|failed)\s*:\s*/i);
-  // Sem prefixo conhecido NÃO é sucesso: o relatório de quem bateu no limite começa com
-  // "You've hit your session limit" e não pode sair verde ("Terminou bem").
-  let tipo = m ? m[1].toLowerCase() : 'nenhum';
-  if ((etiquetas || []).includes('parou-no-limite')) tipo = 'limite';
-  const resto = m ? primeiroBloco.slice(m[0].length) : primeiroBloco;
-  const POR_TIPO = {
-    done: ['✓', 'ok', 'Terminou bem'],
-    blocked: ['⚠', 'aviso', 'Travou'],
-    failed: ['✕', 'perigo', 'Falhou'],
-    limite: ['✕', 'perigo', 'Parou no limite'],
-    nenhum: ['?', 'aviso', 'Sem veredito'],
-  };
-  const [selo, tom, titulo] = POR_TIPO[tipo];
-  return { selo, tom, titulo, texto: resto };
-}
-
 function desenharJob(j) {
   telaDoDialog = 'job';
   const corpo = el('div', 'rv-corpo');
@@ -627,10 +640,15 @@ function desenharJob(j) {
   }
 
   const rodape = el('div', 'rv-rodape');
+  // Ver a diff do código (card `ver-a-diff-do-codigo`, D95; mesma aba desde D96): o que o merge deste job na base
+  // traria. `cockpitDiffEntrada`/`cockpitDentro` só são lidos DENTRO do `onclick` (R4) — nada na criação do rodapé.
+  const btnDiff = el('button', 'btn', tr('Ver mudanças'));
+  btnDiff.type = 'button';
+  btnDiff.onclick = () => globalThis.cockpitDentro.abrir(globalThis.cockpitDiffEntrada.urlDaDiff({ job: j.id }), { revisar: j.id });
   const btn = el('button', 'btn btn-principal', tr('Abrir conversa do job'));
   btn.type = 'button';
   btn.onclick = () => { dlg.close(); abrirJob(j.id); };
-  rodape.append(btn);
+  rodape.append(btnDiff, btn);
 
   rv.replaceChildren(barra(true), corpo, rodape);
   corpo.scrollTop = 0;
@@ -657,8 +675,25 @@ function aoTerminarJob() {
 }
 globalThis.cockpitRevisar.aoTerminarJob = aoTerminarJob;
 
+// D96/M8: voltou da diff (`cockpitDentro.abrir`) numa página RECARREGADA — reabre o Pra revisar no job de onde
+// saiu. Achou → tela do job (mesma montagem do clique do card, `cardDe`); não achou (saiu da lista = mergeado) →
+// fica na lista. `<dialog>` puro, sem pushState (#39). Com bfcache isto nem roda.
+async function voltarDeOutraPagina() {
+  const id = globalThis.cockpitDentro ? globalThis.cockpitDentro.tomarVolta('revisar') : undefined;
+  if (typeof id !== 'string' || !id) return;
+  dlg.showModal();
+  await carregarLista();
+  if (!dlg.open || telaDoDialog !== 'lista') return;
+  for (const j of [...listaAtual, ...sumidasAtual]) {
+    if (j.id === id) { desenharJob(j); return; }
+    const rel = relacionado(j, id);
+    if (rel) { desenharJob({ ...rel, projeto: j.projeto, retomou: [], inclui: [] }); return; }
+  }
+}
+
 // Busca no BOOT, sem `await`: a lista de abas não espera o git (plano, Fase D).
 atualizarContador();
+voltarDeOutraPagina();
 
 } // fim do guard `typeof document !== 'undefined'`
 

@@ -1,0 +1,149 @@
+/* Página de Finanças (card pagina-financas, D92) — a mesma paleta dos dez temas do app, mais
+   uma paleta categórica própria. Partida do CSS da maquete aprovada pelo dono (fora do repo),
+   com o prefixo `fin-` em
+   TODAS as classes (inclusive as internas) — sem isto `.voltar { display: none }` de
+   `estilo.css:1281` escondia o link de volta ao Cockpit. Nada de `.moldura`/`.palco`/
+   `.faixa-maquete`/`.decisoes`/gaveta/abas: aqui é só a página, layout "grade" (P2), sanfona
+   embaixo da linha (P4) — nenhum outro modo. */
+
+html:has(body.pagina-financas), body.pagina-financas { height: auto; overflow: auto; }
+body.pagina-financas { font-size: 14px; line-height: 1.45; }
+
+.pagina-financas {
+  --fin-c1: #2a78d6; --fin-c2: #eb6834; --fin-c3: #1baf7a; --fin-c4: #eda100;
+  --fin-c5: #e87ba4; --fin-c6: #8a6fd6; --fin-c7: #4fb3c9; --fin-cz: #5b6270;
+}
+
+/* ─── Topo ───────────────────────────────────────────────────────────────────────────────── */
+.fin-topo {
+  background: var(--fundo); border-bottom: 1px solid var(--borda); /* variável: nos temas claros o texto escuro sumia (Claude #1) */
+  padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+}
+@media (min-width: 701px) { .fin-topo { position: sticky; top: 0; z-index: 5; } }
+.fin-voltar { color: var(--texto-2); text-decoration: none; font-size: 13px; }
+.fin-topo h1 { font-size: 20px; margin: 0; font-weight: 700; }
+.fin-visoes { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.fin-visoes button {
+  padding: 5px 12px; border-radius: 999px; border: 1px solid var(--borda); background: var(--fundo-2);
+  cursor: pointer; font-size: 13px; color: inherit; font: inherit;
+}
+.fin-visoes button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-suave); color: var(--accent); font-weight: 600; }
+.fin-carimbo { font-size: 12px; color: var(--texto-3); }
+.fin-direita { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .fin-direita { margin-left: 0; width: 100%; }
+  /* Sem o `margin-left: auto` do pai (perdido no celular), `.fin-exportar` ficaria colado no
+     período — empurra só ELE pra borda direita da linha, senão o `right: 0` do menu ancora
+     longe da borda da TELA (medido: a borda esquerda do menu saía negativa). */
+  .fin-exportar { margin-left: auto; }
+}
+.fin-periodo { background: var(--fundo-2); border: 1px solid var(--borda); color: var(--texto); border-radius: var(--raio); padding: 6px 8px; font: inherit; font-size: 13px; }
+
+/* ─── Conteúdo / cartões ─────────────────────────────────────────────────────────────────── */
+.fin-conteudo { display: grid; gap: 16px; grid-template-columns: 1fr; padding: 16px 20px 40px; }
+@media (min-width: 900px) { .fin-conteudo { grid-template-columns: 1fr 1fr; } .fin-largo { grid-column: 1 / -1; } }
+@media (max-width: 700px) { .fin-conteudo { padding: 12px; } }
+
+.fin-avisos { font-size: 13px; color: var(--texto-2); border-left: 3px solid var(--espera); padding: 6px 10px; background: var(--fundo-2); border-radius: 0 8px 8px 0; display: grid; gap: 4px; }
+.fin-avisos p { margin: 0; }
+
+.fin-cartao { background: var(--fundo-2); border: 1px solid var(--borda); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.fin-cartao h2 { font-size: 13px; margin: 0 0 10px; color: var(--texto-2); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; display: flex; justify-content: space-between; gap: 8px; }
+.fin-cartao h2 small { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--texto-3); }
+
+/* ─── KPIs ───────────────────────────────────────────────────────────────────────────────── */
+#fin-kpis .fin-corpo { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 700px) { #fin-kpis .fin-corpo { grid-template-columns: 1fr 1fr; } }
+.fin-kpi { background: var(--fundo-2); border: 1px solid var(--borda); border-radius: 12px; padding: 12px 14px; }
+.fin-kpi span { font-size: 12px; color: var(--texto-2); }
+.fin-kpi b { display: block; font-size: 22px; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.fin-kpi small { font-size: 12px; }
+@media (max-width: 700px) { .fin-kpi b { font-size: 17px; } }
+.fin-sobe { color: var(--perigo); } .fin-desce { color: var(--ok); }
+.fin-bom { color: var(--ok); } .fin-ruim { color: var(--perigo); }
+
+/* ─── Legenda / SVG dos gráficos ─────────────────────────────────────────────────────────── */
+.fin-legenda { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--texto-2); margin-top: 8px; }
+.fin-legenda i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+#fin-rendagasto svg text, #fin-empilhado svg text { font-family: var(--sans); }
+
+/* ─── Tabela mês a mês ───────────────────────────────────────────────────────────────────── */
+.fin-rolagem { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+#fin-tabela table { border-collapse: collapse; width: 100%; min-width: 560px; }
+#fin-tabela th, #fin-tabela td { padding: 7px 8px; border-bottom: 1px solid var(--borda); font-size: 13px; }
+#fin-tabela th { color: var(--texto-3); font-weight: 600; text-align: left; }
+#fin-tabela th.fin-mes { text-align: center; }
+#fin-tabela th:first-child, #fin-tabela td:first-child { position: sticky; left: 0; background: var(--fundo-2); z-index: 1; }
+/* Valores à direita (como na maquete); só o cabeçalho dos meses é centralizado (decisão do dono).
+   `<button>` com display:block continua do tamanho do texto — por isso o `width: 100%`. */
+#fin-tabela td:not(:first-child), #fin-tabela th:last-child { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fin-celula { all: unset; cursor: pointer; display: block; width: 100%; box-sizing: border-box; text-align: right; padding: 2px 4px; border-radius: 5px; font-variant-numeric: tabular-nums; }
+.fin-celula:hover, .fin-celula:focus-visible { background: var(--accent-suave); color: var(--accent); outline: none; }
+.fin-celula[aria-expanded="true"] { background: var(--accent); color: var(--sobre-accent); font-weight: 600; }
+.fin-cat-nome { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.fin-cat-nome i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+#fin-tabela tr.fin-total td { font-weight: 700; border-top: 2px solid var(--borda); }
+#fin-tabela tr.fin-abre td { background: var(--fundo-3); padding: 0; position: static; }
+#fin-tabela tr.fin-abre .fin-lista { position: sticky; left: 0; box-sizing: border-box; }
+
+/* ─── Sanfona de lançamentos — componente único (tabela, fora do gasto, mês em detalhe) ──── */
+.fin-lista { padding: 8px 12px 12px; }
+.fin-lista h3 { font-size: 13px; margin: 4px 0 8px; display: flex; justify-content: space-between; }
+.fin-lanc { display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--borda); font-size: 13px; }
+.fin-lanc:last-child { border-bottom: 0; }
+.fin-lanc .fin-data { color: var(--texto-3); }
+.fin-lanc .fin-valor { font-variant-numeric: tabular-nums; }
+.fin-lanc .fin-valor.fin-cred { color: var(--ok); }
+.fin-lanc .fin-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ─── Fora do gasto / maiores gastos ─────────────────────────────────────────────────────── */
+.fin-linha { all: unset; cursor: pointer; display: grid; grid-template-columns: 1fr auto 16px; gap: 10px; width: 100%; padding: 9px 4px; border-bottom: 1px solid var(--borda); box-sizing: border-box; }
+.fin-linha:hover { background: var(--fundo-3); }
+.fin-linha .fin-seta { color: var(--texto-3); transition: transform 0.15s; }
+.fin-linha[aria-expanded="true"] .fin-seta { transform: rotate(90deg); color: var(--accent); }
+.fin-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--borda); color: var(--texto-2); margin-left: 6px; }
+.fin-chip[data-tom="atrasado"] { border-color: var(--espera); color: var(--espera); }
+.fin-barrinha { height: 6px; border-radius: 3px; background: var(--fundo-3); overflow: hidden; margin-top: 4px; }
+.fin-barrinha > i { display: block; height: 100%; background: var(--accent); }
+
+/* ─── Exportar ▾ ─────────────────────────────────────────────────────────────────────────── */
+.fin-exportar { position: relative; }
+.fin-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); width: 260px; background: var(--fundo-2);
+  border: 1px solid var(--borda); border-radius: 10px; padding: 12px; z-index: 30; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+/* `right: 0` continua ancorado na borda direita de `.fin-exportar` (não na da tela) — como
+   `.fin-exportar` é o filho mais à direita de `.fin-direita { width: 100% }` no celular (P2),
+   essa borda já fica perto da borda direita da TELA; só a largura precisa encolher. Testado
+   contra overflow real (print cena 4) — `left: 0` sozinho ficaria preso à borda esquerda de
+   `.fin-exportar`, que no celular NÃO é a borda esquerda da tela (o seletor de período vem antes
+   na mesma linha). */
+@media (max-width: 700px) { .fin-menu { width: min(320px, calc(100vw - 24px)); } }
+.fin-menu legend { margin: 0 0 6px; font-size: 12px; color: var(--texto-3); text-transform: uppercase; letter-spacing: 0.04em; border: 0; padding: 0; }
+.fin-menu fieldset { border: 0; padding: 0; margin: 0 0 10px; }
+.fin-menu label { display: flex; gap: 8px; align-items: center; padding: 4px 2px; cursor: pointer; font-size: 13px; }
+.fin-menu input { accent-color: var(--accent); }
+.fin-menu .btn-principal { width: 100%; }
+.fin-exportar-status { font-size: 12px; color: var(--ok); margin-top: 6px; min-height: 16px; }
+
+/* ─── Mês em detalhe ─────────────────────────────────────────────────────────────────────── */
+.fin-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.fin-chips button { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--borda); background: var(--fundo); cursor: pointer; font-size: 13px; color: inherit; font: inherit; }
+.fin-chips button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-suave); color: var(--accent); font-weight: 600; }
+.fin-resumo-mes { font-size: 13px; color: var(--texto-2); margin-bottom: 6px; }
+.fin-cat {
+  all: unset; cursor: pointer; display: grid; grid-template-columns: minmax(90px, 150px) 1fr 52px minmax(90px, auto) 14px;
+  gap: 10px; align-items: center; width: 100%; padding: 9px 4px; border-bottom: 1px solid var(--borda); box-sizing: border-box;
+}
+.fin-cat:hover { background: var(--fundo-3); }
+.fin-cat .fin-trilho { height: 10px; border-radius: 5px; background: var(--fundo-3); overflow: hidden; }
+.fin-cat .fin-trilho i { display: block; height: 100%; border-radius: 5px; }
+.fin-cat .fin-pct { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fin-cat .fin-seta { color: var(--texto-3); transition: transform 0.15s; }
+.fin-cat[aria-expanded="true"] .fin-seta { transform: rotate(90deg); color: var(--accent); }
+@media (max-width: 700px) { .fin-cat { grid-template-columns: 1fr 46px auto 14px; } .fin-cat .fin-trilho { grid-column: 1 / -1; order: 5; } }
+
+/* ─── Contas / Reembolsos — classes próprias (nunca as .financas-* do modal, que saem) ──── */
+.fin-conta { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--borda); }
+.fin-conta:last-child { border-bottom: 0; }
+.fin-reembolso-total { display: flex; justify-content: space-between; padding: 10px 0 0; font-weight: 700; }

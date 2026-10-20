@@ -185,6 +185,14 @@ function criarElemento(tag, rolagens = null, dono = null) {
       if (cresce && cresce.crescePorFilho) cresce.scrollHeight += cresce.crescePorFilho * nos.length;
     },
     appendChild(no) { el.append(no); return no; },
+    // D96: harness aditivo — revisar.js troca o conteúdo do diálogo com `replaceChildren`
+    // (nenhum arquivo carregado pelo gate-ui usava isto antes do grupo DJ). Como no
+    // navegador: tira TODOS os filhos (desligando o `pai` deles) e aí `append` os novos.
+    replaceChildren(...nos) {
+      for (const filho of el.filhos.slice()) filho.pai = null;
+      el.filhos = [];
+      el.append(...nos);
+    },
     // `insertBefore` entrou com o arrasto da aba para o split (D73): o painel passa a nascer e a
     // MUDAR de lugar no meio da faixa, não só no fim. `ref` nulo = fim, como no navegador. E com o
     // efeito colateral MEDIDO no Chromium (spec §5, R2): mover um nó zera a rolagem de tudo que
@@ -337,6 +345,9 @@ function criarElemento(tag, rolagens = null, dono = null) {
     },
     get lastChild() { return el.filhos[el.filhos.length - 1] || null; },
     get children() { return el.filhos.filter((f) => f.tag !== '#texto'); },
+    // D96: harness aditivo — `cardDe` (revisar.js) lê `.childNodes.length` para decidir se
+    // anexa o bloco de chips (inclui nó de texto, diferente de `.children`).
+    get childNodes() { return el.filhos; },
   };
   return el;
 }
@@ -369,6 +380,10 @@ const IDS_DO_PAINEL = new Set([
   'aviso-escrita',
   // O aviso de hook não instalado (card pergunta-sem-gancho-avisa).
   'aviso-gancho',
+  // O aviso de pasta não confiável (card responder-confianca-do-cli-pelo-celular).
+  'aviso-confianca',
+  // "livre · N agente(s) em background" no cabeçalho (card trabalhando-nao-distingue-subagente).
+  'chat-segundo-plano',
   // Caixa de envio por painel (2026-09-09, fase 2 do plano): a caixa deixa de ser única e
   // vira DOM do painel do botão, por classe — na ordem em que aparecem na árvore (§3.1 da
   // spec). `envio-para` NÃO entra — deixa de existir (D42).
@@ -421,6 +436,7 @@ function achar(no, tag) {
 function carregarCliente({
   urlInicial = 'http://z/', guardado = memoria(), aoBuscar = null, comUso = false,
   ordemUso = 'app-primeiro', semPainel = false,
+  extras = [], pilhaInicial = null, sessaoQueLanca = false,
 } = {}) {
   const codigo = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   // Os ids são estáveis: o mesmo getElementById tem que devolver o mesmo elemento, senão
@@ -432,6 +448,7 @@ function carregarCliente({
   const xhrs = [];              // os XMLHttpRequest que o cliente abriu (só o painel de arquivos)
   const janela = new Map();     // tipo do evento → funções registradas em `window`
   const chamadasWindowOpen = []; // A7 (04/09): espião de window.open — #btn-uso não usa mais
+  const chamadasAssign = []; // D96: espião de location.assign
   const rolagens = []; // espião de scrollIntoView — o nó, na ordem em que foi rolado
   // Consulta de mídia → resposta. Mutável de propósito: o teste do Enter troca o ponteiro
   // ENTRE duas teclas, que é como se prova que o cliente pergunta na hora e não no boot.
@@ -480,6 +497,11 @@ function carregarCliente({
       documentElement: criarElemento('html', rolagens),
     },
     localStorage: guardado,
+    // D96: a marca de passagem cockpit → diff/mapa (`public/dentro-do-app.js`). `sessaoQueLanca` simula o modo
+    // privado, onde o acesso LANÇA (DJ11).
+    sessionStorage: sessaoQueLanca
+      ? { getItem() { throw new Error('modo privado'); }, setItem() { throw new Error('modo privado'); }, removeItem() { throw new Error('modo privado'); } }
+      : memoria(),
     location: {
       href: urlInicial,
       origin: new URL(urlInicial).origin,
@@ -489,13 +511,15 @@ function carregarCliente({
       // (`#c=<chave>`), e zerar aqui apagava justo o caminho do deep link.
       hash: new URL(urlInicial).hash,
       hostname: new URL(urlInicial).hostname,
+      assign: (url) => { chamadasAssign.push(String(url)); },
     },
     // Histórico com PILHA de verdade. Sem ela não dá para provar a diferença entre o voltar
     // do Android caindo na lista e o voltar saindo do app: os dois são "nada acontece" para
     // um history de mentira. `saiuDoApp` marca o voltar que passou do fundo da pilha.
     history: {
-      pilha: [{ estado: null, url: urlInicial }],
+      pilha: pilhaInicial ? pilhaInicial.map((e) => ({ ...e })) : [{ estado: null, url: urlInicial }],
       saiuDoApp: false,
+      get state() { const p = contexto.history.pilha; return p[p.length - 1].estado; },
       pushState: (estado, titulo, url) => {
         contexto.history.pilha.push({ estado, url: url == null ? contexto.location.href : String(url) });
         if (url != null) irPara(url);
@@ -628,6 +652,9 @@ function carregarCliente({
   // clássicos, um documento só, exatamente como o navegador roda. `ordemUso: 'uso-primeiro'`
   // existe só como blindagem contra alguém trocar as tags de lugar (A8b); a ordem real é
   // app.js primeiro (P3-b).
+  for (const arquivo of extras.filter((a) => a === 'dentro-do-app.js')) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', arquivo), 'utf8'), contexto, { filename: arquivo });
+  }
   if (comUso) {
     const codigoUso = fs.readFileSync(path.join(__dirname, '..', 'public', 'uso.js'), 'utf8');
     if (ordemUso === 'uso-primeiro') {
@@ -640,6 +667,9 @@ function carregarCliente({
   } else {
     vm.runInContext(codigo, contexto, { filename: 'app.js' });
   }
+  for (const arquivo of extras.filter((a) => a !== 'dentro-do-app.js')) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', arquivo), 'utf8'), contexto, { filename: arquivo });
+  }
   contexto.janela = janela;
   contexto.midia = midia;
   contexto.porId = porId;
@@ -649,6 +679,7 @@ function carregarCliente({
   contexto.fluxos = fluxos;
   contexto.xhrs = xhrs;
   contexto.chamadasWindowOpen = chamadasWindowOpen;
+  contexto.chamadasAssign = chamadasAssign;
   contexto.rolagens = rolagens;
   // `#paleta` nascia `hidden` no `index.html` (atributo no MARKUP) — mas o DOM de mentira não
   // fazia parse de HTML (§1.5 da spec do split view): `getElementById` criava o elemento na
@@ -1335,6 +1366,33 @@ async function parteA() {
       'sequência real da fila: a bolha "! echo x" continua na fita e nenhuma fica bolha-pendente');
   });
 
+  // Card `fila-presa-com-barra-invertida-no-fim`: a TUI do Claude come a "\" final ("\" + Enter é
+  // continuação de linha) e o disco devolve "/handoff" para a bolha "/handoff \". As duas gêmeas
+  // têm que soltar igual — mesma tabela do `gate-barra-final.js`, comparada dos dois lados.
+  await rodarGrupo('barra-final', async () => {
+    const abasLib = require('../lib/abas');
+    for (const [doDisco, enviadoTabela] of [
+      ['/handoff', '/handoff \\'], ['colado', 'colado\\'], ['eco duplo \\', 'eco duplo \\\\'], ['a\nb', 'a\nb \\'],
+      ['rascunho/handoff', '/handoff \\'], ['rascunho colado\\', 'colado\\'], ['alfa\nbeta\\', 'alfa\n\nbeta\\'],
+      ['ab', 'a\\b'], ['eco duplo', 'eco duplo \\\\'], ['x', '\\'], ['/handoff', '/handoff \\ x'],
+    ]) {
+      tudoOk &= ok(env.casaComEnviado(doDisco, enviadoTabela) === abasLib.casaComEnviado(doDisco, enviadoTabela),
+        `paridade: casaComEnviado(${JSON.stringify(doDisco)}, ${JSON.stringify(enviadoTabela)}) igual nos dois lados`);
+    }
+    fitaEnv.filhos = [];
+    env.marcarPendente(env.bolha('bolha-eu', '/handoff \\'), '/handoff \\');
+    env.aplicar({ tipo: 'humano', texto: '/handoff' });
+    tudoOk &= ok(bolhasDe(fitaEnv).length === 1 && !fitaEnv.filhos.some((f) => String(f.className).includes('bolha-pendente')),
+      'eco "/handoff" (a TUI comeu a "\\") solta a pendente "/handoff \\" — uma bolha só, sem bolha-pendente');
+    fitaEnv.filhos = [];
+    const meio = env.marcarPendente(env.bolha('bolha-eu', 'a\\b'), 'a\\b');
+    env.aplicar({ tipo: 'humano', texto: 'ab' });
+    tudoOk &= ok(String(meio.className).includes('bolha-pendente'),
+      '"\\" no meio continua contando: a pendente "a\\b" NÃO solta com o eco "ab"');
+    // Esvazia a fila do teste negativo: a pendente "a\b" não pode sobrar para o grupo seguinte.
+    env.aplicar({ tipo: 'humano', texto: 'a\\b' });
+  });
+
   // ── Hora das mensagens dentro da conversa ────────────────────────────────────
   //
   // O dado sempre existiu (`timestamp` em cada linha do .jsonl) e era descartado. O que
@@ -1972,6 +2030,773 @@ async function parteA() {
       && chavesDe(avisos).join(',') === 'av-lida,av-ocupada,av-nova,av-pergunta,av-nascendo,av-falhou',
       'LC-6: resolvida a pergunta, a linha perde o aviso e a ordem inteira continua a mesma');
 
+    // LC-SP — "livre · N agente(s) em background" (card trabalhando-nao-distingue-subagente).
+    let falharListaSp = false;
+    const spAbas = [
+      umaAba({ chave: 'sp-livre', sessaoId: 'sp-livre', rodando: false, emBackground: 1, atualizadoEm: 5000, lidoEm: 5000, terminouEm: 5000 }),
+      umaAba({ chave: 'sp-plural', sessaoId: 'sp-plural', rodando: false, emBackground: 3, atualizadoEm: 5000, lidoEm: 5000, terminouEm: 5000 }),
+      umaAba({ chave: 'sp-nao-lida', sessaoId: 'sp-nao-lida', rodando: false, emBackground: 1, atualizadoEm: 6000, lidoEm: 1000, terminouEm: 6000 }),
+      umaAba({ chave: 'sp-ocupada', sessaoId: 'sp-ocupada', rodando: true, emBackground: 0, atualizadoEm: 7000, lidoEm: 7000, terminouEm: 7000 }),
+    ];
+    const sp = carregarCliente({ guardado: memoria(), aoBuscar: (rota) => (
+      String(rota).startsWith('api/abas') ? (falharListaSp ? { abas: [] } : { abas: spAbas }) : { painel: true, jobs: [] }
+    ) });
+    await sp.carregarAbas();
+    const linhaSp = (chave) => listaDe(sp).querySelectorAll('.conversa-linha')
+      .find((l) => l.querySelector('.conversa')?.dataset.chave === chave);
+    const rodapeSp = (chave) => {
+      const linha = linhaSp(chave);
+      const rodape = linha && linha.querySelector('.conversa-rodape');
+      return rodape ? (rodape.querySelector('.conversa-estado')?.textContent ?? '') : null;
+    };
+    tudoOk &= ok(rodapeSp('sp-livre') === 'livre · 1 agente em background', `LC-SP: sp-livre → "livre · 1 agente em background" (${rodapeSp('sp-livre')})`);
+    tudoOk &= ok(rodapeSp('sp-plural') === 'livre · 3 agentes em background', `LC-SP: sp-plural → "livre · 3 agentes em background" (${rodapeSp('sp-plural')})`);
+    tudoOk &= ok(rodapeSp('sp-nao-lida') === 'te esperando · 1 agente em background', `LC-SP: sp-nao-lida → "te esperando · 1 agente em background" (${rodapeSp('sp-nao-lida')})`);
+    tudoOk &= ok(rodapeSp('sp-ocupada') === 'trabalhando', `LC-SP: sp-ocupada → "trabalhando" (${rodapeSp('sp-ocupada')})`);
+    tudoOk &= ok(linhaSp('sp-livre')?.dataset.estado === 'segundo-plano', `LC-SP: dataset.estado de sp-livre === "segundo-plano" (${linhaSp('sp-livre')?.dataset.estado})`);
+    const resumoSp = porIdDe(sp, 'vazio-resumo').textContent;
+    tudoOk &= ok(resumoSp.startsWith('1 trabalhando'), `LC-SP: resumo vazio conta só sp-ocupada como trabalhando (${resumoSp})`);
+
+    await sp.abrirAba('sp-livre');
+    const segundoPlanoSp = () => porIdDe(sp, 'chat-segundo-plano');
+    tudoOk &= ok(!segundoPlanoSp().hidden && segundoPlanoSp().textContent === 'livre · 1 agente em background',
+      `LC-SP: aba aberta → .chat-segundo-plano visível com "livre · 1 agente em background" (hidden=${segundoPlanoSp().hidden}, texto=${segundoPlanoSp().textContent})`);
+    // A lista falha com o painel ainda aberto (achado X1 do painel): `aba` chega `undefined` em
+    // `marcarSegundoPlano`, e nada pode lançar — o elemento só esconde.
+    falharListaSp = true;
+    let estourouNaListaVazia = false;
+    try { await sp.carregarAbas(); } catch { estourouNaListaVazia = true; }
+    tudoOk &= ok(!estourouNaListaVazia, 'LC-SP: lista vazia com painel aberto não lança (aba undefined no helper)');
+    tudoOk &= ok(Boolean(segundoPlanoSp().hidden), `LC-SP: lista vazia → .chat-segundo-plano some (hidden=${segundoPlanoSp().hidden})`);
+    falharListaSp = false;
+    await sp.carregarAbas();
+    tudoOk &= ok(!segundoPlanoSp().hidden, `LC-SP: lista normal de volta → .chat-segundo-plano reaparece (hidden=${segundoPlanoSp().hidden})`);
+    // O "trabalhando" do SSE manda sobre o rótulo de segundo plano (D-g).
+    sp.aplicar({ tipo: 'sincronizado', turnoEmAndamento: true });
+    tudoOk &= ok(Boolean(segundoPlanoSp().hidden), `LC-SP: marcarOcupado(painel, true) → .chat-segundo-plano some (hidden=${segundoPlanoSp().hidden})`);
+
+    tudoOk &= ok(typeof sp.estadoParaMatar === 'function', 'LC-SP: estadoParaMatar está exposta pelo cliente carregado');
+    if (typeof sp.estadoParaMatar === 'function') {
+      const confirmacaoSp = sp.estadoParaMatar(spAbas.find((a) => a.chave === 'sp-livre'));
+      tudoOk &= ok(confirmacaoSp.includes('1 agente em background'), `LC-SP: estadoParaMatar(sp-livre) menciona "1 agente em background" (${confirmacaoSp})`);
+    }
+
+    // ── SA — cartão vivo do sub-agente (card ver-os-subagentes-da-aba, spec/plano 2026-10-16) ──
+    //
+    // O cartão `Agent`/`Task` de uma fita de ABA ganha uma 2ª linha de estado (`.fer-agente`); o
+    // fim de uma tarefa em BACKGROUND chega pela notificação (`tarefa_fim`), nunca pelo
+    // `tool_result` (que só avisa o LANÇAMENTO); abrir o cartão busca os passos em
+    // `GET /api/subagente`. Cada caso usa seu PRÓPRIO `carregarCliente` (nenhum estado de
+    // agrupamento de ferramentas sobra de um caso para o outro) e roda dentro de `rodarGrupo`:
+    // uma asserção que ainda não existe (`.fer-agente`, `.subEl`, …) estoura com `TypeError` antes
+    // da implementação, e é assim que o gate nasce vermelho sem derrubar o arquivo inteiro.
+    console.log('\n  · SA: cartão vivo do sub-agente (card ver-os-subagentes-da-aba)');
+    // Corpo mínimo válido de `GET /api/subagente` — todo caso que ABRE um cartão precisa de uma
+    // resposta com esta forma, senão `desenharPassos` recebe `undefined`.
+    const respostaSubagentePadrao = () => ({
+      passos: [], total: 0, tipos: [], resposta: null, terminou: false, respostaCortada: false,
+      inicio: null, fim: null,
+    });
+    const respirarSA = () => new Promise((r) => setImmediate(r));
+    const aoBuscarAbasVazio = (rota) => (String(rota).startsWith('api/abas') ? { abas: [] } : { painel: true, jobs: [] });
+
+    await rodarGrupo('SA1-SA5/SA14-SA16: nascimento, resultado de fundo, turno_fim, tarefa_fim e expansão', async () => {
+      const pedidos = [];
+      let resposta = respostaSubagentePadrao();
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) { pedidos.push(r); return resposta; }
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      const base = Date.now();
+      const t1 = new Date(base - 12000).toISOString();
+
+      // SA1 — nascimento do cartão vivo.
+      cli.aplicar({
+        tipo: 'ferramenta', id: 'tu-1', nome: 'Agent',
+        entrada: { subagent_type: 'Explore', description: 'Mapear testes', prompt: '…', run_in_background: true },
+        t: t1,
+      });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="tu-1"]');
+      tudoOk &= ok(cartao.querySelector('.fer-nome').textContent === 'Explore',
+        `SA1: .fer-nome = Explore (${cartao.querySelector('.fer-nome').textContent})`);
+      tudoOk &= ok(cartao.querySelector('.fer-alvo').textContent === 'Mapear testes',
+        `SA1: .fer-alvo = Mapear testes (${cartao.querySelector('.fer-alvo').textContent})`);
+      tudoOk &= ok(cartao.dataset.agente === 'rodando', `SA1: data-agente="rodando" (${cartao.dataset.agente})`);
+      tudoOk &= ok(cartao.dataset.ferramenta === 'Agent', `SA1: data-ferramenta="Agent" (${cartao.dataset.ferramenta})`);
+      tudoOk &= ok(cartao.querySelector('.fer-agente').textContent.startsWith('rodando'),
+        `SA1: .fer-agente começa com "rodando" (${cartao.querySelector('.fer-agente').textContent})`);
+
+      // SA2 — resultado de fundo não marca ✓.
+      cli.aplicar({
+        tipo: 'resultado_ferramenta', id: 'tu-1', saida: 'Async agent launched…',
+        agente: { id: 'a1', fundo: true }, t: new Date(base).toISOString(),
+      });
+      tudoOk &= ok(cartao.dataset.estado === 'rodando', `SA2: continua rodando (${cartao.dataset.estado})`);
+      tudoOk &= ok(cartao.querySelector('.fer-estado').textContent !== '✓', 'SA2: .fer-estado não vira ✓');
+      tudoOk &= ok(cartao.dataset.fundo === '1', `SA2: data-fundo="1" (${cartao.dataset.fundo})`);
+      tudoOk &= ok(cartao.dataset.agenteId === 'a1', `SA2: data-agente-id="a1" (${cartao.dataset.agenteId})`);
+      // D93: o cartão de agente com `prompt` não tem mais o <pre> da entrada (virou o bloco pedido) — a intenção é
+      // a mesma: o lançamento de um background não escreve nada no cartão.
+      tudoOk &= ok(!textoDe(cartao).includes('Async agent launched'),
+        'SA2: o cartão NÃO ganha "Async agent launched"');
+      tudoOk &= ok(cartao.dataset.tFim === undefined, `SA2: sem data-t-fim (${cartao.dataset.tFim})`);
+
+      // SA3 — turno_fim não para o cartão de fundo.
+      cli.aplicar({ tipo: 'turno_fim', contexto: null });
+      tudoOk &= ok(cartao.dataset.estado === 'rodando' && cartao.dataset.agente === 'rodando',
+        `SA3: turno_fim não para o cartão de fundo (${cartao.dataset.estado}, ${cartao.dataset.agente})`);
+
+      // SA4 — tarefa_fim marca o fim de verdade. 65s depois de `t1` (base-12000), não de `base`.
+      const tFim = new Date(base + 53000).toISOString();
+      cli.aplicar({ tipo: 'tarefa_fim', tarefa: 'a1', id: 'tu-1', status: 'completed', t: tFim });
+      tudoOk &= ok(cartao.dataset.estado === 'feita', `SA4: data-estado="feita" (${cartao.dataset.estado})`);
+      tudoOk &= ok(cartao.querySelector('.fer-estado').textContent === '✓', 'SA4: .fer-estado = ✓');
+      tudoOk &= ok(cartao.querySelector('.fer-agente').textContent === 'terminou em 1min 5s',
+        `SA4: .fer-agente = "terminou em 1min 5s" (${cartao.querySelector('.fer-agente').textContent})`);
+      tudoOk &= ok(cartao.dataset.agente === 'terminou', `SA4: data-agente="terminou" (${cartao.dataset.agente})`);
+      tudoOk &= ok(cartao.dataset.tFim === tFim, `SA4: data-t-fim = o t da notificação (${cartao.dataset.tFim})`);
+
+      // SA5 — idempotência: repetir (ou contradizer) o tarefa_fim não muda nada.
+      cli.aplicar({ tipo: 'tarefa_fim', tarefa: 'a1', id: 'tu-1', status: 'completed', t: tFim });
+      cli.aplicar({ tipo: 'tarefa_fim', tarefa: 'a1', id: 'tu-1', status: 'failed', t: new Date(base + 70000).toISOString() });
+      tudoOk &= ok(cartao.dataset.estado === 'feita' && cartao.dataset.agente === 'terminou' && cartao.dataset.tFim === tFim,
+        'SA5: tarefa_fim repetido/contraditório é idempotente');
+
+      // SA14 — expandir: busca os passos e desenha resumo + resposta final.
+      const inicioSub = t1;
+      resposta = {
+        passos: [{ id: 'p1', nome: 'Bash', entrada: { command: 'npm test' }, estado: 'feita' }],
+        total: 12, tipos: [['Bash', 5], ['Read', 4], ['Grep', 3]], resposta: '**pronto**',
+        terminou: true, respostaCortada: false, inicio: inicioSub, fim: tFim,
+      };
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      const pedidoSA14 = pedidos.at(-1) || '';
+      tudoOk &= ok(pedidoSA14.startsWith('api/subagente?chave=') && pedidoSA14.includes('ferramenta=tu-1') && pedidoSA14.includes('id=a1'),
+        `SA14: a rota pedida é api/subagente?chave=…&ferramenta=tu-1&…id=a1 (${pedidoSA14})`);
+      tudoOk &= ok(cartao.subEl?.querySelector('.grupo-conta')?.textContent === '12 passos',
+        `SA14: .grupo-conta = "12 passos" (${cartao.subEl?.querySelector('.grupo-conta')?.textContent})`);
+      tudoOk &= ok((cartao.subEl?.querySelector('.grupo-tipos')?.textContent || '').includes('Bash ×5'),
+        `SA14: .grupo-tipos contém "Bash ×5" (${cartao.subEl?.querySelector('.grupo-tipos')?.textContent})`);
+      tudoOk &= ok(cartao.subEl?.querySelectorAll('.sub-passo').length === 1,
+        `SA14: um .sub-passo desenhado (${cartao.subEl?.querySelectorAll('.sub-passo').length})`);
+      const respostaEl = cartao.subEl?.querySelector('.sub-resposta');
+      tudoOk &= ok(Boolean(respostaEl), 'SA14: .sub-resposta existe (cartão terminou)');
+      const textoResposta = respostaEl ? textoDe(respostaEl) : '';
+      tudoOk &= ok(/pronto/.test(textoResposta) && !textoResposta.includes('**'),
+        `SA14: o markdown da resposta desenhou (${textoResposta})`);
+
+      // SA15 — terminou:false não mostra resposta.
+      resposta = { ...resposta, terminou: false };
+      cli.carregarPassos(painel, cartao);
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(!cartao.subEl.querySelector('.sub-resposta'), 'SA15: terminou:false → sem .sub-resposta');
+
+      // SA16 — respostaCortada avisa.
+      resposta = { ...resposta, terminou: true, respostaCortada: true };
+      cli.carregarPassos(painel, cartao);
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(/resposta cortada/.test(textoDe(cartao.subEl)), 'SA16: respostaCortada → aparece "resposta cortada"');
+    });
+
+    await rodarGrupo('SA6: síncrono com duracaoMs', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa6-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date(Date.now() - 3000).toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa6-tu', agente: { id: 'sa6-ag', fundo: false, duracaoMs: 4000 } });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa6-tu"]');
+      tudoOk &= ok(cartao.querySelector('.fer-estado').textContent === '✓' && cartao.querySelector('.fer-agente').textContent === 'terminou em 4s',
+        `SA6: síncrono → ✓, "terminou em 4s" (${cartao.querySelector('.fer-estado').textContent}, ${cartao.querySelector('.fer-agente').textContent})`);
+    });
+
+    await rodarGrupo('SA7: turno_fim no síncrono ainda rodando', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa7-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'turno_fim', contexto: null });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa7-tu"]');
+      tudoOk &= ok(cartao.dataset.estado === 'parada' && cartao.querySelector('.fer-agente').textContent === 'parado',
+        `SA7: turno_fim no síncrono → parada / "parado" (${cartao.dataset.estado}, ${cartao.querySelector('.fer-agente').textContent})`);
+    });
+
+    await rodarGrupo('SA8/SA28: D9 (sem evento.agente) e abrir não expande', async () => {
+      const pedidos = [];
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) { pedidos.push(r); return respostaSubagentePadrao(); }
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa8-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa8-tu', saida: 'resposta sem agente' });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa8-tu"]');
+      tudoOk &= ok(cartao.querySelector('.fer-estado').textContent === '✓',
+        `SA8 (D9): sem evento.agente → ✓ como hoje (${cartao.querySelector('.fer-estado').textContent})`);
+      tudoOk &= ok(cartao.querySelector('.fer-agente').hidden === true && cartao.dataset.agente === undefined,
+        `SA8 (D9): .fer-agente escondido e data-agente removido (hidden=${cartao.querySelector('.fer-agente').hidden}, agente=${cartao.dataset.agente})`);
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(pedidos.length === 0, `SA28: D9 + abrir o cartão não pede api/subagente (pedidos=${pedidos.length})`);
+    });
+
+    await rodarGrupo('SA9: failed/killed em cartões de fundo', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      const base = Date.now();
+      const tIni = new Date(base - 20000).toISOString();
+      const tFim = new Date(base).toISOString();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa9-fail', nome: 'Agent', entrada: { description: 'x', run_in_background: true }, t: tIni });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa9-fail', agente: { id: 'sa9-fail-ag', fundo: true } });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa9-kill', nome: 'Agent', entrada: { description: 'y', run_in_background: true }, t: tIni });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa9-kill', agente: { id: 'sa9-kill-ag', fundo: true } });
+      cli.aplicar({ tipo: 'tarefa_fim', id: 'sa9-fail', tarefa: 'sa9-fail-ag', status: 'failed', t: tFim });
+      cli.aplicar({ tipo: 'tarefa_fim', id: 'sa9-kill', tarefa: 'sa9-kill-ag', status: 'killed', t: tFim });
+      const cartaoFail = painel.fita.querySelector('[data-ferramenta-id="sa9-fail"]');
+      const cartaoKill = painel.fita.querySelector('[data-ferramenta-id="sa9-kill"]');
+      tudoOk &= ok(cartaoFail.querySelector('.fer-estado').textContent === '✕' && cartaoFail.querySelector('.fer-agente').textContent.startsWith('falhou em'),
+        `SA9: failed → ✕ "falhou em …" (${cartaoFail.querySelector('.fer-agente').textContent})`);
+      tudoOk &= ok(cartaoKill.querySelector('.fer-estado').textContent === '—' && cartaoKill.querySelector('.fer-agente').textContent.startsWith('parado em'),
+        `SA9: killed → — "parado em …" (${cartaoKill.querySelector('.fer-agente').textContent})`);
+    });
+
+    await rodarGrupo('SA10: paginação — tarefa_fim chega antes do cartão existir', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      const base = Date.now();
+      cli.aplicar({ tipo: 'tarefa_fim', id: 'sa10-tu', tarefa: 'sa10-ag', status: 'completed', t: new Date(base).toISOString() });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa10-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date(base - 5000).toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa10-tu"]');
+      tudoOk &= ok(cartao.dataset.agente === 'rodando', `SA10: nasce rodando — sem resultado não dá para saber se é fundo (${cartao.dataset.agente})`);
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa10-tu', agente: { id: 'sa10-ag', fundo: true } });
+      tudoOk &= ok(cartao.dataset.agente === 'terminou' && cartao.querySelector('.fer-estado').textContent === '✓',
+        `SA10: o cartão termina com ✓ (agente=${cartao.dataset.agente}, estado=${cartao.querySelector('.fer-estado').textContent})`);
+    });
+
+    await rodarGrupo('SA11: paginação extrema — resultado e fim antes do cartão existir', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      const base = Date.now();
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa11-tu', agente: { id: 'sa11-ag', fundo: true } });
+      cli.aplicar({ tipo: 'tarefa_fim', id: 'sa11-tu', tarefa: 'sa11-ag', status: 'completed', t: new Date(base).toISOString() });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa11-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date(base - 5000).toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa11-tu"]');
+      tudoOk &= ok(cartao.dataset.agente === 'terminou' && cartao.querySelector('.fer-estado').textContent === '✓',
+        `SA11: o cartão NASCE terminado (agente=${cartao.dataset.agente})`);
+    });
+
+    await rodarGrupo('SA12: o grupo conta pelo NOME da ferramenta, não pelo subagent_type', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa12-bash', nome: 'Bash', entrada: { command: 'ls' }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa12-agent', nome: 'Agent', entrada: { subagent_type: 'Explore', description: 'x' }, t: new Date().toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa12-agent"]');
+      const grupo = cartao.grupo;
+      tudoOk &= ok(Boolean(grupo), 'SA12: o segundo cartão entrou num grupo');
+      const textoTipos = grupo?.resumo?.tipos?.textContent || '';
+      tudoOk &= ok(textoTipos.includes('Agent') && !textoTipos.includes('Explore'),
+        `SA12: o resumo do grupo lista "Agent" (${textoTipos})`);
+    });
+
+    await rodarGrupo('SA13: painel de JOB não ganha .fer-agente', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painelJob = cli.criarPainel('job-sa13', undefined);
+      cli.focar(painelJob);
+      cli.aplicar({ tipo: 'ferramenta', id: 'j-sa13', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      const cartao = painelJob.fita.querySelector('[data-ferramenta-id="j-sa13"]');
+      tudoOk &= ok(!cartao.querySelector('.fer-agente'), 'SA13: painel de JOB não ganha .fer-agente');
+      tudoOk &= ok(cartao.querySelector('.fer-nome').textContent === 'Agent',
+        `SA13: .fer-nome = "Agent" (sem subagent_type) (${cartao.querySelector('.fer-nome').textContent})`);
+    });
+
+    await rodarGrupo('SA17: o relógio de 1s nasce e morre com o cartão rodando', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      tudoOk &= ok(cli.relogios.size === 1, `SA17: sem agente nenhum, só o relógio da lista (${cli.relogios.size})`);
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa17-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      tudoOk &= ok(cli.relogios.size === 2, `SA17: com um agente rodando, nasce o relógio dos agentes também (${cli.relogios.size})`);
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa17-tu', agente: { id: 'sa17-ag', fundo: false, duracaoMs: 1000 } });
+      tudoOk &= ok(cli.relogios.size === 1, `SA17: terminando o único agente, o relógio dos agentes morre (${cli.relogios.size})`);
+    });
+
+    await rodarGrupo('SA18: o rótulo tocável rola até o cartão de fundo rodando', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa18-tu', nome: 'Agent', entrada: { description: 'x', run_in_background: true }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa18-tu', agente: { id: 'sa18-ag', fundo: true } });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa18-tu"]');
+      porIdDe(cli, 'chat-segundo-plano').disparar('click', {});
+      tudoOk &= ok(cli.rolagens.at(-1) === cartao, 'SA18: rolagens termina com o cartão de fundo rodando');
+      tudoOk &= ok(String(cartao.className).includes('destaque'), `SA18: o cartão ganha a classe destaque (${cartao.className})`);
+    });
+
+    await rodarGrupo('SA19: grupo aberto pelo dono não fecha por cima dele', async () => {
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) return respostaSubagentePadrao();
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa19-b', nome: 'Bash', entrada: { command: 'x' }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa19-a', nome: 'Agent', entrada: { description: 'y', run_in_background: true }, t: new Date().toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa19-a"]');
+      cartao.open = true;
+      cartao.filhos[0].disparar('click', {}); // clique de verdade no summary — marca o grupo tocado
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa19-b', saida: 'ok' });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa19-a', agente: { id: 'sa19-ag', fundo: true } });
+      cli.aplicar({ tipo: 'texto', texto: 'oi' }); // encerra o grupo (não é NEUTRO)
+      cli.aplicar({ tipo: 'tarefa_fim', id: 'sa19-a', tarefa: 'sa19-ag', status: 'completed', t: new Date().toISOString() });
+      tudoOk &= ok(cartao.grupo.el.open === true, 'SA19: grupo tocado pelo dono continua aberto mesmo depois do fim');
+    });
+
+    await rodarGrupo('SA20: fora de ordem — a resposta mais nova é quem pinta', async () => {
+      let resolver1, resolver2;
+      const prom1 = new Promise((r) => { resolver1 = r; });
+      const prom2 = new Promise((r) => { resolver2 = r; });
+      let chamada = 0;
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) {
+            chamada += 1;
+            return chamada === 1
+              ? prom1.then(() => ({ passos: [{ id: 'p1', nome: 'Bash', entrada: { command: 'velho' }, estado: 'feita' }], total: 1, tipos: [['Bash', 1]], resposta: null, terminou: false, respostaCortada: false }))
+              : prom2.then(() => ({ passos: [{ id: 'p2', nome: 'Read', entrada: { file_path: 'novo' }, estado: 'feita' }], total: 1, tipos: [['Read', 1]], resposta: null, terminou: false, respostaCortada: false }));
+          }
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa20-tu', nome: 'Agent', entrada: { description: 'x', run_in_background: true }, t: new Date().toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa20-tu"]');
+      cartao.open = true;
+      cartao.disparar('toggle', {});          // pedido #1 em voo
+      cli.carregarPassos(painel, cartao);     // pedido #2 em voo
+      resolver2();
+      await respirarSA(); await respirarSA();
+      resolver1();
+      await respirarSA(); await respirarSA();
+      const passo = cartao.subEl?.querySelector('.sub-passo');
+      tudoOk &= ok(passo?.querySelector('.fer-nome')?.textContent === 'Read',
+        `SA20: a resposta do pedido 2 (mais novo) é quem pinta, mesmo chegando o 1 depois (${passo?.querySelector('.fer-nome')?.textContent})`);
+    });
+
+    // Painel de EXECUÇÃO (16/10, Codex [Média]): dois pedidos em voo (abrir → fechar → reabrir) agendavam DOIS
+    // timers de 5 s, e fechar só cancelava um. Só o pedido MAIS NOVO agenda, e agendar cancela o anterior.
+    await rodarGrupo('SA29: dois pedidos em voo deixam UM timer de 5s, e fechar zera', async () => {
+      const resolvedores = [];
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) return new Promise((ok2) => { resolvedores.push(() => ok2(respostaSubagentePadrao())); });
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa29-tu', nome: 'Agent', entrada: { description: 'x', run_in_background: true }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa29-tu', agente: { id: 'sa29-ag', fundo: true } });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa29-tu"]');
+      cartao.open = true; cartao.disparar('toggle', {});   // pedido 1
+      cartao.open = false; cartao.disparar('toggle', {});
+      cartao.open = true; cartao.disparar('toggle', {});   // pedido 2
+      for (const r of resolvedores) r();
+      await respirarSA(); await respirarSA();
+      const timers = () => [...cli.temporizadores.values()].filter((t) => t.ms === 5000).length;
+      tudoOk &= ok(timers() === 1, `SA29: UM timer de 5s com o cartão aberto (${timers()})`);
+      cartao.open = false; cartao.disparar('toggle', {});
+      tudoOk &= ok(timers() === 0, `SA29: fechar o cartão não deixa timer de 5s (${timers()})`);
+    });
+
+    // O segundo sinal positivo (spec §5): cartão de fundo rodando + o arquivo do sub-agente diz `terminou`.
+    await rodarGrupo('SA30: abrir um cartão de fundo cujo arquivo terminou dá ✓', async () => {
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) return { ...respostaSubagentePadrao(), terminou: true, fim: new Date().toISOString() };
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa30-tu', nome: 'Agent', entrada: { description: 'x', run_in_background: true }, t: new Date(Date.now() - 60000).toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa30-tu', agente: { id: 'sa30-ag', fundo: true } });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa30-tu"]');
+      cartao.open = true; cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(cartao.dataset.agente === 'terminou' && cartao.dataset.estado === 'feita',
+        `SA30: o terminou do arquivo fecha o cartão de fundo (agente=${cartao.dataset.agente}, estado=${cartao.dataset.estado})`);
+    });
+
+    // Painel de EXECUÇÃO (16/10, Codex [Baixa]): resposta que volta DEPOIS de a fita ser trocada não pinta nada.
+    await rodarGrupo('SA31: resposta que chega depois da fita limpa não pinta nem agenda', async () => {
+      let soltar;
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) return new Promise((ok2) => { soltar = () => ok2(respostaSubagentePadrao()); });
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      await cli.carregarAbas();
+      await cli.abrirAba('aba-7');
+      const es = cli.fluxos.at(-1);
+      mandarEvento(es, { tipo: 'sessao', meta: { sessaoId: 'sess-31', titulo: 't', cwd: '/x', contexto: null } });
+      mandarEvento(es, { tipo: 'sincronizado', turnoEmAndamento: false });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa31-tu', nome: 'Agent', entrada: { description: 'x', run_in_background: true }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa31-tu', agente: { id: 'sa31-ag', fundo: true } });
+      const painel = cli.painelAtual();
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa31-tu"]');
+      cartao.open = true; cartao.disparar('toggle', {});
+      const antes = cartao.subEl?.textContent;
+      mandarEvento(es, { tipo: 'sessao', meta: { sessaoId: 'sess-31b', titulo: 't', cwd: '/x', contexto: null } });
+      mandarEvento(es, { tipo: 'sincronizado', turnoEmAndamento: false });
+      soltar();
+      await respirarSA(); await respirarSA();
+      const timers = [...cli.temporizadores.values()].filter((t) => t.ms === 5000).length;
+      tudoOk &= ok(cartao.subEl?.textContent === antes && timers === 0,
+        `SA31: nada pintado (${cartao.subEl?.textContent === antes}) e nenhum timer (${timers}) depois da fita trocada`);
+    });
+
+    await rodarGrupo('SA21: dois painéis — a rota pedida usa a chave do painel DO CARTÃO', async () => {
+      const pedidos = [];
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) { pedidos.push(r); return respostaSubagentePadrao(); }
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painelA = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa21-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      const painelB = cli.criarPainel('aba-sa21b', {});
+      cli.focar(painelB);
+      cli.aplicar({ tipo: 'turno_fim', contexto: null }); // evento qualquer em B — P passa a ser B
+      const cartao = painelA.fita.querySelector('[data-ferramenta-id="sa21-tu"]');
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      const pedido = pedidos.at(-1) || '';
+      tudoOk &= ok(pedido.includes(`chave=${encodeURIComponent(painelA.chave)}`),
+        `SA21: a rota pedida usa a chave do painel A, mesmo com B focado (${pedido})`);
+    });
+
+    await rodarGrupo('SA22: síncrono com o cartão aberto pede os passos de novo na conclusão', async () => {
+      const pedidos = [];
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) { pedidos.push(r); return respostaSubagentePadrao(); }
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa22-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa22-tu"]');
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      const antes = pedidos.length;
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa22-tu', agente: { id: 'sa22-ag', fundo: false, duracaoMs: 2000 } });
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(pedidos.length === antes + 1,
+        `SA22: UM pedido a mais na conclusão (antes=${antes}, depois=${pedidos.length})`);
+    });
+
+    await rodarGrupo('SA23: 409 na rota pinta "a conversa mudou" e não agenda recarga', async () => {
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) return { __status: 409, erro: 'a conversa mudou' };
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa23-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa23-tu"]');
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(cartao.subEl?.textContent === 'a conversa mudou',
+        `SA23: 409 pinta "a conversa mudou" (${cartao.subEl?.textContent})`);
+      const temTimer5s = [...cli.temporizadores.values()].some((t) => t.ms === 5000);
+      tudoOk &= ok(!temTimer5s, 'SA23: nenhum setTimeout de 5000ms fica agendado depois do 409');
+    });
+
+    await rodarGrupo('SA24: fita limpa (sessão nova) — o timer de 5s pré-limpeza não pede nada', async () => {
+      const pedidos = [];
+      let respostaHistorico = null;
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/subagente')) { pedidos.push(r); return respostaSubagentePadrao(); }
+          if (r.startsWith('api/historico')) return respostaHistorico;
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      await cli.carregarAbas();
+      await cli.abrirAba('aba-7');
+      const es = cli.fluxos.at(-1);
+      mandarEvento(es, { tipo: 'sessao', meta: { sessaoId: 'sess-24', titulo: 't', cwd: '/x', contexto: null } });
+      mandarEvento(es, { tipo: 'sincronizado', turnoEmAndamento: false });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa24-tu', nome: 'Agent', entrada: { description: 'x' }, t: new Date().toISOString() });
+      const painel = cli.painelAtual();
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa24-tu"]');
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(pedidos.length === 1, `SA24: pedido inicial saiu (${pedidos.length})`);
+      const [idTimer] = [...cli.temporizadores.entries()].find(([, tm]) => tm.ms === 5000) || [];
+      tudoOk &= ok(idTimer !== undefined, 'SA24: o timer de 5s estava agendado');
+      mandarEvento(es, { tipo: 'sessao', meta: { sessaoId: 'sess-24b', titulo: 't', cwd: '/x', contexto: null } });
+      mandarEvento(es, { tipo: 'sincronizado', turnoEmAndamento: false });
+      cli.temporizadores.get(idTimer)?.fn?.();
+      await respirarSA(); await respirarSA();
+      tudoOk &= ok(pedidos.length === 1, `SA24: NENHUM pedido novo depois do timer disparar pós-limpeza (${pedidos.length})`);
+    });
+
+    await rodarGrupo('SA26: o grupo encerrado continua aberto até o fim de verdade', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa26-b', nome: 'Bash', entrada: { command: 'x' }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa26-a', nome: 'Agent', entrada: { description: 'y', run_in_background: true }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa26-b', saida: 'ok' });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa26-a', agente: { id: 'sa26-ag', fundo: true } });
+      const cartao = painel.fita.querySelector('[data-ferramenta-id="sa26-a"]');
+      const grupo = cartao.grupo;
+      cli.aplicar({ tipo: 'texto', texto: 'oi' }); // encerra sem toque do dono
+      tudoOk &= ok(grupo.el.open === true && grupo.resumo.estado.textContent === '●',
+        `SA26: antes do fim o grupo continua ABERTO com ● (open=${grupo.el.open}, estado=${grupo.resumo.estado.textContent})`);
+      cli.aplicar({ tipo: 'tarefa_fim', id: 'sa26-a', tarefa: 'sa26-ag', status: 'completed', t: new Date().toISOString() });
+      tudoOk &= ok(grupo.el.open === false, `SA26: depois do fim de verdade o grupo fecha sozinho (open=${grupo.el.open})`);
+    });
+
+    await rodarGrupo('SA27: o relógio não morre durante o lote antigo (histórico paginado)', async () => {
+      let respostaHistorico = null;
+      const cli = carregarCliente({
+        aoBuscar: (rota) => {
+          const r = String(rota);
+          if (r.startsWith('api/historico')) return respostaHistorico;
+          return aoBuscarAbasVazio(r);
+        },
+      });
+      const painel = cli.painelAtual();
+      cli.aplicar({ tipo: 'ferramenta', id: 'sa27-tu', nome: 'Agent', entrada: { description: 'rodando', run_in_background: true }, t: new Date().toISOString() });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sa27-tu', agente: { id: 'sa27-ag', fundo: true } });
+      tudoOk &= ok(cli.relogios.size === 2, `SA27: o relógio dos agentes nasce com o de fundo rodando (${cli.relogios.size})`);
+      painel.inicioDoHistorico = 50;
+      respostaHistorico = {
+        cortado: true, inicio: 0,
+        eventos: [
+          { tipo: 'ferramenta', id: 'sa27-velho', nome: 'Agent', entrada: { description: 'velho' }, t: new Date(Date.now() - 60000).toISOString() },
+          { tipo: 'resultado_ferramenta', id: 'sa27-velho', agente: { id: 'sa27-velho-ag', fundo: false, duracaoMs: 500 } },
+        ],
+      };
+      await cli.carregarMaisHistorico(painel);
+      tudoOk &= ok(cli.relogios.size === 2,
+        `SA27: o relógio continua vivo depois do lote antigo (${cli.relogios.size})`);
+      const cartaoDeCima = painel.fita.querySelector('[data-ferramenta-id="sa27-tu"]');
+      tudoOk &= ok(cartaoDeCima.dataset.agente === 'rodando',
+        `SA27: o cartão de cima segue rodando (${cartaoDeCima.dataset.agente})`);
+    });
+
+    await rodarGrupo('SA25: aria-label e role do rótulo tocável', async () => {
+      const cli = carregarCliente({ aoBuscar: aoBuscarAbasVazio });
+      const rotulo = porIdDe(cli, 'chat-segundo-plano');
+      tudoOk &= ok(rotulo.getAttribute('aria-label') === 'Ir até o agente que está rodando',
+        `SA25: aria-label = "Ir até o agente que está rodando" (${rotulo.getAttribute('aria-label')})`);
+      tudoOk &= ok(rotulo.getAttribute('role') === 'button', `SA25: role="button" (${rotulo.getAttribute('role')})`);
+    });
+
+    // ── SL — cartão do sub-agente legível (card subagente-cartao-legivel, D93) ──
+    //
+    // Sobre a D86: o resumo dos passos vira BOTÃO que recolhe só a lista (nasce recolhida; a escolha sobrevive à
+    // recarga de 5 s, a fechar/reabrir o cartão, e o foco também), e o <pre> JSON da entrada vira o bloco "pedido"
+    // (description + extras ligados + markdown do prompt + corte MEDIDO). Job e Bash continuam no <pre>. Cada caso
+    // com seu `carregarCliente`: um segundo `Agent` no mesmo cliente entraria num grupo e mudaria o pai do cartão.
+    console.log('\n  · SL: cartão do sub-agente legível (card subagente-cartao-legivel)');
+    const PROMPT_SL = ['Mapeia os testes da fita.', '', '## Antes de tudo, leia', '- `DECISOES.md` (D86)',
+      '- `ARMADILHAS.md`', '', 'Responda **direto**.'].join('\n');
+    const respostaSL = () => ({
+      passos: [{ id: 'p1', nome: 'Bash', entrada: { command: 'npm test' }, estado: 'feita' }],
+      total: 1, tipos: [['Bash', 1]], resposta: '**pronto**', terminou: true, respostaCortada: false,
+      inicio: null, fim: null,
+    });
+    const clienteSL = () => carregarCliente({
+      aoBuscar: (rota) => (String(rota).startsWith('api/subagente') ? respostaSL() : aoBuscarAbasVazio(String(rota))),
+    });
+    const agenteSL = (cli, id, entrada) => {
+      cli.aplicar({ tipo: 'ferramenta', id, nome: 'Agent', entrada, t: new Date().toISOString() });
+      return cli.painelAtual().fita.querySelector(`[data-ferramenta-id="${id}"]`);
+    };
+    const abrirCartaoSL = async (cartao) => {
+      cartao.open = true;
+      cartao.disparar('toggle', {});
+      await respirarSA(); await respirarSA();
+    };
+
+    await rodarGrupo('SL1: o pedido formatado no lugar do JSON cru', async () => {
+      const cli = clienteSL();
+      const cartao = agenteSL(cli, 'sl1', { subagent_type: 'Explore', description: 'Mapear testes', prompt: PROMPT_SL });
+      const pedido = cartao.querySelector('.sub-pedido');
+      tudoOk &= ok(Boolean(pedido), 'SL1: o cartão de agente da aba tem .sub-pedido');
+      tudoOk &= ok(achar(cartao, 'pre').length === 0, `SL1: nenhum <pre> no cartão (${achar(cartao, 'pre').length})`);
+      tudoOk &= ok(pedido.querySelector('.sub-pedido-rotulo').textContent === 'pedido',
+        `SL1: rótulo "pedido" (${pedido.querySelector('.sub-pedido-rotulo').textContent})`);
+      tudoOk &= ok(pedido.querySelector('.sub-pedido-titulo').textContent === 'Mapear testes',
+        `SL1: título = description (${pedido.querySelector('.sub-pedido-titulo').textContent})`);
+      const corpo = pedido.querySelector('.sub-pedido-corpo');
+      tudoOk &= ok(achar(corpo, 'h3').length === 1 && achar(corpo, 'li').length === 2 && achar(corpo, 'strong').length === 1,
+        `SL1: markdown desenhado — h3=${achar(corpo, 'h3').length} li=${achar(corpo, 'li').length} strong=${achar(corpo, 'strong').length}`);
+      const texto = textoDe(cartao);
+      tudoOk &= ok(!texto.includes('\\n') && !texto.includes('"prompt"') && !texto.includes('**') && !texto.includes('## '),
+        `SL1: nada de JSON nem marcação crua no cartão (${texto.slice(0, 120)})`);
+    });
+
+    await rodarGrupo('SL2: extras ligados, description ausente e troca de idioma ao vivo', async () => {
+      const cli = clienteSL();
+      const cartao = agenteSL(cli, 'sl2', { subagent_type: 'Explore', description: 'x', prompt: 'oi', run_in_background: true, model: 'sonnet' });
+      const extras = cartao.querySelector('.sub-pedido-extras');
+      tudoOk &= ok(extras.textContent === 'em background · model: sonnet', `SL2: extras = "em background · model: sonnet" (${extras.textContent})`);
+      try {
+        cli.cockpitI18n.definir('en');
+        tudoOk &= ok(extras.textContent === 'in background · model: sonnet',
+          `SL2: em inglês a linha troca ao vivo (${extras.textContent})`);
+        tudoOk &= ok(cartao.querySelector('.sub-pedido-rotulo').textContent === 'request',
+          `SL2: rótulo em inglês = "request" (${cartao.querySelector('.sub-pedido-rotulo').textContent})`);
+      } finally {
+        cli.cockpitI18n.definir('pt-BR');
+      }
+      const c2 = agenteSL(clienteSL(), 'sl2b', { description: 'y', prompt: 'oi', run_in_background: false });
+      tudoOk &= ok(!c2.querySelector('.sub-pedido-extras'), 'SL2: run_in_background:false sozinho → sem linha de extras');
+      const c3 = agenteSL(clienteSL(), 'sl2c', { description: 'z', prompt: 'oi', run_in_background: 'false', model: '' });
+      tudoOk &= ok(!c3.querySelector('.sub-pedido-extras'), 'SL2: "false" e "" → sem linha de extras');
+      const c4 = agenteSL(clienteSL(), 'sl2d', { prompt: 'só o prompt' });
+      tudoOk &= ok(!c4.querySelector('.sub-pedido-titulo') && textoDe(c4.querySelector('.sub-pedido-corpo')).includes('só o prompt'),
+        'SL2: prompt sem description → sem título, corpo presente');
+    });
+
+    await rodarGrupo('SL3/SL4: a lista nasce recolhida; toque, recarga, reabrir e foco respeitam a escolha', async () => {
+      const cli = clienteSL();
+      const painel = cli.painelAtual();
+      const cartao = agenteSL(cli, 'sl3', { description: 'x', prompt: 'oi' });
+      await abrirCartaoSL(cartao);
+      const resumo = () => cartao.subEl.querySelector('.sub-resumo');
+      const lista = () => cartao.subEl.querySelector('.sub-passos');
+      const recarregar = async () => { cli.carregarPassos(painel, cartao); await respirarSA(); await respirarSA(); };
+      tudoOk &= ok(resumo().getAttribute('aria-expanded') === 'false' && lista().hidden === true,
+        `SL3: nasce recolhida (aria-expanded=${resumo().getAttribute('aria-expanded')}, hidden=${lista().hidden})`);
+      tudoOk &= ok(lista().querySelectorAll('.sub-passo').length === 1, 'SL3: o passo existe dentro da lista recolhida');
+      tudoOk &= ok(Boolean(cartao.subEl.querySelector('.sub-resposta')) && !lista().querySelector('.sub-resposta'),
+        'SL3: a resposta final fica FORA da lista (visível com a lista recolhida)');
+      resumo().disparar('click', {});
+      tudoOk &= ok(resumo().getAttribute('aria-expanded') === 'true' && lista().hidden === false, 'SL4: o toque abre na hora');
+      await recarregar();
+      tudoOk &= ok(resumo().getAttribute('aria-expanded') === 'true' && lista().hidden === false, 'SL4: a recarga mantém aberta');
+      resumo().disparar('click', {});
+      await recarregar();
+      tudoOk &= ok(resumo().getAttribute('aria-expanded') === 'false' && lista().hidden === true, 'SL4: recolhida de novo sobrevive à recarga');
+      const antigo = resumo();
+      antigo.focus();
+      await recarregar();
+      tudoOk &= ok(resumo() !== antigo && cli.document.activeElement === resumo(),
+        'SL4: o foco passa para o resumo NOVO depois da recarga');
+      resumo().disparar('click', {});
+      cartao.open = false;
+      cartao.disparar('toggle', {});
+      await abrirCartaoSL(cartao);
+      tudoOk &= ok(lista().hidden === false, 'SL4: fechar e reabrir o cartão mantém a lista aberta');
+    });
+
+    await rodarGrupo('SL5/SL6/SL11: job, Bash e Agent sem prompt continuam no <pre>', async () => {
+      const cli = clienteSL();
+      const painelJob = cli.criarPainel('job-sl5', undefined);
+      cli.focar(painelJob);
+      cli.aplicar({ tipo: 'ferramenta', id: 'j-sl5', nome: 'Agent', entrada: { description: 'x', prompt: PROMPT_SL }, t: new Date().toISOString() });
+      const cartaoJob = painelJob.fita.querySelector('[data-ferramenta-id="j-sl5"]');
+      tudoOk &= ok(!cartaoJob.querySelector('.sub-pedido') && (achar(cartaoJob, 'pre')[0]?.textContent || '').includes('"prompt"'),
+        'SL5: Agent em painel de JOB segue com o <pre> JSON e sem .sub-pedido');
+      const cli2 = clienteSL();
+      cli2.aplicar({ tipo: 'ferramenta', id: 'b-sl6', nome: 'Bash', entrada: { command: 'npm test' }, t: new Date().toISOString() });
+      const cartaoBash = cli2.painelAtual().fita.querySelector('[data-ferramenta-id="b-sl6"]');
+      tudoOk &= ok(!cartaoBash.querySelector('.sub-pedido') && achar(cartaoBash, 'pre')[0]?.textContent === 'npm test',
+        'SL6: Bash segue com o <pre> do comando');
+      // L6 (painel do plano r1, Claude #2): Agent de ABA sem `prompt` string não afirma formato — fica no <pre>.
+      const semPrompt = agenteSL(clienteSL(), 'sl11', { description: 'x' });
+      tudoOk &= ok(!semPrompt.querySelector('.sub-pedido') && (achar(semPrompt, 'pre')[0]?.textContent || '').includes('"description"'),
+        'SL11: Agent da aba sem prompt segue com o <pre> JSON e sem .sub-pedido');
+    });
+
+    await rodarGrupo('SL7: texto hostil no pedido não vira nó', async () => {
+      const cli = clienteSL();
+      const cartao = agenteSL(cli, 'sl7', {
+        description: '<b>t</b>',
+        prompt: 'Olha <img src=x onerror="alert(1)"> e <script>alert(2)</script> e [x](javascript:alert(3))',
+      });
+      tudoOk &= ok(['img', 'script', 'a', 'b'].every((tag) => achar(cartao, tag).length === 0),
+        'SL7: nenhum nó img/script/a/b nasceu do texto do pedido');
+      tudoOk &= ok(textoDe(cartao).includes('<img src=x onerror="alert(1)">') && textoDe(cartao).includes('<b>t</b>'),
+        'SL7: o texto hostil aparece como texto');
+    });
+
+    await rodarGrupo('SL8: o botão de corte só existe quando o corte existe (medido)', async () => {
+      const cli = clienteSL();
+      const cartao = agenteSL(cli, 'sl8', { description: 'x', prompt: 'longo' });
+      const pedido = cartao.querySelector('.sub-pedido');
+      const corpo = pedido.querySelector('.sub-pedido-corpo');
+      tudoOk &= ok(pedido.dataset.recolhido === '1' && !pedido.querySelector('.sub-pedido-mais'),
+        'SL8: nasce limitado e sem botão (ninguém mediu ainda)');
+      // O DOM de mentira não faz layout: quem escreve as alturas é o teste. clientHeight 0 = sem layout.
+      await abrirCartaoSL(cartao);
+      tudoOk &= ok(!pedido.dataset.medido && !pedido.querySelector('.sub-pedido-mais'), 'SL8: sem layout não mede');
+      cartao.open = false;
+      cartao.disparar('toggle', {});
+      corpo.scrollHeight = 600;
+      corpo.clientHeight = 216;
+      await abrirCartaoSL(cartao);
+      const mais = pedido.querySelector('.sub-pedido-mais');
+      tudoOk &= ok(pedido.dataset.cortado === '1' && Boolean(mais), 'SL8: corte medido → data-cortado + botão');
+      tudoOk &= ok(mais.textContent === 'mostrar o pedido inteiro', `SL8: texto do botão (${mais.textContent})`);
+      mais.disparar('click', {});
+      tudoOk &= ok(pedido.dataset.recolhido === undefined && pedido.dataset.cortado === undefined && !pedido.querySelector('.sub-pedido-mais'),
+        'SL8: o toque solta o pedido inteiro e o botão some');
+      const c2 = agenteSL(clienteSL(), 'sl8b', { description: 'x', prompt: 'curto' });
+      const p2 = c2.querySelector('.sub-pedido');
+      const corpo2 = p2.querySelector('.sub-pedido-corpo');
+      corpo2.scrollHeight = 100;
+      corpo2.clientHeight = 100;
+      await abrirCartaoSL(c2);
+      tudoOk &= ok(!p2.querySelector('.sub-pedido-mais') && p2.dataset.recolhido === undefined,
+        'SL8: cabe → sem botão e sem limite');
+    });
+
+    await rodarGrupo('SL9/SL10: D9 com pedido e o ponto de inserção dos passos', async () => {
+      const cli = clienteSL();
+      const comCerca = `${PROMPT_SL}\n\n\`\`\`sh\nnpm test\n\`\`\``;
+      const cartao = agenteSL(cli, 'sl9', { description: 'x', prompt: comCerca });
+      cli.aplicar({ tipo: 'resultado_ferramenta', id: 'sl9', saida: 'saida crua do D9' });
+      const saida = cartao.querySelector('.sub-saida');
+      tudoOk &= ok(saida?.textContent === 'saida crua do D9', `SL9: a saída do D9 ganhou pre.sub-saida (${saida?.textContent})`);
+      tudoOk &= ok(cartao.filhos.at(-1) === saida, 'SL9: a saída é o último filho do cartão');
+      const codigo = achar(cartao.querySelector('.sub-pedido'), 'pre')[0];
+      tudoOk &= ok(textoDe(codigo) === 'npm test', `SL9: o código do pedido não recebeu a saída (${textoDe(codigo)})`);
+
+      const cli2 = clienteSL();
+      const c10 = agenteSL(cli2, 'sl10', { description: 'x', prompt: comCerca });
+      await abrirCartaoSL(c10);
+      const iSub = c10.filhos.indexOf(c10.subEl);
+      const iPedido = c10.filhos.indexOf(c10.querySelector('.sub-pedido'));
+      tudoOk &= ok(iSub > 0 && iSub === iPedido - 1, `SL10: o bloco dos passos fica logo antes do pedido, como irmão (${iSub}, ${iPedido})`);
+    });
+
     // LC-8 — D69: só o fim do turno move. Servidor de mentira devolvendo `terminouEm` como o de
     // verdade devolveria. `a` = atualizadoEm, `l` = lidoEm, `t` = terminouEm, `r` = rodando. A ordem
     // do array é a do tmux.
@@ -2126,6 +2951,14 @@ async function parteA() {
       'UI-2: e as duas frases NÃO se confundem — cada estado tem a sua');
     tudoOk &= ok(!/duas abas de Codex|ainda não achei/.test(naDeCodex),
       'UI-2: com o casamento "ok" nenhuma das duas aparece — a fita é que fala');
+
+    // CF-cab — com `preSessao && pedeConfianca` o motivo é o `.aviso-confianca` do bloco: o cabeçalho não mente.
+    const comConfianca = await abrirCom(base({ casamento: 'nenhum', preSessao: true, pedeConfianca: true }));
+    tudoOk &= ok(!/ainda não achei/.test(comConfianca),
+      `CF-cab: preSessao + pedeConfianca → sem a linha "ainda não achei" (${comConfianca.slice(0, 100)})`);
+    const semConfianca = await abrirCom(base({ casamento: 'nenhum', preSessao: true, pedeConfianca: false }));
+    tudoOk &= ok(/ainda não achei a conversa/.test(semConfianca),
+      'CF-cab: preSessao com pedeConfianca false → a linha continua');
   });
 
   // ── "Esperando você escolher": o estado que o .jsonl não conhece ─────────────
@@ -2305,6 +3138,16 @@ async function parteA() {
   tudoOk &= ok(/confirmação no terminal/.test(recadoPre) && /FECHA o agente/.test(recadoPre),
     'e o recado manda responder pelas setas, avisando que o Esc fecha o agente');
 
+  // CF-env — com `painel.pedeConfianca` a primeira frase do recado diz o fato da pasta; a segunda não muda.
+  comPergunta.painelAtual().pedeConfianca = true;
+  porIdDe(comPergunta, 'entrada').value = 'oi';
+  await comPergunta.enviar(comPergunta.painelAtual());
+  const recadoConfianca = textoDe(porIdDe(comPergunta, 'fita'));
+  tudoOk &= ok(recadoConfianca.includes('Esta pasta ainda não é confiável para o agente, e ele ainda não abriu conversa. Responda pelas setas')
+    && recadoConfianca.split('pedindo uma confirmação').length === 2,
+  'CF-env: com pedeConfianca o recado abre com "Esta pasta ainda não é confiável…" (e o velho ficou só o de antes)');
+  comPergunta.painelAtual().pedeConfianca = false;
+
   // A transição que o `valor` sozinho não pega: o CLI publica a sessão JÁ com um menu aberto,
   // então a aba sai do pre-sessao e entra no `waiting` sem passar por false no meio. Sem
   // comparar o motivo, o rótulo ficaria preso em "Fechar o agente" numa pergunta de permissão.
@@ -2346,15 +3189,18 @@ async function parteA() {
     // Um cliente com a aba aberta e a pergunta no ar. `estado.cartao` é o que o servidor
     // devolve no PRÓXIMO tique (`undefined` = o campo some da resposta); `estado.aoPerguntar`
     // responde o POST do cartão (pode devolver uma promessa presa).
-    const montar = async (cartao = cartaoDe(), { semCampo = false, semGancho } = {}) => {
-      const estado = { cartao, semCampo, semGancho, posts: [], teclas: [], aoPerguntar: () => ({ respondido: true }) };
+    const montar = async (cartao = cartaoDe(), { semCampo = false, semGancho, pedeConfianca, motivo } = {}) => {
+      // `pedeConfianca` vai na resposta da tela; `motivo` vai no EVENTO `esperando` (é ele que define
+      // `painel.motivoPergunta` — o cliente ignora o `motivo` da resposta da tela). `respostaTecla` troca a
+      // resposta do POST /teclas.
+      const estado = { cartao, semCampo, semGancho, pedeConfianca, respostaTecla: null, posts: [], teclas: [], aoPerguntar: () => ({ respondido: true }) };
       const c = carregarCliente({
         guardado: memoria(),
         aoBuscar: (rota, opcoes = {}) => {
           const r = String(rota);
           if (/\/tela(\?|$)/.test(r)) {
             const base = { chave: 'aba-7', tela: '  1. Sim', linhas: 1 };
-            return estado.semCampo ? base : { ...base, cartao: estado.cartao, ...(estado.semGancho === undefined ? {} : { semGancho: estado.semGancho }) };
+            return estado.semCampo ? base : { ...base, cartao: estado.cartao, ...(estado.semGancho === undefined ? {} : { semGancho: estado.semGancho }), ...(estado.pedeConfianca === undefined ? {} : { pedeConfianca: estado.pedeConfianca }) };
           }
           if (/\/pergunta$/.test(r)) {
             estado.posts.push({ rota: r, corpo: JSON.parse(String(opcoes.body || '{}')) });
@@ -2362,7 +3208,7 @@ async function parteA() {
           }
           if (/\/teclas$/.test(r)) {
             estado.teclas.push(JSON.parse(String(opcoes.body || '{}')).tecla);
-            return { apertado: true, chave: 'aba-7', esperando: true, tela: '> 1. Sim', linhas: 1 };
+            return estado.respostaTecla || { apertado: true, chave: 'aba-7', esperando: true, tela: '> 1. Sim', linhas: 1 };
           }
           if (r.startsWith('api/abas')) return { abas: [umaAba({ esperando: true })] };
           return { painel: true, jobs: [] };
@@ -2370,7 +3216,7 @@ async function parteA() {
       });
       await c.carregarAbas();
       await c.abrirAba('aba-7');
-      c.aplicar({ tipo: 'esperando', valor: true });
+      c.aplicar({ tipo: 'esperando', valor: true, ...(motivo === undefined ? {} : { motivo }) });
       await new Promise((pronto) => { setImmediate(pronto); });
       await c.atualizarTelaDaPane(c.painelAtual());
       porIdDe(c, 'app').dataset.vista = 'chat';   // a guarda 8 do ouvinte das teclas físicas
@@ -2445,7 +3291,7 @@ async function parteA() {
       'CA1: o <details> carrega SÓ a tela da pane, e o rótulo "ver terminal"');
       tudoOk &= ok(p.teclas.hidden === true, 'CA1: as seis teclas ficam escondidas com o terminal fechado');
       tudoOk &= ok(p.pergunta.filhos.map((f) => f.className).join('|')
-        === 'pergunta-cartao|pergunta-terminal|pergunta-teclas|aviso-escrita|aviso-gancho',
+        === 'pergunta-cartao|pergunta-terminal|aviso-confianca|pergunta-teclas|aviso-escrita|aviso-gancho',
       `CA1: a ordem dentro da .pergunta (${p.pergunta.filhos.map((f) => f.className).join('|')})`);
     }
 
@@ -2735,6 +3581,49 @@ async function parteA() {
       const { c } = await montar(null, opcoes);
       const aviso = porIdDe(c, 'pergunta').querySelector('.aviso-gancho');
       tudoOk &= ok(aviso && aviso.hidden === true, `CA17 (${rotulo}): o aviso fica escondido`);
+    }
+    // ── CF — o aviso de pasta não confiável (card responder-confianca-do-cli-pelo-celular) ──
+    {
+      const FRASE = 'Esta pasta ainda não é confiável para o agente. Quando ele perguntar, "Yes" faz ele confiar nela de vez: as próximas abas aqui abrem sem essa pergunta. "No" fecha o agente.';
+      const avisoDe = (c) => porIdDe(c, 'pergunta').querySelector('.aviso-confianca');
+      const { c, estado, painel } = await montar(null, { pedeConfianca: true, motivo: 'pre-sessao' });
+      const aviso = avisoDe(c);
+      tudoOk &= ok(Boolean(aviso) && aviso.hidden === false && textoDe(aviso) === FRASE,
+        `CF1: pre-sessao + pedeConfianca → o aviso aparece, com o texto exato (${aviso && aviso.hidden})`);
+      tudoOk &= ok(aviso && !aviso.getAttribute('title'), 'CF1: sem `title` (#31)');
+      try {
+        c.cockpitI18n.definir('en');
+        tudoOk &= ok(/not trusted by the agent/.test(textoDe(aviso)), `CF6: o aviso muda de idioma (${textoDe(aviso).slice(0, 50)})`);
+      } finally {
+        c.cockpitI18n.definir('pt-BR');
+      }
+      estado.pedeConfianca = false;
+      await c.atualizarTelaDaPane(painel);
+      tudoOk &= ok(aviso.hidden === true, 'CF2: o tique seguinte com pedeConfianca false esconde');
+      estado.pedeConfianca = true;
+      await c.atualizarTelaDaPane(painel);
+      tudoOk &= ok(aviso.hidden === false, 'CF2: e com true volta a aparecer');
+      // CF4 — a resposta de /teclas também decide.
+      estado.respostaTecla = { apertado: true, chave: 'aba-7', esperando: true, motivo: 'pre-sessao', pedeConfianca: false, tela: '> 1. Sim', linhas: 1 };
+      await c.apertarTecla(painel, 'Down');
+      tudoOk &= ok(aviso.hidden === true, 'CF4: apertarTecla com pedeConfianca false na resposta esconde');
+      estado.respostaTecla = { apertado: true, chave: 'aba-7', esperando: true, motivo: 'pre-sessao', pedeConfianca: true, tela: '> 1. Sim', linhas: 1 };
+      await c.apertarTecla(painel, 'Down');
+      tudoOk &= ok(aviso.hidden === false, 'CF4: e com true na resposta aparece');
+      // CF5 — pergunta fechada.
+      c.aplicar({ tipo: 'esperando', valor: false });
+      tudoOk &= ok(aviso.hidden === true && painel.pedeConfianca === false, 'CF5: esperando false fecha e esconde, e zera o estado');
+    }
+    {
+      // CF3 — o SSE troca o motivo para `menu`: o aviso esconde na hora, mesmo com pedeConfianca true.
+      const { c } = await montar(null, { pedeConfianca: true, motivo: 'menu' });
+      const aviso = porIdDe(c, 'pergunta').querySelector('.aviso-confianca');
+      tudoOk &= ok(aviso && aviso.hidden === true, 'CF3: motivo menu + pedeConfianca true → escondido');
+      const { c: c2, painel: p2 } = await montar(null, { pedeConfianca: true, motivo: 'pre-sessao' });
+      const aviso2 = porIdDe(c2, 'pergunta').querySelector('.aviso-confianca');
+      tudoOk &= ok(aviso2.hidden === false, 'CF3: pré-condição — visível em pre-sessao');
+      c2.aplicar({ tipo: 'esperando', valor: true, motivo: 'menu' });
+      tudoOk &= ok(aviso2.hidden === true && p2.motivoPergunta === 'menu', 'CF3: pre-sessao → menu esconde na hora, sem esperar a tela');
     }
   });
 
@@ -4676,6 +5565,51 @@ async function parteA() {
   tudoOk &= ok(daEspera.filter((b) => /var\(--espera\)/.test(b.corpo)).length >= 1,
     'e o pino e o estado dele saem do --espera (a borda saiu em 02/09, de propósito)');
 
+  // "livre · N agente(s) em background" tem cor PRÓPRIA também (card
+  // trabalhando-nao-distingue-subagente, D-i): nos doze blocos, distinguível de --accent
+  // (trabalhando) e de --espera (te esperando), ≥ 4.5:1 sobre --fundo-2/--fundo-3.
+  console.log('\n  · cor do "livre · N em background"');
+  const semSegundoPlano = paletas.filter((t) => !t.variaveis['--segundo-plano']);
+  tudoOk &= ok(semSegundoPlano.length === 0,
+    `--segundo-plano existe nos doze${semSegundoPlano.length ? ` — faltam: ${semSegundoPlano.map((t) => t.rotulo).join(', ')}` : ''}`);
+
+  const coladoNoAccent = [];
+  const coladoNaEspera = [];
+  const apagadasSp = [];
+  for (const t of paletas) {
+    const segundoPlano = t.variaveis['--segundo-plano'];
+    const accent = t.variaveis['--accent'];
+    const espera = t.variaveis['--espera'];
+    const raiz = paletas[0].variaveis;
+    const fundoLinha = t.variaveis['--fundo-2'] || raiz['--fundo-2'];
+    const fundoHover = t.variaveis['--fundo-3'] || raiz['--fundo-3'];
+    if (!segundoPlano || !accent || !espera) continue;
+    const distAccent = cor.distinguiveis(segundoPlano, accent);
+    if (!distAccent.ok) coladoNoAccent.push(`${t.rotulo} (Δmatiz ${distAccent.matiz.toFixed(0)}°, ${distAccent.contraste.toFixed(2)}:1)`);
+    const distEspera = cor.distinguiveis(segundoPlano, espera);
+    if (!distEspera.ok) coladoNaEspera.push(`${t.rotulo} (Δmatiz ${distEspera.matiz.toFixed(0)}°, ${distEspera.contraste.toFixed(2)}:1)`);
+    for (const [onde, fundo] of [['linha', fundoLinha], ['hover', fundoHover]]) {
+      const razao = cor.contraste(segundoPlano, fundo);
+      if (!(razao >= 4.5)) apagadasSp.push(`${t.rotulo}/${onde} ${razao === null ? '?' : razao.toFixed(2)}:1`);
+    }
+  }
+  tudoOk &= ok(coladoNoAccent.length === 0,
+    `em cada tema, --segundo-plano é perceptivelmente diferente do --accent dali${coladoNoAccent.length ? ` — colam: ${coladoNoAccent.join('; ')}` : ''}`);
+  tudoOk &= ok(coladoNaEspera.length === 0,
+    `em cada tema, --segundo-plano é perceptivelmente diferente do --espera dali${coladoNaEspera.length ? ` — colam: ${coladoNaEspera.join('; ')}` : ''}`);
+  tudoOk &= ok(apagadasSp.length === 0,
+    `--segundo-plano passa 4.5:1 sobre o fundo da linha nos doze${apagadasSp.length ? ` — reprovam: ${apagadasSp.join('; ')}` : ''}`);
+
+  // O TEXTO do estado sai na cor própria; o PINO (✓/◆) segue o de uma aba livre (`--ok`, igual ao
+  // `pronta`) — o principal está livre, e um ✓ cinza ao lado de um ✓ verde parecia outro estado.
+  const daSegundoPlano = regrasDe('[data-estado="segundo-plano"]');
+  const textoSp = daSegundoPlano.filter((b) => b.seletor.includes('.conversa-estado'));
+  const pinoSp = daSegundoPlano.filter((b) => b.seletor.includes('.conversa-pino'));
+  tudoOk &= ok(textoSp.length >= 1 && textoSp.every((b) => /var\(--segundo-plano\)/.test(b.corpo)),
+    `o texto do "segundo plano" usa var(--segundo-plano) (${textoSp.length} regra(s))`);
+  tudoOk &= ok(pinoSp.length >= 1 && pinoSp.every((b) => /var\(--ok\)/.test(b.corpo)),
+    `o pino do "segundo plano" usa var(--ok), como o de uma aba livre (${pinoSp.length} regra(s))`);
+
   // Mudança cirúrgica: os OUTROS papéis do accent continuam onde estavam. Sem isto, uma
   // rodada distraída "uniformiza" a lista de novo e o achatamento volta por outro lado.
   const aindaNoAccent = ['[data-estado="trabalhando"]', '[data-nova]', '[aria-current="true"]']
@@ -5956,8 +6890,8 @@ async function parteA() {
     const idsDialogNoHtml = [...htmlDialogos.matchAll(/<dialog id="([^"]+)"/g)].map((m) => m[1]);
     // Contagem EXATA, e não "ao menos": é o que faz um <dialog> a mais ou a menos reprovar
     // em vez de passar calado. Afrouxar para `>=` foi o que escondeu o décimo.
-    tudoOk &= ok(idsDialogNoHtml.length === 14,
-      `são CATORZE <dialog> agora — o décimo quarto é o #dialogo-monitor (${idsDialogNoHtml.length})`);
+    tudoOk &= ok(idsDialogNoHtml.length === 15,
+      `são QUINZE <dialog> agora — o de Finanças virou página (D92) (${idsDialogNoHtml.length})`);
     for (const idDialogo of idsDialogNoHtml) {
       // Par, não negativa solta: sem a positiva ("fechado funciona"), a checagem passaria
       // trivialmente contra código nenhum — é a inércia que a §4.1 condena.
@@ -6471,6 +7405,36 @@ async function parteA() {
   // também ancora o selo do contador em `position: absolute` (mockup aprovado).
   tudoOk &= ok(/\.icone-so\.revisar\s*\{[^}]*width:\s*40px[^}]*height:\s*40px/.test(css),
     'o #btn-revisar (.icone-so.revisar) tem os 40px de toque');
+  // O botão "Grafos" (card `grafo-do-projeto-no-cockpit`) é o mesmo alvo de dedo.
+  tudoOk &= ok(/\.icone-so\.grafos\s*\{[^}]*width:\s*40px[^}]*height:\s*40px/.test(css),
+    'o #btn-grafos (.icone-so.grafos) tem os 40px de toque');
+  // O botão "Finanças" (card `painel-financas`, D90) é o mesmo alvo de dedo.
+  tudoOk &= ok(/\.icone-so\.financas\s*\{[^}]*width:\s*40px[^}]*height:\s*40px/.test(css),
+    'o #btn-financas (.icone-so.financas) tem os 40px de toque');
+  // O botão "Commits" (card `ver-a-diff-do-codigo`, D95) é o mesmo alvo de dedo.
+  tudoOk &= ok(/\.icone-so\.commits\s*\{[^}]*width:\s*40px[^}]*height:\s*40px/.test(css),
+    'o #btn-commits (.icone-so.commits) tem os 40px de toque');
+  // D96: título em cima, ícones embaixo — uma coluna só no topo da lateral.
+  tudoOk &= ok(/\.lateral-topo\s*\{[^}]*grid-template-columns:\s*1fr\s*;/.test(css),
+    'DJ6: .lateral-topo tem uma coluna só (grid-template-columns: 1fr) — título em cima, ícones embaixo');
+  {
+    const ler = (arq) => fs.readFileSync(path.join(__dirname, '..', 'public', arq), 'utf8');
+    tudoOk &= ok(['dentro-do-app.js', 'diff.js', 'grafo-mapa.js'].every((a) => ler(a).includes("'cockpit-veio-do-app'")),
+      'DJ7: a chave de passagem cockpit → página do app é a MESMA string em dentro-do-app.js, diff.js e grafo-mapa.js');
+  }
+  // card `ver-a-diff-do-codigo` (D95): o botão e o script da entrada.
+  tudoOk &= ok(/id="btn-commits"/.test(html), 'index.html tem id="btn-commits"');
+  tudoOk &= ok(html.indexOf('diff-entrada.js') > html.indexOf('app.js'),
+    'diff-entrada.js carrega DEPOIS de app.js (nada lê cockpitDiffEntrada na criação, R4)');
+  tudoOk &= ok(html.indexOf('dentro-do-app.js') >= 0 && html.indexOf('dentro-do-app.js') < html.indexOf('<script src="app.js">'),
+    'DJ12: dentro-do-app.js carrega ANTES de app.js (revisar.js e grafo.js leem a volta no boot síncrono; fora de ordem, a volta some calada)');
+  {
+    const fonteRevisar = fs.readFileSync(path.join(__dirname, '..', 'public', 'revisar.js'), 'utf8');
+    tudoOk &= ok(/tr\('Ver mudanças'\)/.test(fonteRevisar), "revisar.js tem tr('Ver mudanças')");
+    const linhasComCockpitDiffEntrada = fonteRevisar.split('\n').filter((l) => l.includes('cockpitDiffEntrada'));
+    tudoOk &= ok(linhasComCockpitDiffEntrada.length > 0 && linhasComCockpitDiffEntrada.every((l) => l.includes('onclick')),
+      'cockpitDiffEntrada só aparece em linha com onclick (R4 — nada lido na criação)');
+  }
 
   // Com token guardado: é ele que tem que aparecer no link copiado.
   const guardadoConf = memoria();
@@ -8211,8 +9175,21 @@ async function parteA() {
     }
     // Doze desde o nome do aparelho (card `nome-do-aparelho-no-push`): os onze de antes mais o
     // `#dialogo-aparelhos`. Contagem exata, para um <dialog> a mais ou a menos não passar calado.
-    tudoOk &= ok((html.match(/<dialog id=/g) || []).length === 14,
-      `são CATORZE <dialog> agora — os treze de antes mais #dialogo-monitor (${(html.match(/<dialog id=/g) || []).length})`);
+    tudoOk &= ok((html.match(/<dialog id=/g) || []).length === 15,
+      `são QUINZE <dialog> agora — o de Finanças virou página (D92) (${(html.match(/<dialog id=/g) || []).length})`);
+    // A1 (D92): todo id de DIALOGOS (app.js) existe como id="…" no index.html — a mesma
+    // garantia da guarda 3, mas pela lista de verdade: tirar um <dialog> do HTML sem tirar a
+    // entrada de DIALOGOS (ou vice-versa) quebra Alt+J/Alt+K em TODO teclado (A1 da spec).
+    {
+      const fonteApp = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+      const blocoDialogos = /const DIALOGOS = \[([\s\S]*?)\];/.exec(fonteApp);
+      tudoOk &= ok(Boolean(blocoDialogos), 'achei o array DIALOGOS no fonte de app.js');
+      const idsDialogos = blocoDialogos ? [...blocoDialogos[1].matchAll(/'([^']+)'/g)].map((m) => m[1]) : [];
+      tudoOk &= ok(idsDialogos.length > 0, 'DIALOGOS não está vazio');
+      for (const id of idsDialogos) {
+        tudoOk &= ok(html.includes(`id="${id}"`), `DIALOGOS tem "${id}" e o index.html tem id="${id}" (A1)`);
+      }
+    }
     // Os dois são alvo de DEDO, e `.icone-so` sozinho dá 25px — o mesmo motivo que a
     // engrenagem e o recarregar já tinham.
     for (const classe of ['novo', 'fechar-aba']) {
@@ -8269,6 +9246,95 @@ async function parteA() {
     tudoOk &= ok(abaAberta(c) === 'aba-9' && conversaNaTela(c),
       `a aba nova já abre — o fluxo dela é o que está no ar (${abaAberta(c)})`);
   });
+
+  // (CF-nota, CF-pasta) card responder-confianca-do-cli-pelo-celular: a nota do diálogo de nova aba tem UMA dona
+  // (`pintarNotaConfianca`): a frase de sempre para o Claude, a do Codex quando a pasta pede, escondida senão.
+  {
+  const AGENTES = { agentes: [
+    { id: 'claude', rotulo: 'Claude Code', modelos: [] }, { id: 'codex', rotulo: 'Codex CLI', modelos: [] },
+  ], padrao: 'claude' };
+  const NOTA_CLAUDE = 'Abrir aqui marca a pasta como confiável para o agente. Sem isso a aba nasce travada no aviso de segurança dele, e o cockpit não consegue responder por você.';
+  const NOTA_CODEX = 'O Codex vai perguntar se você confia nesta pasta. Responda pelas setas na aba: "Yes" confia nela de vez, "No" fecha o agente.';
+  const abrirNota = async (opcoes = {}) => {
+    const c = clienteDaTela({ projetos: [{ nome: 'a', codexPedeConfianca: true }, { nome: 'b', codexPedeConfianca: false }],
+      respostaAgentes: AGENTES, ...opcoes });
+    porIdDe(c, 'btn-nova-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    return c;
+  };
+  const trocarAgente = (c, id) => { porIdDe(c, 'sel-agente-novo').value = id; porIdDe(c, 'sel-agente-novo').onchange(); };
+  const escolherNome = (c, nome) => { const campo = porIdDe(c, 'sel-projeto-novo'); campo.value = nome; campo.disparar('input', {}); };
+
+  await rodarGrupo('CF-nota · a nota do diálogo por agente e pasta', async () => {
+    const c = await abrirNota();
+    const nota = porIdDe(c, 'nota-trust-nova-aba');
+    tudoOk &= ok(nota.hidden === false && textoDe(nota) === NOTA_CLAUDE, 'CF-nota: Claude → a frase de sempre, visível');
+    trocarAgente(c, 'codex');
+    escolherNome(c, 'a');
+    tudoOk &= ok(nota.hidden === false && textoDe(nota) === NOTA_CODEX, `CF-nota: Codex + pasta que pede → a frase do Codex (${textoDe(nota).slice(0, 40)})`);
+    escolherNome(c, 'b');
+    tudoOk &= ok(nota.hidden === true && textoDe(nota) === NOTA_CODEX, 'CF-nota: Codex + pasta que não pede → escondida, SEM apagar o texto');
+    trocarAgente(c, 'claude');
+    tudoOk &= ok(nota.hidden === false && textoDe(nota) === NOTA_CLAUDE, 'CF-nota: volta para Claude → a frase de sempre');
+    // Igualdade com o HTML estático (fallback sem JS): as duas cópias não podem divergir calado.
+    // Depende dos símbolos &aacute; &ccedil; &atilde; &ecirc; do index.html (#53).
+    const m = /<small class="config-nota" id="nota-trust-nova-aba">([\s\S]*?)<\/small>/.exec(html);
+    const doHtml = m[1].replace(/&aacute;/g, 'á').replace(/&ccedil;/g, 'ç').replace(/&atilde;/g, 'ã').replace(/&ecirc;/g, 'ê').replace(/\s+/g, ' ').trim();
+    tudoOk &= ok(doHtml === NOTA_CLAUDE, 'CF-nota: a frase do ramo Claude é IGUAL à do index.html');
+  });
+
+  await rodarGrupo('CF-pasta · depois de criar a pasta, a nota acompanha o GET', async () => {
+    // O GET seguinte ao POST devolve a pasta nova pedindo confiança.
+    const projetos = [{ nome: 'a', codexPedeConfianca: true }, { nome: 'b', codexPedeConfianca: false }];
+    const c2 = clienteDaTela({ projetos, respostaAgentes: AGENTES, respostaCriarPasta: { nome: 'nova' } });
+    porIdDe(c2, 'btn-nova-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    await respirarTela();
+    trocarAgente(c2, 'codex');
+    const campo = porIdDe(c2, 'sel-projeto-novo');
+    campo.focus();
+    campo.value = 'nova';
+    campo.disparar('input', {});
+    const criar = porIdDe(c2, 'lista-projeto-novo').querySelectorAll('[data-criar]')[0];
+    tudoOk &= ok(Boolean(criar), 'CF-pasta: pré-condição — o item de criar apareceu');
+    projetos.push({ nome: 'nova', codexPedeConfianca: true });   // o GET depois do POST traz a pasta nova
+    criar.onmousedown({ preventDefault() {} });
+    await respirarTela();
+    await respirarTela();
+    await respirarTela();
+    const nota = porIdDe(c2, 'nota-trust-nova-aba');
+    tudoOk &= ok(campo.value === 'nova' && nota.hidden === false && textoDe(nota) === NOTA_CODEX,
+      `CF-pasta: Codex + pasta recém-criada que pede → a nota do Codex (${campo.value}, hidden=${nota.hidden})`);
+    // GET que falha depois do 201 (S9): a confiança é desconhecida e a nota cala.
+    let posts = 0;
+    const c3 = carregarCliente({
+      aoBuscar: (rota, opcoes = {}) => {
+        if (String(rota) === 'api/projetos' && opcoes.method === 'POST') { posts += 1; return { nome: 'nova' }; }
+        if (String(rota).startsWith('api/projetos')) return posts ? { __status: 500, erro: 'falhou' } : { projetos: [{ nome: 'a', codexPedeConfianca: true }] };
+        if (String(rota).startsWith('api/agentes')) return AGENTES;
+        if (String(rota).startsWith('api/abas')) return { abas: [] };
+        return { painel: true, jobs: [] };
+      },
+    });
+    porIdDe(c3, 'btn-nova-aba').onclick();
+    await respirarTela();
+    await respirarTela();
+    await respirarTela();
+    trocarAgente(c3, 'codex');
+    const campo3 = porIdDe(c3, 'sel-projeto-novo');
+    campo3.focus();
+    campo3.value = 'nova';
+    campo3.disparar('input', {});
+    porIdDe(c3, 'lista-projeto-novo').querySelectorAll('[data-criar]')[0].onmousedown({ preventDefault() {} });
+    await respirarTela();
+    await respirarTela();
+    await respirarTela();
+    tudoOk &= ok(campo3.value === 'nova' && porIdDe(c3, 'nota-trust-nova-aba').hidden === true,
+      'CF-pasta: GET falhou → a pasta fica fora do Set e a nota cala');
+  });
+  }
 
   // (c2) card pesquisar-a-pasta-na-aba-nova: o campo Projeto filtra, escolhe pelo teclado e recusa nome que não está na lista.
   {
@@ -10345,9 +11411,11 @@ async function parteA() {
   const totalIconeBotaoHtml = (html.match(/<svg class="icone-botao"/g) || []).length;
   const clienteIcones = carregarCliente();
   const totalIconeBotaoPainel = painelDe(clienteIcones).querySelectorAll('.icone-botao').length;
-  // Dez desde o botão "Pra revisar" (plano 2026-10-04): os nove de antes + o ícone dele.
-  tudoOk &= ok(totalIconeBotaoHtml + totalIconeBotaoPainel === 10,
-    `A9: 10 svg.icone-botao ao todo — HTML + painel (${totalIconeBotaoHtml} + ${totalIconeBotaoPainel})`);
+  // Treze desde o botão "Commits" (card `ver-a-diff-do-codigo`, D95): os doze de antes
+  // (nove + o ícone do "Pra revisar", plano 2026-10-04, + o do "Grafos" + o do "Finanças", D90)
+  // + o ícone dele.
+  tudoOk &= ok(totalIconeBotaoHtml + totalIconeBotaoPainel === 13,
+    `A9: 13 svg.icone-botao ao todo — HTML + painel (${totalIconeBotaoHtml} + ${totalIconeBotaoPainel})`);
   const GLIFOS_ANTIGOS = ['&#8635;', '&#9881;', '&#43;', '&#8645;', '&#9776;', '&#8592;', '&#10005;', '&#128206;'];
   const glifosQueSobraram = GLIFOS_ANTIGOS.filter((g) => html.includes(g));
   tudoOk &= ok(glifosQueSobraram.length === 0,
@@ -10516,6 +11584,297 @@ async function parteA() {
       'A13: o caminho da absorção (absorverPendente) também recolhe, não só o desenho direto');
   });
 
+  console.log('\n  · SC: a saída do ! vira cartão de terminal (D79)');
+  // Isolado em `rodarGrupo` pelo mesmo motivo do A13: `saida_comando` não existe na develop, e o estouro
+  // não pode esconder o vermelho do resto. Contagens SEMPRE dentro da fita do painel (#44).
+  await rodarGrupo('SC', async () => {
+    const iso = '2026-10-11T10:00:00.000Z';
+    const tem = (el, classe) => String((el && el.className) || '').split(' ').includes(classe);
+    const novo = () => {
+      const c = carregarCliente({ aoBuscar: respostasDoCelular([]), guardado: memoria() });
+      const f = porIdDe(c, 'fita'); f.filhos = [];
+      return { c, f };
+    };
+    const saida = (c, extra) => c.aplicar({ tipo: 'saida_comando', origem: 'bash', stdout: '', stderr: '', quando: iso, ...extra });
+    const cabecalho = (cartao) => cartao.querySelector('.saida-comando-texto').textContent;
+
+    // SC1
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '! git branch -D feature/exemplo', quando: iso });
+      saida(c, { stdout: 'Deleted branch feature/exemplo (was 1a2b3c4).' });
+      const cartao = f.lastChild;
+      tudoOk &= ok(tem(cartao, 'saida-comando') && tem(cartao, 'colado'), 'SC1: o último filho da fita é o cartão, colado no comando');
+      tudoOk &= ok(cabecalho(cartao) === '$ git branch -D feature/exemplo', `SC1: cabeçalho é o comando sem o ! (${cabecalho(cartao)})`);
+      const pres = achar(cartao, 'pre');
+      tudoOk &= ok(pres.length === 1 && pres[0].textContent === 'Deleted branch feature/exemplo (was 1a2b3c4).', 'SC1: um pre com o stdout');
+      tudoOk &= ok(cartao.querySelector('.saida-stderr') === null, 'SC1: sem faixa stderr quando não há stderr');
+      tudoOk &= ok(f.querySelectorAll('.bolha-eu').length === 1, 'SC1: a fita tem só a bolha do comando, nenhuma da saída');
+    }
+    // SC2
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!npm run lint', quando: iso });
+      saida(c, { stderr: 'sh: 1: eslint: not found' });
+      const cartao = f.lastChild;
+      const faixa = cartao.querySelector('.saida-stderr');
+      tudoOk &= ok(faixa !== null && faixa.querySelector('.saida-stderr-rotulo').textContent === 'stderr', 'SC2: faixa stderr com o rótulo neutro');
+      tudoOk &= ok(achar(faixa, 'pre')[0].textContent === 'sh: 1: eslint: not found', 'SC2: o pre da faixa tem o texto do stderr');
+      tudoOk &= ok(!/[✓✕]/.test(cartao.textContent), 'SC2: nenhum veredito de sucesso/falha no cartão (D-2)');
+    }
+    // SC3
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!true', quando: iso });
+      saida(c, {});
+      const cartao = f.lastChild;
+      tudoOk &= ok(cartao.querySelector('.saida-vazia').textContent === '(sem saída)' && achar(cartao, 'pre').length === 0, 'SC3: os dois vazios dizem "(sem saída)" e não têm pre');
+    }
+    // SC4
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!seq 200', quando: iso });
+      saida(c, { stdout: Array.from({ length: 200 }, (_, i) => String(i + 1)).join('\n') });
+      const cartao = f.lastChild;
+      tudoOk &= ok(achar(cartao, 'pre')[0].textContent.split('\n').length === 10, 'SC4: o pre recolhe em 10 linhas');
+      // O seletor do DOM falso não casa tag (só #id, .classe e [attr]): a tag se confere à parte.
+      const mais = cartao.querySelector('.saida-mais');
+      tudoOk &= ok(mais !== null && mais.tag === 'button' && mais.textContent === 'mostrar tudo (200 linhas)', 'SC4: botão "mostrar tudo (200 linhas)"');
+      mais.disparar('click');
+      tudoOk &= ok(achar(cartao, 'pre')[0].textContent.split('\n').length === 200 && cartao.querySelector('.saida-mais') === null, 'SC4: o clique mostra as 200 e o botão sai');
+    }
+    // SC5
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!echo', quando: iso });
+      saida(c, { stdout: '<script>alert(1)</script>' });
+      const cartao = f.lastChild;
+      tudoOk &= ok(achar(cartao, 'script').length === 0 && achar(cartao, 'pre')[0].textContent === '<script>alert(1)</script>', 'SC5: <script> chega como texto, sem nó script');
+    }
+    // SC6
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'texto', texto: 'pronto' });
+      saida(c, { stdout: 'x' });
+      const cartao = f.lastChild;
+      tudoOk &= ok(cabecalho(cartao) === 'saída' && !tem(cartao, 'colado'), 'SC6: sem par (depois de fala do agente): cabeçalho "saída", sem colado');
+    }
+    // SC7
+    {
+      const { c, f } = novo();
+      c.marcarPendente(c.bolha('bolha-eu', '! ls'), '! ls');
+      saida(c, { stdout: 'x' });
+      const cartao = f.lastChild;
+      tudoOk &= ok(cabecalho(cartao) === 'saída' && !tem(cartao, 'colado'), 'SC7: pendente na frente não é par: cabeçalho "saída", sem colado');
+    }
+    // SC8
+    {
+      const { c, f } = novo();
+      const treze = `!${Array.from({ length: 13 }, (_, i) => `echo ${i + 1}`).join('\n')}`;
+      c.aplicar({ tipo: 'humano', texto: treze, quando: iso });
+      saida(c, { stdout: 'x' });
+      const cartao = f.lastChild;
+      const balao = f.filhos.find((n) => tem(n, 'bolha-eu'));
+      tudoOk &= ok(achar(balao, 'details').length === 1, 'SC8: a bolha de 13 linhas está recolhida');
+      tudoOk &= ok(cabecalho(cartao).startsWith('$ echo 1') && !/ver tudo/.test(cabecalho(cartao)), `SC8: o cabeçalho lê o texto cru, não o "ver tudo" (${cabecalho(cartao).slice(0, 20)})`);
+    }
+    // SC9
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '/model', quando: iso });
+      saida(c, { origem: 'barra', stdout: 'Set model to modelo-exemplo' });
+      const cartao = f.lastChild;
+      tudoOk &= ok(cabecalho(cartao) === '/model' && tem(cartao, 'colado'), 'SC9: comando de barra: cabeçalho /model, colado');
+    }
+    // SC10
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'fora_inicio' });
+      c.aplicar({ tipo: 'humano', texto: '!pwd', quando: iso });
+      saida(c, { stdout: '/home/usuario' });
+      c.aplicar({ tipo: 'fora_fim' });
+      tudoOk &= ok(tem(f.lastChild, 'saida-comando') && tem(f.lastChild, 'de-fora'), 'SC10: desenhado de fora ganha a classe de-fora');
+    }
+    // SC12
+    {
+      const { c, f } = novo();
+      c.segurarFita();
+      c.aplicar({ tipo: 'humano', texto: '!pwd', quando: iso });
+      saida(c, { stdout: '/home/usuario' });
+      c.despejarFita();
+      // O `append` do DOM falso não espalha o fragmento (só o `prepend` espalha): lemos os filhos dele.
+      const nos = f.filhos.flatMap((n) => (n.tag === '#fragmento' ? n.filhos : [n]));
+      const iBolha = nos.findIndex((n) => tem(n, 'bolha-eu'));
+      const cartao = nos[iBolha + 1];
+      tudoOk &= ok(iBolha >= 0 && tem(cartao, 'saida-comando') && tem(cartao, 'colado') && cabecalho(cartao) === '$ pwd', 'SC12: na rajada (fragmento) o cartão sai logo depois da bolha, colado, com $ pwd');
+    }
+    // ── Card `saida-do-comando-legivel` (D80): o cabeçalho que faltou e o JSON numa linha só ──
+    // SC14 — o caminho real de 11/10: o `!` mandado PELO COCKPIT com o turno rodando nasce pendente "na fila";
+    // a fala final do agente entra na fita DEPOIS dela; o eco volta do disco (aparado, #95) e absorve a pendente
+    // lá em cima. No disco o eco e a saída são linhas consecutivas: o par existe, só não é o nó anterior da fita.
+    {
+      const { c, f } = novo();
+      const cmd = 'ssh servidor "docker exec banco psql -t -A" < consulta.sql';
+      const pend = c.marcarPendente(c.bolha('bolha-eu', `! ${cmd}`), `! ${cmd}`, Date.now(), true);
+      c.aplicar({ tipo: 'texto', texto: 'Fechei a triagem; os itens estão no quadro.', quando: iso });
+      c.aplicar({ tipo: 'humano', texto: `!${cmd}`, quando: iso });
+      saida(c, { stdout: 'x' });
+      const cartao = f.lastChild;
+      tudoOk &= ok(!tem(pend, 'bolha-pendente') && f.filhos.filter((n) => tem(n, 'bolha-eu')).length === 1, 'SC14: a pendente foi absorvida (uma bolha do dono só)');
+      tudoOk &= ok(tem(cartao, 'saida-comando') && cabecalho(cartao) === `$ ${cmd}`, `SC14: ! da fila com fala do agente no meio: cabeçalho "$ comando" (${cabecalho(cartao)})`);
+      tudoOk &= ok(!tem(cartao, 'colado'), 'SC14: sem colado — o nó de cima é a fala do agente, não a bolha');
+    }
+    // SC15 — a guarda do par: o que entrou na fita DEPOIS do eco desfaz o par (saída órfã não herda comando velho).
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!ls', quando: iso });
+      c.aplicar({ tipo: 'texto', texto: 'listei', quando: iso });
+      saida(c, { stdout: 'x' });
+      tudoOk &= ok(cabecalho(f.lastChild) === 'saída' && !tem(f.lastChild, 'colado'), `SC15: fala do agente depois do eco: sem par (${cabecalho(f.lastChild)})`);
+    }
+    // SC16 — absorvida no lugar (sem nada no meio) continua colada, como na D79.
+    {
+      const { c, f } = novo();
+      c.marcarPendente(c.bolha('bolha-eu', '! pwd'), '! pwd');
+      c.aplicar({ tipo: 'humano', texto: '! pwd', quando: iso });
+      saida(c, { stdout: '/home/usuario' });
+      tudoOk &= ok(cabecalho(f.lastChild) === '$ pwd' && tem(f.lastChild, 'colado'), 'SC16: pendente absorvida no lugar: $ pwd, colado');
+    }
+    // SC21 — o outro caminho do cockpit, medido no navegador em 12/10: `!` mandado com a aba PARADA. O `enviar` acende o
+    // "trabalhando" DEPOIS da bolha, e ele fica parado ali até o turno acabar — é estado da aba, não conversa.
+    {
+      const { c, f } = novo();
+      c.marcarPendente(c.bolha('bolha-eu', '! pwd'), '! pwd');
+      c.aplicar({ tipo: 'sincronizado', turnoEmAndamento: true });
+      const acima = f.lastChild;
+      c.aplicar({ tipo: 'humano', texto: '! pwd', quando: iso });
+      saida(c, { stdout: '/home/usuario' });
+      tudoOk &= ok(tem(acima, 'trabalhando'), 'SC21: o "trabalhando" entrou depois da bolha (o cenário é o real)');
+      tudoOk &= ok(cabecalho(f.lastChild) === '$ pwd', `SC21: "trabalhando" entre a bolha e a saída não desfaz o par (${cabecalho(f.lastChild)})`);
+      tudoOk &= ok(!tem(f.lastChild, 'colado'), 'SC21: sem colado — a bolha não é o nó logo acima');
+    }
+    // SC23 — o par vindo do fluxo NÃO dispensa o filtro por texto: fala comum seguida de saída sem eco (o caso
+    // `bash-stderr` com exit ≠ 0, fora do escopo) continua "saída" — nunca "$ oi". Achado do painel da spec.
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: 'oi', quando: iso });
+      saida(c, { stdout: 'x' });
+      tudoOk &= ok(cabecalho(f.lastChild) === 'saída', `SC23: humano de texto comum não vira cabeçalho (${cabecalho(f.lastChild)})`);
+    }
+    // SC26 — um lote antigo carregado ENTRE o eco vivo e a saída viva não troca o par (#47: o `salvo` do lote).
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!git status', quando: iso });
+      c.desenharLoteAntigo(c.painelAtual(), { cortado: false, inicio: 0, eventos: [
+        { tipo: 'humano', texto: '!ls antigo', quando: iso },
+        { tipo: 'saida_comando', origem: 'bash', stdout: 'a', stderr: '', quando: iso },
+        { tipo: 'humano', texto: '!pwd antigo', quando: iso },
+      ] });
+      saida(c, { stdout: 'nada a fazer' });
+      const antigos = f.filhos.flatMap((n) => (n.tag === '#fragmento' ? n.filhos : [n])).filter((n) => tem(n, 'saida-comando'));
+      tudoOk &= ok(antigos.length === 2 && cabecalho(f.lastChild) === '$ git status' && tem(f.lastChild, 'colado'),
+        `SC26: lote antigo no meio — o cartão vivo continua "$ git status", colado (${cabecalho(f.lastChild)})`);
+    }
+    // SC17 — o JSON da foto (array de objetos, ~1500 caracteres numa linha) sai indentado e recolhe.
+    const itens = Array.from({ length: 7 }, (_, i) => ({
+      id: `item-exemplo-${String(i + 1).padStart(2, '0')}-com-um-identificador-comprido`,
+      title: `Item de exemplo ${i + 1} com um título de tamanho realista para a triagem`,
+      body: null, area: 'geral', type: 'melhoria', priority: i % 2 ? 'media' : 'alta', by: 'usuario',
+      createdAt: `2026-10-0${i + 1}T12:00:00.000Z`,
+    }));
+    const jsonLinha = JSON.stringify(itens);
+    const jsonBonito = JSON.stringify(itens, null, 2);
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!ssh servidor consulta', quando: iso });
+      saida(c, { stdout: jsonLinha });
+      const cartao = f.lastChild;
+      const pre = achar(cartao, 'pre')[0];
+      const mais = cartao.querySelector('.saida-mais');
+      const total = jsonBonito.split('\n').length;
+      tudoOk &= ok(jsonLinha.length > 1400 && !jsonLinha.includes('\n'), `SC17: a fixture é uma linha só de ~1500 caracteres (${jsonLinha.length})`);
+      tudoOk &= ok(pre.textContent === jsonBonito.split('\n').slice(0, 10).join('\n'), 'SC17: o pre mostra as 10 primeiras linhas do JSON indentado com 2 espaços');
+      tudoOk &= ok(mais !== null && mais.textContent === `mostrar tudo (${total} linhas)`, `SC17: "mostrar tudo (${total} linhas)" (${mais && mais.textContent})`);
+      if (mais) mais.disparar('click');
+      tudoOk &= ok(achar(cartao, 'pre')[0].textContent === jsonBonito, 'SC17: aberto, é JSON.stringify(x, null, 2) inteiro');
+    }
+    // SC18 — o stderr também: JSON inteiro no stderr sai indentado dentro da faixa.
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!cmd', quando: iso });
+      saida(c, { stderr: '{"erro":"x","codigo":2}' });
+      tudoOk &= ok(achar(f.lastChild.querySelector('.saida-stderr'), 'pre')[0].textContent === '{\n  "erro": "x",\n  "codigo": 2\n}', 'SC18: JSON no stderr sai indentado');
+    }
+    // SC19 — o que NÃO é objeto/array JSON fica byte a byte igual: escalares, texto que parece JSON, JSON com cauda.
+    for (const cru of ['42', '"x"', 'true', 'null', '[INFO] build ok', '{"a":1} e mais', '[1,2', 'ok\n{"a":1}']) {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!cmd', quando: iso });
+      saida(c, { stdout: cru });
+      tudoOk &= ok(achar(f.lastChild, 'pre')[0].textContent === cru, `SC19: ${JSON.stringify(cru)} fica igual`);
+    }
+    // SC20 — indentar não reescreve VALOR: número além de 2^53, escape e barra escapada saem como o comando
+    // imprimiu (JSON.parse + stringify trocaria 12345678901234567890 por 12345678901234567000 e é por é).
+    {
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!cmd', quando: iso });
+      saida(c, { stdout: '{"id":12345678901234567890,"nome":"Jos\\u00e9","url":"a\\/b","vazio":[],"obj":{},"x":1.50}' });
+      const esperado = '{\n  "id": 12345678901234567890,\n  "nome": "Jos\\u00e9",\n  "url": "a\\/b",\n  "vazio": [],\n  "obj": {},\n  "x": 1.50\n}';
+      tudoOk &= ok(achar(f.lastChild, 'pre')[0].textContent === esperado, `SC20: tokens preservados (${JSON.stringify(achar(f.lastChild, 'pre')[0].textContent)})`);
+    }
+    // SC22 — o reindentador anda por string sem se perder: aspas e barra escapadas, e `{ [ , :` DENTRO de string não
+    // quebram linha; espaço solto fora de string some (`[ ]` vira `[]`). A régua: mesmo valor do original E mesma
+    // saída do stringify com 2 espaços (o texto não tem nada que o stringify reescreva).
+    {
+      const cru = ' { "a" : "x\\\\" , "b":"q\\"r, [s]: {t}" ,"c":[ ], "d" : [ [1,2] , {"e":null} ] } ';
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!cmd', quando: iso });
+      saida(c, { stdout: cru });
+      const mais = f.lastChild.querySelector('.saida-mais');
+      if (mais) mais.disparar('click');
+      const visto = achar(f.lastChild, 'pre')[0].textContent;
+      const mostrado = (() => { try { return JSON.parse(visto); } catch { return Symbol('invalido'); } })();
+      tudoOk &= ok(JSON.stringify(mostrado) === JSON.stringify(JSON.parse(cru)) && visto === JSON.stringify(JSON.parse(cru), null, 2),
+        `SC22: string com escape e estrutura dentro sai inteira (${JSON.stringify(visto.slice(0, 60))})`);
+    }
+    // SC24 — JSON que JÁ veio indentado (`jq`, `jsonb_pretty`, com tab e CRLF já limpos) sai igual ao stringify: o
+    // espaço de fora de string é descartado antes de reindentar, nunca somado. Achado do painel da spec.
+    {
+      const bonito = '{\n\t"a": 1,\n    "b": [\n        2\n    ]\n}';
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!jq . x.json', quando: iso });
+      saida(c, { stdout: bonito });
+      tudoOk &= ok(achar(f.lastChild, 'pre')[0].textContent === JSON.stringify(JSON.parse(bonito), null, 2), 'SC24: JSON já multilinha não soma recuo nem linha em branco');
+    }
+    // SC25 — teto de expansão: aninhamento fundo explode o recuo (o Codex calculou 450 M caracteres para 30 k de
+    // entrada). Passou do teto, desiste e mostra o texto como veio. Achado do painel da spec.
+    {
+      const fundo = `${'['.repeat(3000)}1${']'.repeat(3000)}`;
+      const { c, f } = novo();
+      c.aplicar({ tipo: 'humano', texto: '!cmd', quando: iso });
+      saida(c, { stdout: fundo });
+      tudoOk &= ok(achar(f.lastChild, 'pre')[0].textContent === fundo, 'SC25: JSON fundo demais fica cru (teto de expansão)');
+    }
+    // SC11
+    {
+      const cor = require('./cor');
+      const raiz = cor.blocos(css).filter((b) => /--terminal-[a-z]+\s*:/.test(b.corpo));
+      tudoOk &= ok(raiz.length === 1 && raiz[0].seletor === ':root' && !raiz[0].dentroDe, `SC11: --terminal-* é definido num bloco só, o :root (${raiz.map((b) => b.seletor).join('; ')})`);
+      // Depende do NOME das quatro variáveis (#53): renomear uma sem mexer aqui reprova alto.
+      const v = {};
+      for (const m of (raiz[0] ? raiz[0].corpo : '').matchAll(/(--terminal-[a-z]+)\s*:\s*([^;}]+)/g)) v[m[1]] = m[2].trim();
+      tudoOk &= ok(['--terminal-fundo', '--terminal-texto', '--terminal-apagado', '--terminal-aviso'].every((n) => v[n]), 'SC11: as quatro variáveis existem');
+      for (const n of ['--terminal-texto', '--terminal-apagado', '--terminal-aviso']) {
+        const razao = cor.contraste(v[n], v['--terminal-fundo']);
+        tudoOk &= ok(razao >= 4.5, `SC11: ${n} sobre o fundo passa 4,5:1 (${razao && razao.toFixed(2)})`);
+      }
+      // SC13 — saída de terminal é literal: a mono do sistema pode ter ligadura e desenhar `->` como seta (visto no
+      // print de 11/10). Depende do seletor `.saida-comando` (#53). E o movimento reduzido também vale para o cartão.
+      const cartaoCss = cor.blocos(css).find((b) => b.seletor === '.saida-comando' && !b.dentroDe);
+      tudoOk &= ok(Boolean(cartaoCss) && /font-variant-ligatures:\s*none/.test(cartaoCss.corpo), 'SC13: .saida-comando desliga ligadura de fonte');
+      tudoOk &= ok(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.saida-comando[^}]*animation:\s*none/.test(css), 'SC13: movimento reduzido desliga a animação do cartão');
+    }
+  });
+
   console.log('\n  · M4: a borda âmbar do Parar (R6)');
   const blocoBtnParar = cor.blocos(css).find((b) => b.seletor === '.btn-parar' && /border-color:\s*var\(--accent\)/.test(b.corpo));
   tudoOk &= ok(Boolean(blocoBtnParar), 'A14: .btn-parar tem border-color: var(--accent) no CSS');
@@ -10583,6 +11942,194 @@ async function parteA() {
     voltarDoAparelhoA22(clienteA22);
     tudoOk &= ok(porIdDe(clienteA22, 'app').dataset.vista === 'lista',
       'A22: só o 3º voltar devolve a lista — sem degrau fantasma no meio');
+  });
+
+  console.log('\n  · fase 2c: D96 — diff e mapa abrem na mesma aba por uma porta só (grupo DJ)');
+  const respirarDJ = async () => { for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r)); };
+  const JOB_DJ = 'job-revisar-1';
+  // Cobre o que app.js, revisar.js e grafo.js pedem no boot — qualquer outra rota cai no
+  // `{ sessoes: [] }` de sempre.
+  const aoBuscarDJ = async (rota) => {
+    if (rota.includes('api/jobs/resultado')) return { texto: '' };
+    if (rota.includes('api/jobs?revisar=1') || rota.includes('api/jobs?')) return { jobs: [{ id: JOB_DJ, projeto: 'demo', titulo: 'Job de teste', etiquetas: [] }], atencao: [] };
+    if (rota.includes('api/grafos')) return { projetos: [{ nome: 'demo', develop: 'abc1234', grafo: { geradoEm: '2026-10-19T00:00:00Z', estado: 'em-dia', commitsAtras: 0 } }] };
+    if (rota.includes('api/abas')) return { abas: [{ chave: 'aba-7', titulo: 'Aba 7', ativo: true }] };
+    return { sessoes: [] };
+  };
+
+  await rodarGrupo('DJ1', async () => {
+    const c = carregarCliente({ extras: ['dentro-do-app.js', 'diff-entrada.js'] });
+    const pilhaAntes = c.history.pilha.length;
+    porIdDe(c, 'btn-commits').onclick();
+    tudoOk &= ok(c.chamadasWindowOpen.length === 0, 'DJ1: zero window.open');
+    tudoOk &= ok(JSON.stringify(c.chamadasAssign) === JSON.stringify(['diff/']),
+      `DJ1: location.assign('diff/') (achei ${JSON.stringify(c.chamadasAssign)})`);
+    tudoOk &= ok(c.sessionStorage.getItem('cockpit-veio-do-app') === '1', 'DJ1: sessionStorage marcado');
+    tudoOk &= ok(c.history.pilha.length === pilhaAntes, 'DJ1: não empilha');
+    const volta = c.history.state && c.history.state.volta;
+    tudoOk &= ok(Boolean(volta) && 'chave' in volta && 'emChat' in volta,
+      `DJ1: history.state.volta tem as chaves chave e emChat (achei ${JSON.stringify(volta)})`);
+  });
+
+  await rodarGrupo('DJ2', async () => {
+    const c = carregarCliente({ extras: ['dentro-do-app.js', 'diff-entrada.js'] });
+    const p = c.criarPainel('job-abc', {});
+    c.focar(p);
+    porIdDe(c, 'app').dataset.vista = 'chat';
+    c.history.pushState({ vista: 'chat' }, '');
+    const pilhaAntes = c.history.pilha.length;
+    p.raiz.querySelector('.btn-mudancas').onclick();
+    tudoOk &= ok(c.chamadasWindowOpen.length === 0, 'DJ2: zero window.open');
+    tudoOk &= ok(JSON.stringify(c.chamadasAssign) === JSON.stringify(['diff/#job=abc']),
+      `DJ2: assign('diff/#job=abc') (achei ${JSON.stringify(c.chamadasAssign)})`);
+    tudoOk &= ok(c.history.pilha.length === pilhaAntes, 'DJ2: não empilha (replaceState)');
+    const volta = c.history.state && c.history.state.volta;
+    tudoOk &= ok(Boolean(volta) && volta.chave === 'job-abc' && volta.emChat === true,
+      `DJ2: volta = {chave:'job-abc', emChat:true} (achei ${JSON.stringify(volta)})`);
+    tudoOk &= ok(c.history.state.vista === 'chat', 'DJ2: state.vista preservado');
+  });
+
+  await rodarGrupo('DJ3', async () => {
+    const c = carregarCliente({ extras: ['dentro-do-app.js', 'revisar.js', 'diff-entrada.js'], aoBuscar: aoBuscarDJ });
+    porIdDe(c, 'btn-revisar').onclick();
+    await respirarDJ();
+    const rv = c.document.getElementById('rv');
+    const card = rv.querySelector('.rv-card');
+    tudoOk &= ok(card !== null, 'DJ3: achou o card do job na lista do Pra revisar');
+    card.onclick({ target: card });
+    await respirarDJ();
+    // `.rv-rodape .btn` não é um seletor que o DOM de mentira resolve (só casa UM elemento
+    // por vez, sem combinador — #55): acha o rodapé e lê os `.btn` dentro dele.
+    const rodape = rv.querySelector('.rv-rodape');
+    const botoes = rodape ? [...rodape.querySelectorAll('.btn')] : [];
+    const botao = botoes.find((b) => String(b.textContent).includes('Ver mudanças'));
+    tudoOk &= ok(Boolean(botao), 'DJ3: achou o botão "Ver mudanças" no rodapé');
+    botao.onclick();
+    tudoOk &= ok(c.chamadasWindowOpen.length === 0, 'DJ3: zero window.open');
+    tudoOk &= ok(JSON.stringify(c.chamadasAssign) === JSON.stringify([`diff/#job=${JOB_DJ}`]),
+      `DJ3: assign('diff/#job=${JOB_DJ}') (achei ${JSON.stringify(c.chamadasAssign)})`);
+    const volta = c.history.state && c.history.state.volta;
+    tudoOk &= ok(Boolean(volta) && volta.revisar === JOB_DJ, `DJ3: volta.revisar === id do job (achei ${JSON.stringify(volta)})`);
+  });
+
+  await rodarGrupo('DJ9', async () => {
+    const c = carregarCliente({ extras: ['dentro-do-app.js', 'grafo.js'], aoBuscar: aoBuscarDJ });
+    porIdDe(c, 'btn-grafos').onclick();
+    await respirarDJ();
+    const item = porIdDe(c, 'grafos-lista').querySelector('.grafos-abrir');
+    tudoOk &= ok(Boolean(item) && item.dataset.acao === 'abrir', 'DJ9: achou o botão Grafo (dataset.acao === "abrir")');
+    item.onclick();
+    tudoOk &= ok(c.chamadasWindowOpen.length === 0, 'DJ9: zero window.open');
+    tudoOk &= ok(JSON.stringify(c.chamadasAssign) === JSON.stringify(['mapa/demo/']),
+      `DJ9: assign('mapa/demo/') (achei ${JSON.stringify(c.chamadasAssign)})`);
+    const volta = c.history.state && c.history.state.volta;
+    tudoOk &= ok(Boolean(volta) && volta.grafos === true, `DJ9: volta.grafos === true (achei ${JSON.stringify(volta)})`);
+  });
+
+  await rodarGrupo('DJ11', async () => {
+    const c = carregarCliente({ extras: ['dentro-do-app.js', 'diff-entrada.js'], sessaoQueLanca: true });
+    porIdDe(c, 'btn-commits').onclick();
+    tudoOk &= ok(JSON.stringify(c.chamadasAssign) === JSON.stringify(['diff/']),
+      `DJ11: a ida acontece igual com o sessionStorage lançando (achei ${JSON.stringify(c.chamadasAssign)})`);
+  });
+
+  // A pilha de recarga: a que o navegador entrega ao recarregar a entrada da conversa.
+  const pilhaDeRecarga = (volta) => [{ estado: null, url: 'http://z/' }, { estado: { vista: 'chat', volta }, url: 'http://z/' }];
+
+  await rodarGrupo('DJ4', async () => {
+    const V = { chave: 'job-abc', emChat: true };
+    const c = carregarCliente({
+      extras: ['dentro-do-app.js'], semPainel: true, aoBuscar: aoBuscarDJ, pilhaInicial: pilhaDeRecarga(V),
+    });
+    await respirarDJ();
+    tudoOk &= ok(Boolean(painelDe(c, 0)) && painelDe(c, 0).dataset.chave === 'job-abc', 'DJ4: o painel job-abc reabre');
+    tudoOk &= ok(porIdDe(c, 'app').dataset.vista === 'chat', 'DJ4: vista chat');
+    tudoOk &= ok(c.history.pilha.length === 2, 'DJ4: não empilha');
+    tudoOk &= ok(c.history.state.volta === null, 'DJ4: volta apagada');
+    tudoOk &= ok(c.history.state.vista === 'chat', 'DJ4: vista preservada no state');
+    c.history.back();
+    tudoOk &= ok(porIdDe(c, 'app').dataset.vista === 'lista' && c.history.saiuDoApp === false, 'DJ4: 1º back → lista');
+    c.history.back();
+    tudoOk &= ok(c.history.saiuDoApp === true, 'DJ4: 2º back → sai do app');
+  });
+
+  await rodarGrupo('DJ4b', async () => {
+    const V = { chave: 'aba-7', emChat: true };
+    const c = carregarCliente({
+      extras: ['dentro-do-app.js'], semPainel: true, aoBuscar: aoBuscarDJ, pilhaInicial: pilhaDeRecarga(V),
+    });
+    await respirarDJ();
+    tudoOk &= ok(Boolean(painelDe(c, 0)) && painelDe(c, 0).dataset.chave === 'aba-7', 'DJ4b: aba-7 reabre sem empilhar');
+    tudoOk &= ok(c.history.pilha.length === 2, 'DJ4b: pilha 2');
+    tudoOk &= ok(c.history.state.volta === null, 'DJ4b: volta apagada');
+
+    const Vfalso = { chave: 'aba-7', emChat: false };
+    const c2 = carregarCliente({
+      extras: ['dentro-do-app.js'], semPainel: true, aoBuscar: aoBuscarDJ, pilhaInicial: pilhaDeRecarga(Vfalso),
+    });
+    await respirarDJ();
+    tudoOk &= ok(painelDe(c2, 0) === null, 'DJ4b: emChat false — nenhum painel reabre');
+    tudoOk &= ok(porIdDe(c2, 'app').dataset.vista !== 'chat', 'DJ4b: vista não vira chat');
+  });
+
+  await rodarGrupo('DJ4c', async () => {
+    const V = { chave: 'job-abc', emChat: true, revisar: JOB_DJ };
+    const c = carregarCliente({
+      extras: ['dentro-do-app.js', 'revisar.js'], semPainel: true, aoBuscar: aoBuscarDJ, pilhaInicial: pilhaDeRecarga(V),
+    });
+    await respirarDJ();
+    tudoOk &= ok(Boolean(painelDe(c, 0)) && painelDe(c, 0).dataset.chave === 'job-abc', 'DJ4c: painel job-abc aberto');
+    tudoOk &= ok(porIdDe(c, 'dialogo-revisar').open === true, 'DJ4c: #dialogo-revisar aberto também');
+    tudoOk &= ok(c.history.state.volta === null, 'DJ4c: um leitor não apaga a chave do outro — volta inteira null no fim');
+  });
+
+  await rodarGrupo('DJ5', async () => {
+    const c = carregarCliente({
+      extras: ['dentro-do-app.js', 'revisar.js'], aoBuscar: aoBuscarDJ,
+      pilhaInicial: [{ estado: { volta: { revisar: JOB_DJ } }, url: 'http://z/' }],
+    });
+    await respirarDJ();
+    const rv = c.document.getElementById('rv');
+    tudoOk &= ok(porIdDe(c, 'dialogo-revisar').open === true, 'DJ5: #dialogo-revisar aberto');
+    tudoOk &= ok(Boolean(rv.querySelector('.rv-rodape')), 'DJ5: a tela do job foi desenhada (tem .rv-rodape)');
+    tudoOk &= ok(c.history.state.volta === null, 'DJ5: volta apagada');
+    tudoOk &= ok(c.history.pilha.length === 1, 'DJ5: pilha 1');
+
+    const c2 = carregarCliente({
+      extras: ['dentro-do-app.js', 'revisar.js'], aoBuscar: aoBuscarDJ,
+      pilhaInicial: [{ estado: { volta: { revisar: 'nao-existe' } }, url: 'http://z/' }],
+    });
+    await respirarDJ();
+    const rv2 = c2.document.getElementById('rv');
+    tudoOk &= ok(porIdDe(c2, 'dialogo-revisar').open === true, 'DJ5: id inexistente — diálogo ainda abre');
+    tudoOk &= ok(Boolean(rv2.querySelector('.rv-card')) && !rv2.querySelector('.rv-rodape'),
+      'DJ5: id inexistente — fica na LISTA (tem .rv-card, não tem .rv-rodape)');
+  });
+
+  await rodarGrupo('DJ10', async () => {
+    const c = carregarCliente({
+      extras: ['dentro-do-app.js', 'grafo.js'], aoBuscar: aoBuscarDJ,
+      pilhaInicial: [{ estado: { volta: { grafos: true } }, url: 'http://z/' }],
+    });
+    await respirarDJ();
+    tudoOk &= ok(porIdDe(c, 'dialogo-grafos').open === true, 'DJ10: #dialogo-grafos aberto');
+    tudoOk &= ok(c.history.state.volta === null, 'DJ10: volta apagada');
+  });
+
+  await rodarGrupo('DJ8', async () => {
+    const c = carregarCliente();
+    c.religarFluxo();
+    const antes = c.fluxos.length;
+    for (const fn of c.janela.get('pageshow') || []) fn({ persisted: true });
+    tudoOk &= ok(c.fluxos.length === antes + 1, 'DJ8: pageshow persisted — abre um EventSource novo');
+    tudoOk &= ok(c.fluxos[antes - 1].fechado === true, 'DJ8: e fecha o velho');
+    const antes2 = c.fluxos.length;
+    for (const fn of c.janela.get('pageshow') || []) fn({ persisted: false });
+    tudoOk &= ok(c.fluxos.length === antes2, 'DJ8: persisted false — nada muda');
+
+    const c3 = carregarCliente({ semPainel: true });
+    for (const fn of c3.janela.get('pageshow') || []) fn({ persisted: true });
+    tudoOk &= ok(c3.fluxos.length === 0, 'DJ8: sem painel aberto, pageshow persisted não abre cano nenhum');
   });
 
   // ── Card `codex-no-relatorio-de-tokens` (22/09): a seção do Codex em #dialogo-uso ───────
@@ -15333,8 +16880,10 @@ async function parteB() {
   tudoOk &= ok(listaProjetos.status === 200, `GET /api/projetos responde 200 (${listaProjetos.status})`);
   const osProjetos = listaProjetos.corpo.projetos || [];
   tudoOk &= ok(osProjetos.length > 0, `e traz os projetos de ~/projetos (${osProjetos.length})`);
-  tudoOk &= ok(osProjetos.every((p) => Object.keys(p).join() === 'nome'),
-    'e cada item tem SÓ `nome` — nenhum caminho de disco vai para o navegador');
+  tudoOk &= ok(osProjetos.every((p) => Object.keys(p).join() === 'nome,codexPedeConfianca'
+    && typeof p.nome === 'string' && typeof p.codexPedeConfianca === 'boolean'
+    && Object.values(p).every((v) => !(typeof v === 'string' && v.includes('/')))),
+    'e cada item tem SÓ `nome` e `codexPedeConfianca` (booleano) — nenhum caminho de disco vai para o navegador');
 
   // A tela da pane: a única leitura de TUI do projeto, e só com a aba em `waiting`. Sem o
   // 409 esta rota viraria espelho geral do terminal na web — que é o que a D4 recusou.

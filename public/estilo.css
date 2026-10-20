@@ -41,10 +41,18 @@
   /* Coral, e não um laranja qualquer: aqui o accent JÁ é âmbar, e laranja em cima de
      âmbar continua confuso de relance. 7.7:1 sobre --fundo-2. */
   --espera: #ff8a65;
+  /* "livre · N agente(s) em background" (card trabalhando-nao-distingue-subagente): diferente
+     de --accent (trabalhando) e de --espera (te esperando), ≥ 4.5:1 sobre --fundo-2/--fundo-3. */
+  --segundo-plano: #6cb4ee;
   --bolha-eu: #2b4a63;
   --perigo: #d9605a;
   --perigo-suave: rgba(217, 96, 90, 0.12);
   --ok: #5fb87a;
+  /* Texto sobre --perigo (a faixa PROD FORA, D87): preto passa 4.5:1 em 10 das 11 paletas;
+     só o catppuccin-latte precisa de branco (medido com testes/cor.js). Fica no `:root`
+     porque `.app` e `.monitor-selo` também precisam ver esta variável. */
+  --sobre-perigo: #000;
+  --prod-fora-h: calc(30px + env(safe-area-inset-top));
   /* Texto que vai EM CIMA do accent (o botão principal). Era um hex chumbado no
      `.btn-principal`, o que só funciona enquanto todo accent for claro — com um accent
      escuro, como o roxo do Latte, o rótulo sumia dentro do botão. */
@@ -74,6 +82,12 @@
      (#3b4252) — 4,58:1 no laranja e 4,68:1 no teal. Passa em todos. */
   --agente-claude: #e8a04a;
   --agente-codex: #45c4b0;
+  /* Paleta do cartão de terminal (D79): FIXA e escura nos doze temas — terminal é escuro em qualquer tema, e
+     cor fixa é um par de contraste a medir (gate-ui SC11), não doze. Nenhum tema redefine estas. */
+  --terminal-fundo: #0f1419;
+  --terminal-texto: #d7dde5;
+  --terminal-apagado: #8b95a3;
+  --terminal-aviso: #e3b341;
 
   --raio: 10px;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -90,6 +104,7 @@
     --accent: #a9701a; --accent-suave: rgba(169, 112, 26, 0.12);
     /* Mesmo coral do escuro, escurecido para 4.9:1 sobre o --fundo-2 claro. */
     --espera: #b8442b;
+    --segundo-plano: #245f9e;
     --bolha-eu: #cfe3f5; --sombra: 0 8px 28px rgba(0, 0, 0, 0.10);
     --perigo-suave: rgba(217, 96, 90, 0.10);
     /* Fundo claro: o laranja e o teal do :root reprovam aqui (2,4:1 e 2,1:1). Escurecidos
@@ -124,6 +139,7 @@
   --borda: #45475a; --texto: #cdd6f4; --texto-2: #a6adc8; --texto-3: #7f849c;
   --accent: #cba6f7; --accent-suave: rgba(203, 166, 247, 0.14);
   --espera: #fab387;   /* peach oficial */
+  --segundo-plano: #89dceb;
   --sobre-accent: #11111b; --bolha-eu: #45475a;
   --perigo: #f38ba8; --perigo-suave: rgba(243, 139, 168, 0.12); --ok: #a6e3a1;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -138,8 +154,9 @@
   /* peach oficial (#fe640b) dá 2.4:1 sobre a base clara e reprova; escurecido até 5.1.
      Contraste ganha do hex quando os dois brigam — mesma regra do Dawn. */
   --espera: #a34400;
+  --segundo-plano: #1650b8;
   --sobre-accent: #eff1f5; --bolha-eu: #ccd0da;
-  --perigo: #d20f39; --perigo-suave: rgba(210, 15, 57, 0.1); --ok: #40a02b;
+  --perigo: #d20f39; --perigo-suave: rgba(210, 15, 57, 0.1); --ok: #40a02b; --sobre-perigo: #fff;
   /* Fundo claro: o laranja e o teal do :root reprovam aqui. Escurecidos até 5,0 e 4,5 —
      mesma regra dos vizinhos deste bloco. */
   --agente-claude: #95500a; --agente-codex: #0f766e;
@@ -153,6 +170,7 @@
   --borda: #292e42; --texto: #c0caf5; --texto-2: #a9b1d6; --texto-3: #787c99;
   --accent: #7aa2f7; --accent-suave: rgba(122, 162, 247, 0.14);
   --espera: #ff9e64;   /* orange oficial */
+  --segundo-plano: #73daca;
   --sobre-accent: #16161e; --bolha-eu: #283457;
   --perigo: #f7768e; --perigo-suave: rgba(247, 118, 142, 0.12); --ok: #9ece6a;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -166,6 +184,7 @@
   --accent: #88c0d0; --accent-suave: rgba(136, 192, 208, 0.14);
   /* aurora #d08770 dá 3.5:1 sobre o Polar Night e reprova; clareado até 5.5. */
   --espera: #eab3a1;
+  --segundo-plano: #d3b8e0;
   --sobre-accent: #2e3440; --bolha-eu: #4c566a;
   --perigo: #bf616a; --perigo-suave: rgba(191, 97, 106, 0.12); --ok: #a3be8c;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -180,6 +199,7 @@
   /* O accent aqui já é o amarelo da paleta, então o orange oficial (#fe8019) ficaria a
      15° dele — perto demais. Puxado para o vermelho, entre o orange e o red do gruvbox. */
   --espera: #ff8a6a;
+  --segundo-plano: #8ec07c;
   --sobre-accent: #1d2021; --bolha-eu: #504945;
   --perigo: #fb4934; --perigo-suave: rgba(251, 73, 52, 0.12); --ok: #b8bb26;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -192,6 +212,7 @@
   --borda: #475258; --texto: #d3c6aa; --texto-2: #9da9a0; --texto-3: #859289;
   --accent: #a7c080; --accent-suave: rgba(167, 192, 128, 0.14);
   --espera: #e69875;   /* orange oficial */
+  --segundo-plano: #7fbbb3;
   --sobre-accent: #232a2e; --bolha-eu: #3d484d;
   --perigo: #e67e80; --perigo-suave: rgba(230, 126, 128, 0.12); --ok: #83c092;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -204,6 +225,7 @@
   --borda: #403d52; --texto: #e0def4; --texto-2: #908caa; --texto-3: #6e6a86;
   --accent: #c4a7e7; --accent-suave: rgba(196, 167, 231, 0.14);
   --espera: #f6c177;   /* gold oficial */
+  --segundo-plano: #ebbcba;
   --sobre-accent: #191724; --bolha-eu: #524f67;
   --perigo: #eb6f92; --perigo-suave: rgba(235, 111, 146, 0.12); --ok: #9ccfd8;
   --sombra: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -220,6 +242,7 @@
   /* gold oficial (#ea9d34) dá 2.2:1 sobre a base do Dawn — o mesmo motivo que já tinha
      escurecido o --texto-2 aqui. Terracota derivado dele, 5.7:1. */
   --espera: #a34a2e;
+  --segundo-plano: #6d5a8a;
   --sobre-accent: #faf4ed; --bolha-eu: #dfdad9;
   --perigo: #b4637a; --perigo-suave: rgba(180, 99, 122, 0.1); --ok: #56949f;
   /* Fundo claro: o laranja e o teal do :root reprovam aqui. Escurecidos até 5,0 e 4,5 —
@@ -251,6 +274,7 @@
   --borda: #404040; --texto: #D6D0C5; --texto-2: #8B9388; --texto-3: #717C7C;
   --accent: #C2A46D; --accent-suave: rgba(194, 164, 109, 0.14);
   --espera: #df6124;
+  --segundo-plano: #6f9fc8;
   --sobre-accent: #0d0d0d; --bolha-eu: #525e5a;
   --perigo: #da614e; --perigo-suave: rgba(218, 97, 78, 0.12);
   /* Mesmo musgo do --texto-2, e isso NÃO é descuido: o Ryu dá um valor só para "rodando" e
@@ -291,6 +315,7 @@
   --sobre-accent: #06090b;
   --bolha-eu: #25445B;
   --espera: #E8825F;
+  --segundo-plano: #6fa8dc;
   --perigo: #DE6A78; --perigo-suave: rgba(222, 106, 120, 0.14);
   --ok: #7FB394;
   /* Âmbar no Claude e não o coral do "te esperando": a 18° de matiz os dois seriam a mesma
@@ -360,12 +385,15 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   border-right: 1px solid var(--borda);
   display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
 }
+/* D96: a marca ("Cockpit" + subtítulo) tem a linha de cima INTEIRA e os ícones vão para a de baixo. Na mesma
+   linha, o 6º ícone (Commits, D95) deixava o título em "Co" na lateral de 320 px. Medido: topo 144 → 188 px. */
 .lateral-topo {
-  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px 10px;
+  display: grid; grid-template-columns: 1fr; align-items: center; gap: 10px;
   padding: 20px; border-bottom: 1px solid var(--borda); flex: none;
 }
 .lateral-acoes { display: contents; }
 .lateral-acoes-grupo { display: flex; align-items: center; gap: 2px; }
+.lateral-acoes-grupo:first-child { justify-content: space-between; }
 .lateral-acoes-grupo + .lateral-acoes-grupo { grid-column: 1 / -1; gap: 8px; }
 .lateral-acoes-grupo[data-grupo="acoes"] button { display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1; padding: 10px 8px; font-size: 13px; }
 /* `min-width: 0` e `overflow: hidden` não são enfeite: item de flex nasce com
@@ -373,7 +401,8 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
    pedia 301px numa lateral de 260 e o `+` de abrir aba nascia em x=261 — fora da lista e
    cortado pelo `overflow: hidden` dela. Ele existia no DOM, media 40x40 e nunca recebeu um
    clique no desktop; no celular passava despercebido porque lá a lista é a tela inteira.
-   Quem cede espaço é o subtítulo, que é decorativo — o "Cockpit" continua inteiro. */
+   Quem cede espaço é o subtítulo, que é decorativo — o "Cockpit" continua inteiro.
+   Desde D96 a marca tem a linha inteira; o encolher fica como rede para tela estreita. */
 .marca { font-weight: 650; letter-spacing: -0.01em; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
 .marca small { display: block; font-weight: 400; font-size: 11px; color: var(--texto-3); letter-spacing: 0.02em; overflow: hidden; text-overflow: ellipsis; }
 
@@ -517,6 +546,31 @@ button { font: inherit; color: inherit; cursor: pointer; border-radius: var(--ra
   border: 1px solid var(--perigo); border-radius: 999px; box-shadow: var(--sombra); display: none; }
 @media (min-width: 761px) { .app[data-lateral="fechada"] ~ .monitor-selo:not([hidden]) { display: block; } }
 @media (max-width: 760px) { .app[data-vista="chat"] ~ .monitor-selo:not([hidden]) { display: block; } }
+
+/* Faixa PROD FORA (D87): irmã ANTERIOR do `.app` (primeiro filho de `<body>`) — vale em toda
+   tela, sem depender de `data-vista`/`data-lateral`. Quando visível, o `.app` encolhe (ele é o
+   único `100dvh` fora dos diálogos, estilo.css:352) e o selo do monitor desce junto. O `hidden`
+   global (`[hidden] { display: none !important }`) já cobre o caso escondido — sem regra própria. */
+.prod-fora {
+  display: flex; align-items: center; height: var(--prod-fora-h);
+  padding: env(safe-area-inset-top) 12px 0; background: var(--perigo); color: var(--sobre-perigo);
+  font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.prod-fora[data-tom="parado"] { background: var(--fundo-3); color: var(--texto); border-bottom: 2px solid var(--perigo); }
+body:has(> .prod-fora:not([hidden])) .app { height: calc(100dvh - var(--prod-fora-h)); }
+body:has(> .prod-fora:not([hidden])) .monitor-selo { top: calc(var(--prod-fora-h) + 8px); }
+/* As bolinhas (P3): uma por site, dentro da faixa do monitor — aparecem com ela, não com a
+   faixa vermelha do topo (public/monitor.js decide as duas visibilidades em separado). */
+.monitor-sites { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; }
+.monitor-site::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--texto-3); margin-right: 4px; }
+.monitor-site[data-situacao="no-ar"]::before { background: var(--ok); }
+.monitor-site[data-situacao="fora"]::before { background: var(--perigo); }
+.monitor-site[data-situacao="parado"]::before { background: var(--texto-3); }
+.monitor-sites-nota { color: var(--perigo); font-weight: 650; }
+.monitor-sites[data-estado="sem-dado"] { opacity: 0.45; }
+/* Finanças (card pagina-financas, D92): o modal (D90) saiu — virou página (`financas.css`).
+   Só o botão da lateral fica aqui. */
+.icone-so.financas { width: 40px; height: 40px; }
 /* painel */
 .monitor-agora { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
 .monitor-medidor { display: grid; gap: 2px; padding: 10px; background: var(--fundo-3); border-radius: var(--raio); }
@@ -776,9 +830,14 @@ button.monitor-medidor[aria-expanded="true"] { border-color: var(--accent); }
 .conversa-linha[data-estado="trabalhando"] .conversa-estado { color: var(--accent); }
 .conversa-linha[data-estado="respondeu"] .conversa-pino,
 .conversa-linha[data-estado="respondeu"] .conversa-estado { color: var(--ok); }
-.conversa-linha[data-estado="pronta"] .conversa-pino { color: var(--ok); }
+.conversa-linha[data-estado="pronta"] .conversa-pino,
+.conversa-linha[data-estado="segundo-plano"] .conversa-pino { color: var(--ok); }
 .conversa-linha[data-estado="interrompida"] .conversa-pino,
 .conversa-linha[data-estado="interrompida"] .conversa-estado { color: var(--perigo); }
+/* "livre · N agente(s) em background" (card trabalhando-nao-distingue-subagente). ANTES do
+   `[data-esperando="1"]` abaixo de propósito: ele vence quando os dois se aplicam (mesma
+   especificidade, vem depois no arquivo) — "te esperando" continua mandando na cor. */
+.conversa-linha[data-estado="segundo-plano"] .conversa-estado { color: var(--segundo-plano); }
 /* O nome do job em negrito leve — como no Herd. `[id="grupo-jobs"]`, e NÃO `#grupo-jobs`:
    o seletor de ID pesaria MAIS que o do bloqueado/órfão logo abaixo (três classes), e o
    600 venceria o 700 nesses jobs — exatamente o oposto do que se quer ("não é o mesmo
@@ -1194,6 +1253,11 @@ button.monitor-medidor[aria-expanded="true"] { border-color: var(--accent); }
   font-family: var(--mono); font-size: 12px; color: var(--texto-3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* "livre · N agente(s) em background" no cabeçalho do painel aberto (card
+   trabalhando-nao-distingue-subagente). `[hidden] { display: none !important; }` já esconde. */
+.chat-segundo-plano { font-size: 12px; color: var(--segundo-plano); }
+/* D3 do card ver-os-subagentes-da-aba: o rótulo é tocável — leva até o sub-agente rodando. */
+.chat-segundo-plano { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .voltar { display: none; background: transparent; border: 0; padding: 4px 8px; }
 /* M4 (04/09): a MESMA cor do pino de "trabalhando" (--accent, não --espera — aquela é
    coral, e é "te esperando", outro estado) — o botão marca visualmente que há um turno
@@ -1412,7 +1476,7 @@ button.monitor-medidor[aria-expanded="true"] { border-color: var(--accent); }
 .pergunta-teclas .tecla[data-apertada] { box-shadow: 0 0 0 3px var(--texto); }
 /* O aviso de hook da pergunta não instalado (card pergunta-sem-gancho-avisa). Discreto pelo TAMANHO, não pela
    cor: `--texto-2` sobre o fundo composto da `.pergunta` reprova 4,5:1 no rose-pine-dawn (ver `.pergunta-tela`). */
-.aviso-gancho { margin-top: 6px; font-size: 12px; line-height: 1.4; }
+.aviso-gancho, .aviso-confianca { margin-top: 6px; font-size: 12px; line-height: 1.4; }
 
 /* O CARTÃO da pergunta do agente (card pergunta-do-agente-em-cartao, D74). Fonte do app (não
    a mono do terminal), opção com alvo >= 44px e TODA cor de texto = `--texto`: o fundo da
@@ -1498,10 +1562,11 @@ button.monitor-medidor[aria-expanded="true"] { border-color: var(--accent); }
 .mensagens[data-pintando] .bolha-eu,
 .mensagens[data-pintando] .fala,
 .mensagens[data-pintando] .ferramenta,
+.mensagens[data-pintando] .saida-comando,
 .mensagens[data-pintando] .grupo-ferramentas { animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .bolha-eu, .fala, .ferramenta, .grupo-ferramentas { animation: none !important; }
+  .bolha-eu, .fala, .ferramenta, .grupo-ferramentas, .saida-comando { animation: none !important; }
   .mensagens { scroll-behavior: auto; }
   .app { transition: none; }
 }
@@ -1827,12 +1892,110 @@ button.monitor-medidor[aria-expanded="true"] { border-color: var(--accent); }
 .ferramenta[data-estado="feita"] .fer-estado { color: var(--ok); }
 .ferramenta[data-estado="erro"] .fer-estado { color: var(--perigo); }
 .ferramenta[data-estado="erro"] summary { border-color: var(--perigo); }
+/* Cartão vivo do sub-agente (card ver-os-subagentes-da-aba, D86): o estado vai numa 2ª linha do resumo, alinhada
+   ao texto (27px = 18px do ícone + 9px de gap). Cor do "rodando" = a do rótulo de background (D83). */
+.ferramenta[data-agente] summary { flex-wrap: wrap; row-gap: 2px; }
+.fer-agente { flex-basis: 100%; padding-left: 27px; font-size: 12px; color: var(--texto-3); font-variant-numeric: tabular-nums; }
+.ferramenta[data-agente="rodando"] .fer-agente { color: var(--segundo-plano); }
+.ferramenta[data-agente="terminou"] .fer-agente { color: var(--ok); }
+.ferramenta[data-agente="falhou"] .fer-agente { color: var(--perigo); }
+.ferramenta.destaque summary { border-color: var(--segundo-plano); box-shadow: 0 0 0 2px var(--segundo-plano); }
+.sub-agente { border: 1px solid var(--borda); border-top: 0; background: var(--fundo-2); padding: 6px 0 8px; }
+.sub-resumo { display: flex; align-items: center; gap: 9px; padding: 4px 11px; }
+.sub-passo { display: flex; align-items: center; gap: 9px; padding: 3px 11px 3px 17px; font-size: 13px; color: var(--texto-2); }
+.sub-passo[data-estado="feita"] .fer-estado { color: var(--ok); }
+.sub-passo[data-estado="erro"] .fer-estado { color: var(--perigo); }
+.sub-nota { padding: 4px 11px; font-size: 12px; color: var(--texto-3); }
+.sub-resposta { margin: 6px 11px 0; padding-top: 6px; border-top: 1px solid var(--borda); }
+.sub-resposta-rotulo { font-size: 12px; color: var(--texto-3); margin-bottom: 4px; }
+.sub-resposta-corpo { font-size: 13.5px; color: var(--texto); overflow-wrap: anywhere; }
+/* Card subagente-cartao-legivel (D93): o resumo dos passos é um BOTÃO que recolhe só a lista. Reset do botão do
+   navegador (a casca de flex/gap/padding continua na regra `.sub-resumo` de cima). A seta vai na mono — a Inter
+   não cobre ▸ (#92). `.sub-passos` não tem `display`: quem decide é o `hidden` (#30). */
+.sub-resumo {
+  width: 100%; margin: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+}
+.sub-resumo:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sub-seta { flex: none; width: 18px; text-align: center; font-family: var(--mono); font-size: 12px; color: var(--texto-3); }
+/* O pedido: a mesma caixa que o <pre> da entrada ocupava (`.ferramenta pre`), com o markdown das bolhas em escala
+   de cartão. Com a saída do D9 embaixo (`pre.sub-saida`), o pedido perde o canto e a saída fecha a caixa. */
+.sub-pedido {
+  padding: 10px 12px; font-size: 13.5px; color: var(--texto); overflow-wrap: anywhere;
+  background: var(--fundo-2); border: 1px solid var(--borda); border-top: 0;
+  border-radius: 0 0 var(--raio) var(--raio);
+}
+.sub-pedido:not(:last-child) { border-radius: 0; }
+.sub-pedido-rotulo { font-size: 12px; color: var(--texto-3); margin-bottom: 4px; }
+.sub-pedido-titulo { font-size: 14px; font-weight: 600; }
+.sub-pedido-extras { margin-top: 2px; font-size: 12px; color: var(--texto-3); }
+.sub-pedido-corpo { margin-top: 8px; }
+.sub-pedido-corpo > :first-child { margin-top: 0; }
+.sub-pedido-corpo > :last-child { margin-bottom: 0; }
+.sub-pedido-corpo p { margin: 0 0 8px; }
+.sub-pedido-corpo h3, .sub-pedido-corpo h4 { margin: 12px 0 6px; font-size: 14.5px; font-weight: 650; }
+.sub-pedido-corpo h4 { font-size: 13.5px; color: var(--texto-2); }
+.sub-pedido-corpo ul, .sub-pedido-corpo ol { margin: 0 0 8px; padding-left: 20px; }
+.sub-pedido-corpo li { margin: 2px 0; }
+.sub-pedido-corpo code {
+  font-family: var(--mono); font-size: 0.88em;
+  background: var(--fundo-3); padding: 1px 5px; border-radius: 5px;
+}
+/* `.ferramenta pre` (abaixo) vem DEPOIS de `.bloco-codigo pre` e corta a borda de cima e o canto de todo código
+   dentro do cartão — aqui o código do pedido volta a ser caixa inteira. O `padding-top` abre uma faixa para o
+   rótulo da linguagem e o "copiar" (absolutos no canto de cima): no 390 px, sem ela, os dois caíam EM CIMA da
+   única linha do código (painel de execução, 18/10). */
+.sub-pedido .bloco-codigo pre {
+  border-top: 1px solid var(--borda); border-radius: var(--raio); max-height: none; padding-top: 32px;
+}
+.sub-pedido .bloco-codigo code { padding: 0; background: none; font-size: 12.5px; }
+/* L4: o corpo nasce limitado; o esmaecido só liga quando a medição achou corte (`data-cortado`). */
+.sub-pedido[data-recolhido] .sub-pedido-corpo { max-height: 16em; overflow: hidden; }
+.sub-pedido[data-cortado] .sub-pedido-corpo {
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+.sub-pedido-mais {
+  display: block; margin: 6px 0 0; padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 12.5px; color: var(--accent); text-decoration: underline;
+}
 .ferramenta pre {
   margin: 0; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   font-family: var(--mono); font-size: 12.5px; color: var(--texto-2);
   background: var(--fundo-2); border: 1px solid var(--borda); border-top: 0;
   border-radius: 0 0 var(--raio) var(--raio); max-height: 340px;
 }
+/* D9 com pedido (D93, L7): a saída entra embaixo do pedido; a linha tracejada separa as duas. */
+.ferramenta pre.sub-saida { border-top: 1px dashed var(--borda); }
+
+/* ── Saída de um `!` (D79) ───────────────────────────────────────────
+   Cartão da MÁQUINA: largura cheia, mono, menor que a conversa, paleta de terminal fixa. `colado` só quando
+   o nó anterior é o balão do comando — come o gap da fita para os dois lerem como um par. */
+.saida-comando {
+  align-self: stretch; max-width: 100%;
+  font-family: var(--mono); font-size: 12px; line-height: 1.45;
+  /* Saída de terminal é literal: a fonte mono do sistema pode ter ligadura e desenhar `->` como seta
+     (visto no print de 11/10). */
+  font-variant-ligatures: none;
+  color: var(--terminal-texto); background: var(--terminal-fundo);
+  border: 1px solid var(--borda); border-radius: var(--raio); overflow: hidden;
+  animation: entrar 0.18s ease-out;
+}
+.saida-comando.colado { margin-top: -8px; }
+.saida-cabeca { padding: 6px 11px; color: var(--terminal-apagado); border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.saida-comando-texto { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.saida-comando pre {
+  margin: 0; padding: 8px 11px; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: inherit; color: inherit; background: none; border: 0;
+}
+.saida-stderr { border-top: 1px solid rgba(255, 255, 255, 0.08); border-left: 3px solid var(--terminal-aviso); }
+.saida-stderr-rotulo { display: block; padding: 6px 11px 0 8px; font-size: 11px; color: var(--terminal-aviso); }
+.saida-stderr pre { padding-left: 8px; }
+.saida-mais {
+  display: block; margin: 0 11px 8px; padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; color: var(--terminal-apagado); text-decoration: underline;
+}
+.saida-vazia { display: block; padding: 8px 11px; color: var(--terminal-apagado); font-style: italic; }
 
 /* ── Ferramentas agrupadas ───────────────────────────────────────────── */
 .grupo-ferramentas { align-self: stretch; max-width: 100%; font-size: 13.5px; animation: entrar 0.18s ease-out; }
@@ -2223,6 +2386,7 @@ dialog[open]::backdrop { opacity: 1; }
   .voltar { order: 0; }
   .chat-identidade { order: 1; }
   .fechar-aba { order: 2; }
+  .btn-mudancas { order: 2; }
   .chat-topo::after { content: ''; order: 3; flex-basis: 100%; height: 0; }
   /* Sem o `flex-basis: 100%` do desktop: lá ela toma uma linha própria; aqui ela divide a
      linha 2 com o medidor e o Parar, e é quem encolhe quando aperta. A base é `0`, e não
@@ -2481,6 +2645,12 @@ dialog[open]::backdrop { opacity: 1; }
    temas. `.icone-so.revisar` é o alvo de dedo: `.icone-so` sozinho dá 25px (gate-ui.js:5819),
    o mínimo de toque é 40 — mesmo motivo do `.engrenagem`/`.recarregar` acima. ── */
 .icone-so.revisar { position: relative; width: 40px; height: 40px; display: inline-grid; place-items: center; }
+/* O botão de grafos (card `grafo-do-projeto-no-cockpit`) é o mesmo alvo de dedo do `.revisar` acima. */
+.icone-so.grafos { width: 40px; height: 40px; }
+.icone-so.commits { width: 40px; height: 40px; }
+/* O botão "Ver mudanças" (card `ver-a-diff-do-codigo`, D95) no topo do painel do job — mais
+   compacto que o `.btn` padrão pra caber ao lado dos ícones do `.chat-topo`. */
+.btn-mudancas { padding: 6px 10px; font-size: 13px; }
 .revisar-conta { position: absolute; top: 2px; right: 0; min-width: 17px; height: 17px; padding: 0 4px;
   border-radius: 9px; background: var(--accent); color: var(--sobre-accent);
   font: 700 11px/17px var(--sans); text-align: center; }
@@ -2590,3 +2760,25 @@ details.rv-completo { margin-top: 22px; border: 1px solid var(--borda); border-r
 details.rv-completo summary { padding: 13px 14px; cursor: pointer; font-weight: 600; color: var(--texto-2); }
 details.rv-completo .rv-md { padding: 0 14px 12px; }
 .rv-md li.sub { margin-left: 18px; list-style: circle; }
+
+/* ── Diálogo "Grafos" (card `grafo-do-projeto-no-cockpit`) — uma linha por projeto, com o
+   estado em texto (nunca só em title, #31) e um botão "Grafo" à direita. ── */
+#dialogo-grafos .dialogo-corpo { max-height: 80vh; overflow-y: auto; }
+.grafos-nota { color: var(--texto-2); font-size: 13px; margin: -4px 0 10px; }
+.grafos-lista { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.grafos-linha { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--borda); border-radius: 12px; background: var(--fundo-2); }
+.grafos-nome { font-weight: 600; grid-column: 1; }
+.grafos-estado { color: var(--texto-2); font-size: 12.5px; grid-column: 1; }
+.grafos-abrir { grid-column: 2; grid-row: 1 / 3; }
+.grafos-abrir[disabled] { opacity: 0.5; cursor: default; }
+/* Erro/aviso do "Fazer grafo" (card `grafo-botao-fazer-grafo`): uma linha, largura inteira, embaixo do botão.
+   Com `.grafos-linha` na frente de propósito: `.dialogo-corpo p` (margem de 16 px embaixo) é mais específico
+   que uma classe só e deixava um vão embaixo da mensagem (visto no print 390×844). */
+.grafos-linha .grafos-msg { grid-column: 1 / -1; margin: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grafos-linha .grafos-msg.erro { color: var(--perigo); }
+.grafos-linha .grafos-msg.aviso { color: var(--texto-2); }
+@media (max-width: 390px) {
+  .grafos-linha { grid-template-columns: 1fr; }
+  .grafos-abrir { grid-column: 1; grid-row: auto; justify-self: start; }
+}

@@ -40,7 +40,11 @@ A pasta `_triagem` é criada dentro do inbox quando a lista de destinos é consu
 | `COCKPIT_MONITOR_MS` | `60000` | Intervalo do amostrador do monitor; `0` desliga o amostrador e também a medida do disco em background (as rotas continuam medindo ao vivo) |
 | `COCKPIT_MONITOR_DISCO` | `/` | Partição medida pelo monitor |
 | `COCKPIT_DU_BIN` | `du` | Executável usado pela medida de disco do monitor; os testes apontam para um falso |
+| `COCKPIT_VIGIA_PROD_ARQ` | `~/.cockpit/vigia-prod/estado.json` | Estado JSON gravado por um vigia de prod externo; só leitura; ausente = recurso desligado |
 | `COCKPIT_DOCKER_BIN` | `docker` | Executável usado pela medida de disco do monitor (`docker system df`); os testes apontam para um falso |
+| `COCKPIT_FINANCAS_DIR` | `~/.cockpit/financas` | Pasta dos resumos diários (`<id>.json` + `<id>.lancamentos.json` + `<id>.pdf` + `<id>.xlsx`) de um gerador externo; só leitura; ausente = recurso desligado |
+| `COCKPIT_FINANCAS_DESTINOS` | — | Lista de aparelhos do tailnet (por vírgula, até 8) que a página de Finanças pode usar pra "Enviar por Taildrop" — ex. `meu-desktop,meu-celular`. Sem nenhum aparelho configurado, só "Baixar neste aparelho" aparece. |
+| `COCKPIT_FINANCAS_DESTINO` | — | Legado: um único aparelho, somado ao fim da lista de `COCKPIT_FINANCAS_DESTINOS` (continua aceita). |
 
 As variáveis de host, porta, token, projetos, CLIs, tmux, TLS e jobs HTTP estão no [README](../README.md). Não aponte diretórios de dados para dentro do checkout público. Preserve permissões e conteúdo ao mover registros; uma pasta vazia não é equivalente à anterior.
 

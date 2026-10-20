@@ -46,10 +46,13 @@ self.addEventListener('notificationclick', (evento) => {
   const destino = new URL(sessaoId ? `./#c=${sessaoId}` : './', self.location.href).href;
 
   evento.waitUntil((async () => {
+    const raiz = new URL('./', self.location.href).href;
     const abertas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const janela of abertas) {
-      // Já tem o cockpit aberto: foca essa janela em vez de abrir uma segunda.
-      if (janela.url.startsWith(new URL('./', self.location.href).href)) {
+      // Já tem o cockpit aberto: foca essa janela em vez de abrir uma segunda. Desde D96 (regra da casa: tudo
+      // dentro do app) diff, mapa e grafo moram na janela DO APP, como `financas.html` — nenhuma é poupada.
+      // Com `sessaoId` ela navega para a conversa; sem, só ganha o foco.
+      if (janela.url.startsWith(raiz)) {
         await janela.focus();
         if (sessaoId && 'navigate' in janela) await janela.navigate(destino).catch(() => {});
         return;

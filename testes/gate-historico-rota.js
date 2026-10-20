@@ -159,8 +159,8 @@ async function testesAteInvalido() {
 }
 
 async function testeIdDeJobInvalido() {
-  // Passa na régua da CHAVE (/^[\w-]+$/, aceita maiúscula) mas falha na régua de `idValido`
-  // do módulo do job (/^[0-9a-z-]+$/, só minúscula) — a segunda trava, exercitada de verdade.
+  // Passa na régua da CHAVE (`chaveValida`, aceita maiúscula) mas falha na régua de `idValido`
+  // do módulo do job (só minúscula) — a segunda trava, exercitada de verdade.
   const r = await pedir('/api/historico?chave=job-IDInvalido&ate=10');
   ok(r.status === 400, `id de job inválido (maiúsculas) ⇒ 400 (veio ${r.status})`);
 }
@@ -227,6 +227,24 @@ async function testeDuzentosNumJob() {
   ok(r.corpo.cortado === false, `fixture pequena não corta (veio ${r.corpo.cortado})`);
 }
 
+async function testeJobForaDoAlfabeto() {
+  // Card `job-com-underscore-ou-ponto-no-id`: os dois alfabetos que o gerador de ids do
+  // orquestrador produz e que esta rota recusava (400) — `_` em `idValido`, `.` na chave.
+  for (const id of ['20261013-145932-projeto-a-ataca-dataset-com-campo_novo-a33f',
+    '20261004-154220-projeto-b-ataca-painel-em-exemplo.app.br-c561']) {
+    plantarJob(id, humano('oi do job') + agente('resposta do job'));
+    const tamanho = fs.statSync(path.join(RAIZ_JOBS, id, 'claude.log')).size;
+    const r = await pedir(`/api/historico?chave=job-${id}&ate=${tamanho}`);
+    ok(r.status === 200 && Array.isArray(r.corpo.eventos) && r.corpo.eventos.length > 0,
+      `job com ${id.includes('_') ? '_' : '.'} no id ⇒ 200 com eventos (veio ${r.status})`);
+  }
+  // A trava de caminho continua: `..` passa a FORMA da chave e cai em `idValido`; `/` nem passa a forma.
+  const r1 = await pedir('/api/historico?chave=job-..&ate=10');
+  ok(r1.status === 400, `chave job-.. ⇒ 400 (veio ${r1.status})`);
+  const r2 = await pedir('/api/historico?chave=job-a%2Fb&ate=10');
+  ok(r2.status === 400, `chave job-a/b ⇒ 400 (veio ${r2.status})`);
+}
+
 // ─── Execução ──────────────────────────────────────────────────────────────────────────────
 
 async function principal() {
@@ -257,6 +275,7 @@ async function principal() {
   console.log('\n── GET /api/historico — 200 ──\n');
   await testeDuzentosComEventosEInicio();
   await testeDuzentosNumJob();
+  await testeJobForaDoAlfabeto();
 
   // NENHUM `kill-server` de tmux aqui (D35): o ramo de aba nunca fala com tmux de verdade
   // neste gate — o duble de `lib/abas.js` cobre `buscar` inteiro.

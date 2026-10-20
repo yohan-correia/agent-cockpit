@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 require(path.join(__dirname, '..', 'public', 'revisar.js'));
-const { blocosDoMarkdown, blocosDoSmoke, pendenciasDe } = globalThis.cockpitRevisar;
+const { blocosDoMarkdown, blocosDoSmoke, pendenciasDe, tomDoJob, vereditoDoTexto } = globalThis.cockpitRevisar;
 
 let falhas = 0;
 const ok = (c, t) => { console.log(`  ${c ? '✅' : '❌'} ${t}`); if (!c) falhas += 1; return c; };
@@ -134,6 +134,45 @@ function testePendencias() {
   ok(typeof pendenciasDe === 'function' && pendenciasDe('## Pendências para o dono\n\n## Outra\n- b\n') === null, 'seção vazia → null');
 }
 
+// ─── vereditoDoTexto / tomDoJob (card revisar-nao-chama-de-pronto-job-entregue-ou-parado) ───
+
+function testeVereditoETom() {
+  const d1 = vereditoDoTexto('needs-decision: parei.', ['pede-decisao']);
+  ok(d1.titulo === 'Pede decisão' && d1.tom === 'aviso' && d1.texto === 'parei.',
+    `needs-decision: no início, com pede-decisao — veio ${JSON.stringify(d1)}`);
+
+  const d2 = vereditoDoTexto('**needs-decision:** escolha A.', []);
+  ok(d2.titulo === 'Pede decisão' && d2.texto === 'escolha A.',
+    `**needs-decision:** em negrito, sem etiqueta — veio ${JSON.stringify(d2)}`);
+
+  const d3 = vereditoDoTexto('done: código pronto.\n\nresto', ['pede-decisao']);
+  ok(d3.titulo === 'Pede decisão' && d3.texto === 'código pronto.',
+    `done: com a etiqueta pede-decisao presente ⇒ "Pede decisão" mesmo assim — veio ${JSON.stringify(d3)}`);
+
+  // Painel de execução (16/10): com `done:` no 1º bloco e a decisão mais abaixo, o cartão dizia "Pede decisão"
+  // com a frase do `done:` embaixo — o título certo com a pergunta errada. O texto é a linha da decisão.
+  const d3b = vereditoDoTexto('done: código entregue.\n\nmeio do relatório\n\n**needs-decision:** escolha A ou B.\n\n## Smoke', ['pede-decisao']);
+  ok(d3b.titulo === 'Pede decisão' && d3b.texto === 'escolha A ou B.',
+    `done: + **needs-decision:** mais abaixo ⇒ o texto é a pergunta, não o done — veio ${JSON.stringify(d3b)}`);
+
+  const d4 = vereditoDoTexto('done: ok', []);
+  ok(d4.titulo === 'Terminou bem', `done: ok sem etiqueta ⇒ "Terminou bem" (controle) — veio ${JSON.stringify(d4)}`);
+
+  const d5 = vereditoDoTexto('done: ok', ['pede-decisao', 'parou-no-limite']);
+  ok(d5.titulo === 'Parou no limite', `parou-no-limite vence tudo (controle) — veio ${JSON.stringify(d5)}`);
+
+  ok(tomDoJob(['pede-decisao']) === 'aviso', `tomDoJob(['pede-decisao']) === 'aviso' — veio ${tomDoJob(['pede-decisao'])}`);
+  ok(tomDoJob(['relatorio-ilegivel']) === 'aviso', `tomDoJob(['relatorio-ilegivel']) === 'aviso' — veio ${tomDoJob(['relatorio-ilegivel'])}`);
+  ok(tomDoJob([]) === 'ok', `tomDoJob([]) === 'ok' (controle) — veio ${tomDoJob([])}`);
+  ok(tomDoJob(['pede-revisao']) === 'aviso', `tomDoJob(['pede-revisao']) === 'aviso' (controle) — veio ${tomDoJob(['pede-revisao'])}`);
+
+  // Consequência declarada do regex do negrito (Fase 5): não é escopo extra, é o mesmo regex.
+  const d6 = vereditoDoTexto('**done:** ok', []);
+  ok(d6.titulo === 'Terminou bem', `**done:** em negrito ⇒ "Terminou bem" (controle) — veio ${JSON.stringify(d6)}`);
+  const d7 = vereditoDoTexto('done: **entrega** na worktree', []);
+  ok(d7.texto === '**entrega** na worktree', `o "**" que NÃO fecha o negrito do verbo fica no texto (controle) — veio ${JSON.stringify(d7)}`);
+}
+
 // ─── Execução ──────────────────────────────────────────────────────────────────────────────
 
 console.log('\n── blocosDoMarkdown — relatório real (…-93b1) ──\n');
@@ -151,6 +190,9 @@ testeSmokeQualquerDono();
 
 console.log('\n── pendenciasDe ──\n');
 testePendencias();
+
+console.log('\n── vereditoDoTexto / tomDoJob ──\n');
+testeVereditoETom();
 
 console.log(`\n${falhas === 0 ? '✅ GATE VERDE' : `❌ GATE VERMELHO (${falhas} falha(s))`} — revisar-md\n`);
 process.exit(falhas === 0 ? 0 : 1);

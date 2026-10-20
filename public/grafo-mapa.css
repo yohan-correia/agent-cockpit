@@ -1,0 +1,287 @@
+/* Estilo do mapa do grafo EM FOCO (card `grafo-mapa-foco`, D94, sobre o D91). Só as variáveis que já
+   existem nos temas do `estilo.css` (--fundo, --fundo-2, --fundo-3, --borda, --texto, --texto-2,
+   --accent, --raio, --mono, --sans) — este arquivo não toca o `estilo.css`. Prefixo `.mapa-`/`#mapa-`
+   em tudo, exceto `body.mapa-pagina`. Visual = maquete `2026-10-18-mapa-grafo/index.html:9-112`
+   traduzida pras variáveis do tema (F1): `--sup`→`--fundo-2`, `--sup2`→`--fundo-3`,
+   `--texto2`→`--texto-2`, `--texto3`→`--texto-2` com opacidade .75, `--acento`→`--accent`. Cor por
+   camada (`--cor`) é a ÚNICA cor fixa — é DADO, nunca entra em texto (R5: tema claro ilegível). */
+
+body.mapa-pagina {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  font-family: var(--sans);
+  background: var(--fundo);
+  color: var(--texto);
+}
+
+#mapa-topo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--borda);
+  flex: 0 0 auto;
+}
+#mapa-voltar {
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  color: var(--texto);
+  min-width: 36px;
+  min-height: 36px;
+  font-size: 20px;
+  line-height: 1;
+}
+#mapa-voltar[hidden] { display: none; }
+.mapa-titulo { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.mapa-titulo strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapa-titulo small { color: var(--texto-2); font-size: 11px; }
+#mapa-completo {
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+#mapa-trilha {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 14px 0;
+  min-height: 28px;
+  border-bottom: 1px solid var(--borda);
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--texto-2);
+}
+.mapa-trilha-passo, .mapa-trilha-atual {
+  font-size: 13px;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+}
+.mapa-trilha-passo { color: var(--accent); cursor: pointer; }
+.mapa-trilha-atual { color: var(--texto-2); }
+.mapa-trilha-sep { color: var(--texto-2); opacity: .75; }
+#mapa-trilha:empty { display: none; border-bottom: none; }
+
+/* Dica fixa (fora do rolador — decisão de produto 2 da spec) */
+#mapa-dica {
+  margin: 10px 14px 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--texto);
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
+#mapa-dica:empty { display: none; }
+.mapa-dica-icone { flex: 0 0 auto; }
+
+/* Único rolador da tela — item do flex, nunca `sticky` pra cima dele. */
+#mapa-raiz {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 8px 16px 40px;
+}
+
+#mapa-aviso {
+  color: var(--texto-2);
+  font-size: 13px;
+  padding: 8px 0;
+}
+#mapa-aviso[hidden] { display: none; }
+
+/* ── Foco (nível 1) ───────────────────────────────────────────────────────── */
+#mapa-foco { display: flex; flex-direction: column; align-items: center; }
+.mapa-faixa { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; width: 100%; }
+.mapa-faixa-rotulo { width: 100%; text-align: center; margin: 4px 0 2px; font-size: 11px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .06em; }
+.mapa-vizinho {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--fundo-2);
+  border: 1px solid var(--borda);
+  color: var(--texto);
+  font-size: 13px;
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+.mapa-vizinho b { font-weight: 600; }
+.mapa-vizinho em { font-style: normal; color: var(--texto-2); font-size: 12px; }
+.mapa-bolinha { width: 9px; height: 9px; border-radius: 50%; background: var(--cor); flex: 0 0 auto; }
+.mapa-mais {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--fundo-2);
+  border: 1px dashed var(--borda);
+  color: var(--accent);
+  font-size: 13px;
+}
+.mapa-ninguem { font-style: normal; color: var(--texto-2); font-size: 13px; }
+
+.mapa-fio { width: 100%; height: 46px; display: block; }
+.mapa-fio path { fill: none; stroke-linecap: round; stroke-dasharray: 6 10; stroke-width: 3; animation: mapa-flui 1.2s linear infinite; }
+.mapa-fio-cima path { stroke: var(--texto-2); }
+.mapa-fio-baixo path { stroke: var(--cor); }
+
+.mapa-centro {
+  margin: 6px 0;
+  width: min(320px, 100%);
+  padding: 18px;
+  border-radius: 20px;
+  text-align: center;
+  background: radial-gradient(120% 140% at 50% 0%, color-mix(in srgb, var(--cor) 30%, var(--fundo-2)) 0%, var(--fundo-2) 70%);
+  border: 1px solid color-mix(in srgb, var(--cor) 55%, var(--borda));
+  box-shadow: 0 10px 40px -10px color-mix(in srgb, var(--cor) 45%, transparent);
+}
+.mapa-centro-nome { font-size: 20px; font-weight: 700; }
+.mapa-centro-explica { color: var(--texto-2); font-size: 13px; margin: 2px 0 8px; }
+.mapa-centro-qtd { font-size: 13px; color: var(--texto-2); }
+.mapa-entrar {
+  margin-top: 12px;
+  width: 100%;
+  padding: 11px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--cor) 22%, var(--fundo-3));
+  border: 1px solid color-mix(in srgb, var(--cor) 45%, transparent);
+  color: var(--texto);
+  text-align: center;
+  font-weight: 600;
+}
+.mapa-trocando .mapa-centro { animation: mapa-pulo .45s cubic-bezier(.2, .8, .2, 1); }
+.mapa-entra { animation: mapa-entra .35s both; }
+.mapa-legenda-numero { font-size: 12px; color: var(--texto-2); margin: 6px 0 0; text-align: center; }
+
+/* ── Todas as partes ──────────────────────────────────────────────────────── */
+#mapa-todas { width: 100%; margin-top: 22px; }
+.mapa-secao-titulo { font-size: 12px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; align-self: flex-start; }
+.mapa-pilulas { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; width: 100%; }
+.mapa-pilula { padding: 8px 12px; border-radius: 12px; background: var(--fundo-2); border: 1px solid var(--borda); color: var(--texto); font-size: 13px; display: flex; gap: 7px; align-items: center; }
+.mapa-pilula[aria-current="true"] { outline: 2px solid var(--cor); }
+
+/* ── Nível 2 — pastas e arquivos em lista ─────────────────────────────────── */
+#mapa-pastas, #mapa-arquivos-secao { margin-top: 10px; }
+#mapa-arquivos { display: flex; flex-direction: column; gap: 8px; }
+.mapa-linha {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: var(--fundo-2);
+  border: 1px solid var(--borda);
+  color: var(--texto);
+  text-align: left;
+  margin-bottom: 8px;
+  animation: mapa-entra .35s both;
+}
+.mapa-linha-icone { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--fundo-3); font-size: 14px; }
+.mapa-linha-meio { min-width: 0; }
+.mapa-linha-nome { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapa-linha-desc { font-size: 12px; color: var(--texto-2); }
+.mapa-linha-qtd { font-size: 12px; color: var(--texto-2); text-align: right; display: flex; flex-direction: column; gap: 2px; }
+.mapa-mini { height: 3px; border-radius: 3px; background: var(--fundo-3); margin-top: 5px; overflow: hidden; }
+.mapa-mini i { display: block; height: 100%; background: var(--cor); }
+.mapa-mostrar-todos, .mapa-mostrando { font-size: 12px; color: var(--texto-2); margin-top: 6px; }
+.mapa-mostrar-todos { background: none; border: 1px solid var(--borda); border-radius: var(--raio); color: var(--accent); padding: 6px 10px; }
+.mapa-ninguem { color: var(--texto-2); font-size: 13px; }
+
+/* ── Ficha (nível 3) — sobe de baixo, por cima do nível 2 ─────────────────── */
+#mapa-veu {
+  position: fixed;
+  inset: 0;
+  background: #0008;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s;
+  z-index: 40;
+}
+#mapa-veu.aberto { opacity: 1; pointer-events: auto; }
+#mapa-folha {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--fundo-2);
+  border-radius: 20px 20px 0 0;
+  border-top: 1px solid var(--borda);
+  color: var(--texto);
+  transform: translateY(105%);
+  visibility: hidden;
+  transition: transform .38s cubic-bezier(.2, .8, .2, 1), visibility 0s linear .38s;
+  z-index: 50;
+  padding: 8px 16px 28px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+#mapa-folha.aberta { transform: none; visibility: visible; transition-delay: 0s; }
+.mapa-folha-pega { width: 40px; height: 4px; border-radius: 4px; background: var(--borda); margin: 4px auto 12px; }
+.mapa-folha-cab { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+#mapa-folha-titulo { margin: 0; font-size: 19px; }
+.mapa-folha-fechar {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: var(--raio);
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  color: var(--texto);
+  font-size: 18px;
+  line-height: 1;
+}
+.mapa-folha-caminho { font-family: var(--mono); font-size: 12px; color: var(--texto-2); word-break: break-all; margin: 4px 0 10px; }
+.mapa-folha-caixas { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mapa-caixa { background: var(--fundo-3); border-radius: 12px; padding: 10px 12px; }
+.mapa-caixa-num { font-size: 22px; font-weight: 700; }
+.mapa-caixa-rotulo { font-size: 12px; color: var(--texto-2); }
+.mapa-folha-secao h3 { font-size: 12px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .06em; margin: 16px 2px 8px; }
+.mapa-folha-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--borda);
+  font-size: 13.5px;
+  width: 100%;
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  color: var(--texto);
+  text-align: left;
+}
+.mapa-folha-item span:last-child { color: var(--texto-2); white-space: nowrap; }
+
+/* ── Transições de nível (F8c) ────────────────────────────────────────────── */
+.mapa-vista.mapa-entrada { animation: mapa-desliza .4s cubic-bezier(.2, .8, .2, 1); }
+.mapa-vista.mapa-saida { animation: mapa-desliza-volta .4s cubic-bezier(.2, .8, .2, 1); }
+
+@keyframes mapa-flui { to { stroke-dashoffset: -32; } }
+@keyframes mapa-pulo { 0% { transform: scale(.88); opacity: .3; } 100% { transform: none; opacity: 1; } }
+@keyframes mapa-entra { from { opacity: 0; transform: translateY(8px); } }
+@keyframes mapa-desliza { from { opacity: 0; transform: translateX(40px); } }
+@keyframes mapa-desliza-volta { from { opacity: 0; transform: translateX(-40px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  body.mapa-pagina *, body.mapa-pagina *::before, body.mapa-pagina *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

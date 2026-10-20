@@ -207,7 +207,7 @@ process.env.COCKPIT_STATUS_CODEX_DIR = raizStorage;
     marcar(apoReload.some((s) => s.id === 'env-1' && s.texto === 'primeiro'),
       'depois de recarregar o módulo, os snapshots continuam lá — o estado é do disco');
 
-    // Raiz muda em TEMPO DE CHAMADA (troca de env), como lib/abas.js faz com binDoClaude().
+    // Raiz muda em TEMPO DE CHAMADA (troca de env), como lib/abas.js faz com procRaiz().
     const outraRaiz = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-status-codex-outra-'));
     const raizAntiga = process.env.COCKPIT_STATUS_CODEX_DIR;
     process.env.COCKPIT_STATUS_CODEX_DIR = outraRaiz;

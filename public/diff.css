@@ -1,0 +1,267 @@
+/* Estilo da diff de commit e de job (card `ver-a-diff-do-codigo`, D95). Só as variáveis que já
+   existem nos temas do `estilo.css` (--fundo, --fundo-2, --fundo-3, --borda, --texto, --texto-2,
+   --accent, --raio, --mono, --sans, --ok, --perigo) — este arquivo não toca o `estilo.css`.
+   Prefixo `.diff-`/`#diff-` em tudo, exceto `body.diff-pagina`. */
+
+:root {
+  --diff-fundo-mais: color-mix(in srgb, var(--ok) 16%, transparent);
+  --diff-fundo-menos: color-mix(in srgb, var(--perigo) 16%, transparent);
+}
+
+body.diff-pagina {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: var(--sans);
+  background: var(--fundo);
+  color: var(--texto);
+}
+
+#diff-topo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--borda);
+  flex: 0 0 auto;
+}
+.diff-voltar { color: var(--accent); text-decoration: none; font-size: 14px; white-space: nowrap; }
+.diff-sair { margin-left: auto; color: var(--texto-2); text-decoration: none; font-size: 13px; border: 1px solid var(--borda); border-radius: var(--raio); padding: 4px 10px; white-space: nowrap; }
+.diff-seletor-projeto {
+  margin-left: auto;
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  color: var(--texto);
+  padding: 6px 8px;
+  font-size: 13px;
+  max-width: 50vw;
+}
+
+#diff-raiz { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; }
+#diff-aviso {
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--texto-2);
+  background: var(--fundo-2);
+  border-bottom: 1px solid var(--borda);
+}
+#diff-aviso[hidden] { display: none; }
+#diff-palco { padding: 10px 14px 32px; display: flex; flex-direction: column; gap: 4px; }
+
+/* ── lista de commits ───────────────────────────────────────────────────────── */
+
+.diff-lista-commits { display: flex; flex-direction: column; gap: 6px; }
+.diff-commit-item, .diff-aberto-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  width: 100%;
+  background: var(--fundo-2);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  padding: 10px 12px;
+  color: var(--texto);
+}
+.diff-commit-assunto { font-size: 14px; font-weight: 600; }
+.diff-commit-linha { font-size: 12px; color: var(--texto-2); display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.diff-commit-sha { font-family: var(--mono); }
+.diff-selo-merge {
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  color: var(--texto-2);
+}
+.diff-commit-nums { display: flex; gap: 8px; font-family: var(--mono); font-size: 12px; align-self: flex-end; }
+.diff-mais { color: var(--ok); }
+.diff-menos { color: var(--perigo); }
+.diff-mais-commits {
+  align-self: center;
+  margin-top: 6px;
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  color: var(--texto);
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+/* ── cabeçalho do commit / job ───────────────────────────────────────────────── */
+
+.diff-cabecalho { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--borda); }
+.diff-avatar {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+.diff-cabecalho-meio { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.diff-mensagem strong { font-size: 14px; }
+.diff-mensagem-corpo { font-size: 13px; color: var(--texto-2); }
+.diff-cabecalho-info { font-size: 12px; color: var(--texto-2); }
+.diff-nota-merge { font-size: 12px; color: var(--accent); }
+.diff-linha-sha { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.diff-sha-visivel { font-family: var(--mono); font-size: 12px; color: var(--texto-2); }
+.diff-btn-copiar {
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  color: var(--texto);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.diff-cabecalho-job { padding: 10px 0; border-bottom: 1px solid var(--borda); }
+.diff-cabecalho-job h2 { font-size: 16px; margin: 0; }
+.diff-job-projeto { font-size: 12px; color: var(--texto-2); }
+.diff-job-subtitulo { font-size: 13px; color: var(--texto-2); margin-top: 4px; }
+.diff-job-commits { margin: 10px 0; }
+.diff-job-commits summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+.diff-nota { color: var(--texto-2); font-size: 13px; padding: 12px 0; }
+
+/* "Em aberto" e PR do GitHub (D97). */
+.diff-etiqueta { font-size: 10px; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; background: var(--fundo-3); border: 1px solid var(--borda); color: var(--texto-2); }
+.diff-etiqueta-github { color: var(--accent); }
+.diff-aberto-onde { font-family: var(--mono); }
+.diff-aberto-vazio { text-align: center; padding: 32px 0; }
+.diff-pr-branches { font-family: var(--mono); font-size: 12px; color: var(--texto-2); margin-top: 4px; overflow-wrap: anywhere; }
+.diff-pr-github { display: inline-block; margin-top: 6px; font-size: 13px; color: var(--accent); }
+.diff-seletor-projeto optgroup { color: var(--texto-2); }
+
+/* ── barra de arquivos ──────────────────────────────────────────────────────── */
+
+.diff-barra {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--texto-2);
+}
+.diff-btn-quebrar {
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  color: var(--texto);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* ── arquivos (details) ─────────────────────────────────────────────────────── */
+
+.diff-arquivos { display: flex; flex-direction: column; gap: 8px; }
+.diff-arquivo {
+  background: var(--fundo-2);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  overflow: hidden;
+}
+.diff-arquivo > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+}
+.diff-arquivo > summary::-webkit-details-marker { display: none; }
+.diff-arquivo > summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--texto-2);
+  border-bottom: 2px solid var(--texto-2);
+  transform: rotate(-45deg);
+  transition: transform .15s;
+  flex: 0 0 auto;
+}
+.diff-arquivo[open] > summary::before { transform: rotate(45deg); }
+.diff-arquivo-nome { font-weight: 600; flex: 0 1 auto; max-width: 70%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Como o Zed: o nome em destaque primeiro, a pasta em cinza depois — é a pasta que encolhe. */
+.diff-arquivo-pasta { color: var(--texto-2); flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--fundo-3);
+  border: 1px solid var(--borda);
+  color: var(--texto-2);
+  white-space: nowrap;
+}
+.diff-arquivo-nums { display: flex; gap: 6px; font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+
+.diff-arquivo-corpo { border-top: 1px solid var(--borda); }
+
+/* ── trechos ─────────────────────────────────────────────────────────────────── */
+
+.diff-lista-trechos { display: flex; flex-direction: column; }
+.diff-trecho-botao {
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px dashed var(--borda);
+  color: var(--accent);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.diff-trecho-bloco { font-family: var(--mono); font-size: 12.5px; font-variant-ligatures: none; }
+.diff-trecho-cabecalho { padding: 4px 10px; color: var(--texto-2); background: var(--fundo-3); }
+.diff-dobra { padding: 4px 10px; color: var(--texto-2); font-style: italic; }
+.diff-mostrar-mais-linhas {
+  display: block;
+  width: 100%;
+  background: var(--fundo-3);
+  border: none;
+  border-top: 1px dashed var(--borda);
+  color: var(--accent);
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.diff-sem-fim-de-linha { padding: 4px 10px; color: var(--texto-2); font-style: italic; }
+
+.diff-trecho-corpo { overflow-x: auto; }
+.diff-trecho-corpo table { border-collapse: collapse; width: 100%; }
+.diff-num {
+  color: var(--texto-2);
+  text-align: right;
+  padding: 0 8px;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.diff-texto { padding: 0 8px; white-space: pre; }
+[data-quebrar="1"] .diff-texto { white-space: pre-wrap; overflow-wrap: anywhere; }
+tr.diff-mais { background: var(--diff-fundo-mais); box-shadow: inset 3px 0 0 var(--ok); }
+tr.diff-menos { background: var(--diff-fundo-menos); box-shadow: inset 3px 0 0 var(--perigo); }
+/* Lado a lado: a cor é da célula, e a faixa da margem fica no número DAQUELE lado. */
+td.diff-mais { background: var(--diff-fundo-mais); }
+td.diff-menos { background: var(--diff-fundo-menos); }
+td.diff-num.diff-mais { box-shadow: inset 3px 0 0 var(--ok); }
+td.diff-num.diff-menos { box-shadow: inset 3px 0 0 var(--perigo); }
+.diff-vazio { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--borda) 6px 7px); }
+.diff-linha-cortada { color: var(--texto-2); font-style: italic; }
+
+/* Unificada: máscara à direita (a lado-a-lado não precisa — já tem 4 colunas visíveis fixas). */
+.diff-tabela-unificada { position: relative; }
+.diff-trecho-corpo:has(.diff-tabela-unificada) {
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diff-arquivo > summary::before { transition: none; }
+}

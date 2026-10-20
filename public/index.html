@@ -38,6 +38,10 @@
 <meta name="mobile-web-app-capable" content="yes">
 </head>
 <body>
+<!-- Faixa PROD FORA (D87): irmã ANTERIOR do `.app`, de propósito — vale para lista, conversa e
+     lateral aberta/fechada sem depender de `data-vista`/`data-lateral`. Quem pinta é
+     public/monitor.js; `hidden` até a 1ª leitura, e some de novo com `/api/sites` ausente (S2). -->
+<div class="prod-fora" id="prod-fora" role="status" aria-live="polite" hidden></div>
 <div class="app" id="app" data-vista="lista">
 
   <aside class="lateral">
@@ -56,6 +60,19 @@
            tique de 15s. -->
       <button class="icone-so revisar" id="btn-revisar" type="button" aria-haspopup="dialog"
               title="Pra revisar" aria-label="Pra revisar"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg><span class="revisar-conta" id="revisar-conta" hidden>0</span></button>
+      <!-- O grafo do projeto (card `grafo-do-projeto-no-cockpit`): sempre o da develop de cada
+           projeto, nunca do checkout. Um botão "Grafo" por projeto dentro do diálogo. -->
+      <button class="icone-so grafos" id="btn-grafos" type="button" aria-haspopup="dialog"
+              title="Grafos dos projetos" aria-label="Grafos dos projetos"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="5" cy="6" r="2.25"/><circle cx="19" cy="6" r="2.25"/><circle cx="12" cy="18" r="2.25"/><path d="M7.2 7.1 10.3 16M16.8 7.1 13.7 16M7.3 6h9.4"/></svg></button>
+      <!-- Ver a diff do código (card `ver-a-diff-do-codigo`, D95): abre `/diff/` NA MESMA ABA (D96),
+           lista de commits da develop de um projeto escolhido. -->
+      <button class="icone-so commits" id="btn-commits" type="button"
+              title="Commits dos projetos" aria-label="Commits dos projetos"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3.25"/><path d="M3 12h5.75M15.25 12H21"/></svg></button>
+      <!-- A Página de Finanças (card `pagina-financas`, D92; evolução do diálogo D90): abre
+           `financas.html` NA MESMA ABA (P10). Some sem a env `COCKPIT_FINANCAS_DIR` (recurso
+           desligado). -->
+      <button class="icone-so financas" id="btn-financas" type="button" hidden
+              title="Finanças" aria-label="Finanças"><svg class="icone-botao" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M16 15h2"/></svg></button>
       <!-- A porta do painel de configuração. Os quatro controles que moram lá dentro viviam
            empilhados no rodapé desta lateral, e no celular a lateral É a tela da lista: a
            altura que eles comiam era a da LISTA DE ABAS, que é a razão de o cockpit existir.
@@ -116,6 +133,7 @@
       <span class="monitor-cela" data-eixo="ram"><span class="monitor-rotulo">RAM</span><span class="monitor-barra"><span class="monitor-barra-cheia"></span></span><span class="monitor-pct">—</span></span>
       <span class="monitor-cela" data-eixo="disco"><span class="monitor-rotulo">disco</span><span class="monitor-barra"><span class="monitor-barra-cheia"></span></span><span class="monitor-pct">—</span></span>
       <span class="monitor-aviso-texto" id="monitor-faixa-aviso" aria-live="polite"></span>
+      <span class="monitor-sites" id="monitor-sites" hidden></span>
     </button>
     <!-- A barra dos agentes: irmã da lista, NÃO filha dela. É o que tira a segunda rolagem de
          dentro do scroller (a queixa de 13/09). Vazia no markup — quem escreve é
@@ -615,12 +633,30 @@
      job é texto que esta tela não escreveu, armadilha #26). -->
 <dialog id="dialogo-revisar" aria-label="Pra revisar"><div class="rv" id="rv"></div></dialog>
 
+<!-- O diálogo de grafos — o 15º <dialog> (card `grafo-do-projeto-no-cockpit`). Uma linha por
+     projeto com git: nome, estado em texto (nunca só em title, #31) e um botão "Grafo" por
+     projeto. Quem desenha é `grafo.js` (textContent/createElement, nunca innerHTML, #26). -->
+<dialog id="dialogo-grafos" aria-labelledby="grafos-titulo">
+  <div class="dialogo-corpo">
+    <h2 id="grafos-titulo">Grafos</h2>
+    <p class="grafos-nota" id="grafos-nota">O grafo mostrado é sempre o da develop de cada projeto.</p>
+    <div class="grafos-lista" id="grafos-lista"></div>
+    <div class="dialogo-acoes">
+      <button class="btn" id="btn-fechar-grafos" type="button">Fechar</button>
+    </div>
+  </div>
+</dialog>
+
 <script src="traducoes.js"></script>
 <script src="i18n.js"></script>
 <script>cockpitI18n.estatico();</script>
+<script src="dentro-do-app.js"></script>
 <script src="app.js"></script>
 <script src="uso.js"></script>
 <script src="revisar.js"></script>
 <script src="monitor.js"></script>
+<script src="grafo.js"></script>
+<script src="financas-entrada.js"></script>
+<script src="diff-entrada.js"></script>
 </body>
 </html>

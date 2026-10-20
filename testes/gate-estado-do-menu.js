@@ -12,6 +12,8 @@
 // ⚠️ Isolar `HOME` não basta: `RAIZ_SESSOES_CLI` é `const` de módulo (`lib/abas.js`),
 // resolvida no `require`. O molde é o `comEspiaoAbas` de `testes/gate-menu-codex.js:155-171`
 // — trocar o env, `limparCache()` do `require.cache`, e só então `require` fresco.
+//
+// 16/10 (D85a): com pane e status parado o ramo Claude lê a tela pela régua `lib/menu-claude.js`.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -110,7 +112,45 @@ const TELA_SEM_MARCA = 'sem marcador de composer nenhum aqui';
     ok(await abasClaude.estadoDoMenu({ agente: 'claude', agentePid: null }) === 'nao-sei',
       "agentePid: null ⇒ 'nao-sei', sem tocar no disco (arquivo null.json existe e diz 'waiting')");
 
-    ok(chamouTmux === false, 'o ramo Claude não chama tmux/capture-pane em nenhum caso (D4)');
+    ok(chamouTmux === false,
+      'sem pane conhecida, o ramo Claude não chama tmux/capture-pane (D85a só lê a tela com pane)');
+
+    // ── Claude com pane (D85a): status parado + tela, pelas fixtures reais ────────────
+    const telaDialogo = fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'menu-auto-mode', '2.1.280-dialogo-120x40.txt'), 'utf8');
+    const telaLivre = fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'menu-auto-mode', '2.1.280-livre-depois-do-esc.txt'), 'utf8');
+
+    escrever(201, JSON.stringify({ status: 'idle' }));
+    const abaComPane = { agente: 'claude', agentePid: 201, pane: '%9', alvo: '@9' };
+
+    chamouTmux = false;
+    respostaCapturePane = telaDialogo;
+    ok(await abasClaude.estadoDoMenu(abaComPane) === 'menu',
+      "idle + pane + tela de diálogo ⇒ 'menu'");
+    ok(chamouTmux === true, 'idle + pane chama tmux/capture-pane (D85a)');
+
+    respostaCapturePane = telaLivre;
+    ok(await abasClaude.estadoDoMenu(abaComPane) === 'livre',
+      "idle + pane + tela livre ⇒ 'livre'");
+
+    respostaCapturePane = '';
+    ok(await abasClaude.estadoDoMenu(abaComPane) === 'nao-sei',
+      "idle + pane + captura vazia ⇒ 'nao-sei'");
+
+    escrever(202, JSON.stringify({ status: 'busy' }));
+    chamouTmux = false;
+    respostaCapturePane = telaDialogo;
+    ok(await abasClaude.estadoDoMenu({ agente: 'claude', agentePid: 202, pane: '%9', alvo: '@9' }) === 'livre',
+      "busy + pane + tela de diálogo ⇒ 'livre' (o status já responde)");
+    ok(chamouTmux === false, 'busy não chama tmux mesmo com pane conhecida (#80)');
+
+    escrever(203, JSON.stringify({ status: 'waiting' }));
+    chamouTmux = false;
+    respostaCapturePane = telaDialogo;
+    ok(await abasClaude.estadoDoMenu({ agente: 'claude', agentePid: 203, pane: '%9', alvo: '@9' }) === 'menu',
+      "waiting + pane + tela de diálogo ⇒ 'menu' (o status já responde)");
+    ok(chamouTmux === false, 'waiting não chama tmux mesmo com pane conhecida');
   } finally {
     process.env.HOME = antesHome;
     limparCache();

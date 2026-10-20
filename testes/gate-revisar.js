@@ -312,14 +312,14 @@ function limparJobs() {
  * ou `null` para não escrever o arquivo) — este gate testa a REGRA, não o parser de
  * `ultimoEvento()` (que já tem o gate dele em `gate-jobs-disco.js`).
  */
-function plantarJob({ id, sourceRepo, worktree, branch, metaStatus, linhaLog, resultMd, createdAt }) {
+function plantarJob({ id, sourceRepo, worktree, branch, metaStatus, linhaLog, resultMd, createdAt, metaExtra = {} }) {
   const dir = path.join(RAIZ_JOBS, id);
   fs.mkdirSync(dir, { recursive: true });
   const meta = {
     id, type: 'ataca', project: `/home/x/${id}`, title: `título de ${id}`,
     created_at: createdAt ?? agoraComoNoDisco(), origin: 'capitao',
     source_repo: sourceRepo ?? '', worktree: worktree ?? '', branch: branch ?? '',
-    status: metaStatus ?? 'done', pid: PID_MORTO,
+    status: metaStatus ?? 'done', pid: PID_MORTO, ...metaExtra,
   };
   fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta));
   if (linhaLog !== null && linhaLog !== undefined) fs.writeFileSync(path.join(dir, 'status.log'), `${linhaLog}\n`);
@@ -586,6 +586,161 @@ async function testeJaMergeadoNaoAparece() {
     `pelo menos um job já mergeado (à mão, --no-ff ou via origin/develop) NÃO aparece — ids presentes: ${JSON.stringify(ids)}`);
 }
 
+/**
+ * Falso Pronto (card `revisar-nao-chama-de-pronto-job-entregue-ou-parado`): job com o ciclo de
+ * vida fechado no META nunca entra (nem jobs[] nem atencao[]); `needs-decision` no relatório ou
+ * no fim do `status.log` vira `pede-decisao`. ÚLTIMA leitura de `?revisar=1` com a RAIZ_JOBS
+ * principal: os casos a-w já foram conferidos por `testeRegra()` antes do `limparJobs()` abaixo,
+ * e os testes de `/api/jobs/resultado` que vêm depois plantam a fixture deles.
+ */
+async function testeFalsoPronto() {
+  limparJobs();
+
+  const iso = () => new Date().toISOString();
+  const linhaDoneIso = () => `${iso()} done: executor terminou com sucesso`;
+
+  const conf = repoConflito();
+  const pend = repoPendente();
+  const noff = repoNoFF();
+  const rD = repoRetomada();
+  const wD = worktreeReal(rD.dir, 'feat-p');
+  const rE = repoRetomada();
+  const wE = worktreeReal(rE.dir, 'feat-p');
+  const emp = repoEmpilhado();
+
+  plantarJob({ id: 'fp1-merged-sem-merged-at', sourceRepo: conf.dir, worktree: dirExistente(), branch: conf.branch, metaStatus: 'merged', linhaLog: linhaDoneIso() });
+  plantarJob({
+    id: 'fp1b-merged-at-com-status-done', sourceRepo: conf.dir, worktree: dirExistente(), branch: conf.branch,
+    metaStatus: 'done', metaExtra: { merged_at: '2026-10-14T17:56:14+00:00' }, linhaLog: linhaDoneIso(),
+  });
+  plantarJob({ id: 'fp1c-teardown-sem-teardown-at', sourceRepo: conf.dir, worktree: dirExistente(), branch: conf.branch, metaStatus: 'teardown', linhaLog: linhaDoneIso() });
+  plantarJob({
+    id: 'fp1f-so-teardown-at', sourceRepo: conf.dir, worktree: dirExistente(), branch: conf.branch,
+    metaStatus: 'done', metaExtra: { teardown_at: '2026-10-15T15:09:30+00:00' }, linhaLog: linhaDoneIso(),
+  });
+
+  plantarJob({ id: 'fp1g-r2-fechado', sourceRepo: emp.dir, worktree: dirExistente(), branch: 'feat-r2', metaStatus: 'merged', linhaLog: linhaDoneIso() });
+  plantarJob({ id: 'fp1g-r1-vivo-contido', sourceRepo: emp.dir, worktree: dirExistente(), branch: 'feat-r1', linhaLog: linhaDoneIso() });
+
+  plantarJob({
+    id: 'fp1d-9-original-fechado', sourceRepo: rD.dir, worktree: wD, branch: 'feat-p',
+    metaStatus: 'merged', metaExtra: { merged_at: '2026-10-14T10:00:00+00:00' }, linhaLog: linhaDoneIso(), createdAt: ONTEM,
+  });
+  plantarJob({
+    id: 'fp1d-1-retomada-viva', sourceRepo: rD.dir, worktree: symlinkPara(wD), branch: 'job-fp1d-nunca-existiu',
+    linhaLog: linhaDoneIso(), createdAt: HOJE,
+  });
+
+  plantarJob({
+    id: 'fp1e-9-original-vivo', sourceRepo: rE.dir, worktree: wE, branch: 'feat-p',
+    linhaLog: linhaDoneIso(), createdAt: ONTEM,
+  });
+  plantarJob({
+    id: 'fp1e-1-retomada-fechada', sourceRepo: rE.dir, worktree: symlinkPara(wE), branch: 'job-fp1e-nunca-existiu',
+    metaStatus: 'merged', linhaLog: linhaDoneIso(), createdAt: HOJE,
+  });
+
+  plantarJob({
+    id: 'fp2-needs-decision-no-relatorio', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: linhaDoneIso(),
+    resultMd: 'needs-decision: parei na Fase 0.\n\n## Smoke pra o dono\n1. Decida o caminho.\n   - Onde: board\n   - Deve ver: a nota.\n',
+  });
+  plantarJob({
+    id: 'fp2b-decisao-em-negrito-depois-de-70kb', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: linhaDoneIso(),
+    resultMd: 'done: código entregue.\n\n' + 'x'.repeat(70 * 1024) + '\n\n**needs-decision:** escolha A ou B.\n',
+  });
+  plantarJob({
+    id: 'fp2c-needs-decision-no-status-log', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: `${iso()} needs-decision: falta escolher`,
+  });
+  plantarJob({
+    id: 'fp2d-relatorio-gigante', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: linhaDoneIso(),
+    resultMd: 'done: ok\n' + ('y'.repeat(1023) + '\n').repeat(1100),
+  });
+  plantarJob({
+    id: 'fp2e-relatorio-ilegivel', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: linhaDoneIso(),
+  });
+  // O `open` de diretório SUCEDE no Linux; quem estoura é o `read` (EISDIR) — exercita o
+  // `catch` interno de `decisaoDoRelatorio` (Fase 4).
+  fs.mkdirSync(path.join(RAIZ_JOBS, 'fp2e-relatorio-ilegivel', 'result.md'));
+  plantarJob({
+    id: 'fp2f-relatorio-sem-permissao', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: linhaDoneIso(), resultMd: 'needs-decision: x\n',
+  });
+  const ehRoot = Boolean(process.getuid && process.getuid() === 0);
+  if (!ehRoot) {
+    // `open` falha com EACCES — exercita o ramo `code !== 'ENOENT'` do `catch` do `open`.
+    fs.chmodSync(path.join(RAIZ_JOBS, 'fp2f-relatorio-sem-permissao', 'result.md'), 0o000);
+  } else {
+    console.log('  · (fp2f) root lê sem permissão — caso pulado');
+  }
+  plantarJob({
+    id: 'fp2-neg-verbo-no-meio-da-frase', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch,
+    linhaLog: linhaDoneIso(),
+    resultMd: 'done: tudo certo. Use os verbos done:, needs-decision: no texto final.\n',
+  });
+
+  plantarJob({ id: 'fp3-running-ja-mergeado', sourceRepo: noff.dir, worktree: dirExistente(), branch: noff.branch, metaStatus: 'running', linhaLog: linhaDoneIso() });
+  plantarJob({ id: 'fp3-neg-running-pendente', sourceRepo: pend.dir, worktree: dirExistente(), branch: pend.branch, metaStatus: 'running', linhaLog: linhaDoneIso() });
+
+  const resp = await pedirEGuardar('/api/jobs?revisar=1');
+  const jobsPorId = new Map((resp.corpo.jobs || []).map((j) => [j.id, j]));
+  const atencaoPorId = new Map((resp.corpo.atencao || []).map((j) => [j.id, j]));
+  const etq = (id) => (jobsPorId.get(id)?.etiquetas || []);
+
+  ok(!jobsPorId.has('fp1-merged-sem-merged-at') && !atencaoPorId.has('fp1-merged-sem-merged-at'),
+    `(fp1) merged sem merged_at: fora de jobs[] e atencao[] — ${JSON.stringify(jobsPorId.get('fp1-merged-sem-merged-at') || atencaoPorId.get('fp1-merged-sem-merged-at') || null)}`);
+  ok(!jobsPorId.has('fp1b-merged-at-com-status-done') && !atencaoPorId.has('fp1b-merged-at-com-status-done'),
+    `(fp1b) merged_at com status done: fora dos dois — ${JSON.stringify(jobsPorId.get('fp1b-merged-at-com-status-done') || atencaoPorId.get('fp1b-merged-at-com-status-done') || null)}`);
+  ok(!jobsPorId.has('fp1c-teardown-sem-teardown-at') && !atencaoPorId.has('fp1c-teardown-sem-teardown-at'),
+    `(fp1c) status teardown sem teardown_at: fora dos dois — ${JSON.stringify(jobsPorId.get('fp1c-teardown-sem-teardown-at') || atencaoPorId.get('fp1c-teardown-sem-teardown-at') || null)}`);
+  ok(!jobsPorId.has('fp1f-so-teardown-at') && !atencaoPorId.has('fp1f-so-teardown-at'),
+    `(fp1f) fechado só pelo carimbo teardown_at (worktree viva): fora dos dois — ${JSON.stringify(jobsPorId.get('fp1f-so-teardown-at') || atencaoPorId.get('fp1f-so-teardown-at') || null)}`);
+
+  ok(jobsPorId.has('fp1g-r1-vivo-contido') && !atencaoPorId.has('fp1g-r1-vivo-contido')
+    && !jobsPorId.has('fp1g-r2-fechado') && !atencaoPorId.has('fp1g-r2-fechado')
+    && (jobsPorId.get('fp1g-r1-vivo-contido')?.inclui || []).length === 0,
+    `(fp1g) r2 fechado some; r1 vivo fica sozinho em jobs[], sem ser recolhido em inclui[] de ninguém — ${JSON.stringify(jobsPorId.get('fp1g-r1-vivo-contido'))}`);
+
+  ok(jobsPorId.has('fp1d-1-retomada-viva') && !atencaoPorId.has('fp1d-1-retomada-viva')
+    && !jobsPorId.has('fp1d-9-original-fechado') && !atencaoPorId.has('fp1d-9-original-fechado'),
+    `(fp1d) retomada viva EM jobs[]; original fechado fora dos dois (controle) — ${JSON.stringify(jobsPorId.get('fp1d-1-retomada-viva'))}`);
+  ok(!etq('fp1d-1-retomada-viva').includes('branch-sumiu'),
+    '(fp1d) a retomada viva de um original fechado NÃO cai em "branch-sumiu" (controle)');
+  ok(!etq('fp1d-1-retomada-viva').includes('retomada') && (jobsPorId.get('fp1d-1-retomada-viva')?.retomou || []).length === 0,
+    `(fp1d) a retomada não carrega "retomada" nem retomou=[original] — o original fechado não aparece nem como "retomou:" — ${JSON.stringify(jobsPorId.get('fp1d-1-retomada-viva'))}`);
+
+  ok(jobsPorId.has('fp1e-9-original-vivo') && !jobsPorId.has('fp1e-1-retomada-fechada') && !atencaoPorId.has('fp1e-1-retomada-fechada'),
+    `(fp1e) original vivo continua em jobs[] (job normal); retomada fechada fora dos dois — ${JSON.stringify(jobsPorId.get('fp1e-9-original-vivo'))}`);
+
+  ok(jobsPorId.has('fp2-needs-decision-no-relatorio') && etq('fp2-needs-decision-no-relatorio').includes('pede-decisao'),
+    `(fp2) needs-decision no início do relatório: em jobs[] com pede-decisao — ${JSON.stringify(jobsPorId.get('fp2-needs-decision-no-relatorio'))}`);
+  ok(jobsPorId.has('fp2b-decisao-em-negrito-depois-de-70kb') && etq('fp2b-decisao-em-negrito-depois-de-70kb').includes('pede-decisao'),
+    `(fp2b) **needs-decision:** em negrito depois de 70 KB de "done:": em jobs[] com pede-decisao — ${JSON.stringify(jobsPorId.get('fp2b-decisao-em-negrito-depois-de-70kb'))}`);
+  ok(jobsPorId.has('fp2c-needs-decision-no-status-log') && jobsPorId.get('fp2c-needs-decision-no-status-log').estado === 'needs-decision'
+    && etq('fp2c-needs-decision-no-status-log').includes('pede-decisao'),
+    `(fp2c) needs-decision no fim do status.log: em jobs[], estado needs-decision, com pede-decisao — ${JSON.stringify(jobsPorId.get('fp2c-needs-decision-no-status-log'))}`);
+  ok(jobsPorId.has('fp2d-relatorio-gigante') && etq('fp2d-relatorio-gigante').includes('relatorio-ilegivel') && !etq('fp2d-relatorio-gigante').includes('pede-decisao'),
+    `(fp2d) relatório > 1 MiB sem a linha needs-decision: relatorio-ilegivel, SEM pede-decisao — ${JSON.stringify(jobsPorId.get('fp2d-relatorio-gigante'))}`);
+  ok(jobsPorId.has('fp2e-relatorio-ilegivel') && etq('fp2e-relatorio-ilegivel').includes('relatorio-ilegivel'),
+    `(fp2e) result.md é um diretório (EISDIR no read): relatorio-ilegivel — ${JSON.stringify(jobsPorId.get('fp2e-relatorio-ilegivel'))}`);
+  if (!ehRoot) {
+    ok(jobsPorId.has('fp2f-relatorio-sem-permissao') && etq('fp2f-relatorio-sem-permissao').includes('relatorio-ilegivel'),
+      `(fp2f) result.md sem permissão de leitura (EACCES no open): relatorio-ilegivel — ${JSON.stringify(jobsPorId.get('fp2f-relatorio-sem-permissao'))}`);
+  }
+
+  ok(jobsPorId.has('fp2-neg-verbo-no-meio-da-frase') && etq('fp2-neg-verbo-no-meio-da-frase').length === 0,
+    `(fp2-neg) "needs-decision:" no MEIO da frase não conta: em jobs[] com etiquetas vazio (controle) — ${JSON.stringify(jobsPorId.get('fp2-neg-verbo-no-meio-da-frase'))}`);
+
+  ok(!jobsPorId.has('fp3-running-ja-mergeado') && !atencaoPorId.has('fp3-running-ja-mergeado'),
+    '(fp3) meta running, branch já ancestral da develop: fora dos dois (controle)');
+  ok(jobsPorId.has('fp3-neg-running-pendente'),
+    `(fp3-neg) meta running, branch pendente: em jobs[] (controle) — ${JSON.stringify(jobsPorId.get('fp3-neg-running-pendente'))}`);
+}
+
 /** A pasta de jobs ausente: `{ jobs: [], habilitado: false }`. */
 async function testeAusente() {
   const pastaAusente = path.join(os.tmpdir(), 'gate-revisar-pasta-que-nao-existe');
@@ -639,6 +794,18 @@ async function testeResultadoSemArquivo() {
     `sem result.md: 200 com texto:'' e cortado:false — ${JSON.stringify(resp.corpo)}`);
 }
 
+async function testeResultadoForaDoAlfabeto() {
+  // Card `job-com-underscore-ou-ponto-no-id`: o relatório de um job cujo id tem `_` ou `.` dava
+  // 404 — a tela "Pra revisar" nunca mostrava o result.md desses jobs.
+  for (const id of ['20261013-145932-projeto-a-ataca-dataset-com-campo_novo-a33f',
+    '20261004-154220-projeto-b-ataca-painel-em-exemplo.app.br-c561']) {
+    plantarJob({ id, sourceRepo: '', worktree: '', branch: '', linhaLog: linhaDone(), resultMd: `relatório de ${id}` });
+    const resp = await pedirEGuardar('/api/jobs/resultado?id=' + encodeURIComponent(id));
+    ok(resp.status === 200 && resp.corpo.texto === `relatório de ${id}`,
+      `result.md de job com ${id.includes('_') ? '_' : '.'} no id ⇒ 200 com o texto — veio ${resp.status} ${JSON.stringify(resp.corpo)}`);
+  }
+}
+
 // ─── Assert global ──────────────────────────────────────────────────────────────────────
 
 function testeNaoVazouTmpdir() {
@@ -683,6 +850,9 @@ async function principal() {
   await testeRegra();
   await testeJaMergeadoNaoAparece();
 
+  console.log('\n── GET /api/jobs?revisar=1 — falso Pronto (card revisar-nao-chama-de-pronto…) ──\n');
+  await testeFalsoPronto();
+
   console.log('\n── GET /api/jobs?revisar=1 — pasta ausente ──\n');
   await testeAusente();
 
@@ -691,6 +861,7 @@ async function principal() {
   await testeResultadoIdInexistente();
   await testeResultadoCortado();
   await testeResultadoSemArquivo();
+  await testeResultadoForaDoAlfabeto();
 
   console.log('\n── assert global: nada de disco vaza pro navegador ──\n');
   testeNaoVazouTmpdir();

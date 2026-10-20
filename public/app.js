@@ -729,6 +729,28 @@ function estadoDaAba(aba) {
   return { temAgente, esperando, pergunta, abrindo, naoSubiu, pendente: pergunta || esperando };
 }
 
+/**
+ * Quantos sub-agentes estão em background NESTA aba — ou 0 (card
+ * trabalhando-nao-distingue-subagente). `aba` pode ser `undefined`: a lista pode ter falhado
+ * com o painel ainda aberto (`carregarAbas()`), e quem chama daqui não pode estourar por isso.
+ */
+function agentesEmSegundoPlano(aba) {
+  return (!aba || aba.rodando) ? 0 : Math.max(0, Math.trunc(Number(aba.emBackground)) || 0);
+}
+
+/**
+ * O rótulo "livre · N agente(s) em background" / "te esperando · N agente(s) em background" —
+ * UMA regra só (#40), lida pela linha da lista, pelo cabeçalho do painel aberto e pela
+ * confirmação de fechar a aba. `null` quando não há nada em background (esconde o elemento).
+ */
+function rotuloDeSegundoPlano(aba, esperando) {
+  const n = agentesEmSegundoPlano(aba);
+  if (n <= 0) return null;
+  return esperando
+    ? (n === 1 ? tr`te esperando · ${n} agente em background` : tr`te esperando · ${n} agentes em background`)
+    : (n === 1 ? tr`livre · ${n} agente em background` : tr`livre · ${n} agentes em background`);
+}
+
 function desenharAbas() {
   // Repintar no meio de um arrasto tiraria do DOM a linha que está sendo arrastada — e nó de
   // origem removido não recebe `dragend` (#91): o preview ficaria pendurado depois de um Esc. Os
@@ -777,7 +799,7 @@ function desenharAbas() {
 
     const linha = document.createElement('div');
     linha.className = 'conversa-linha';
-    linha.dataset.estado = aba.rodando ? 'trabalhando' : 'pronta';
+    linha.dataset.estado = aba.rodando ? 'trabalhando' : (agentesEmSegundoPlano(aba) > 0 ? 'segundo-plano' : 'pronta');
     if (!temAgente) linha.dataset.semClaude = '1';
     if (pergunta) linha.dataset.perguntando = '1';
     else if (esperando) linha.dataset.esperando = '1';
@@ -870,16 +892,23 @@ function desenharAbas() {
     // A 2ª linha só existe quando há algo a dizer (D63). "no terminal" e "agente fechado"
     // saíram: o ✓ e o ○ já dizem isso, e repetir em palavras era o que empurrava a lista
     // para 6 por tela no celular. O aviso é escolhido UMA vez; o `bind` só traduz.
+    //
+    // Sub-agente em background (card trabalhando-nao-distingue-subagente): `rotuloDeSegundoPlano`
+    // já devolve o texto TRADUZIDO — ele próprio escolhe "livre"/"te esperando" e singular/
+    // plural —, então o `bind` dele não passa por `tr()` de novo. `agentesEmSegundoPlano` já
+    // devolve 0 com o principal rodando, então este ramo nunca compete com "trabalhando".
+    const rotuloSegundoPlano = (temAgente && !pergunta) ? rotuloDeSegundoPlano(aba, esperando) : null;
     const aviso = pergunta ? 'esperando você escolher'
       : (temAgente
         ? (aba.rodando ? 'trabalhando' : (esperando ? 'te esperando' : null))
         : (abrindo ? 'abrindo o agente…' : (naoSubiu ? 'o agente não subiu' : null)));
-    if (aviso) {
+    if (aviso || rotuloSegundoPlano) {
       const rodape = document.createElement('div');
       rodape.className = 'conversa-rodape';
       const estado = document.createElement('span');
       estado.className = 'conversa-estado';
-      idiomaUI.bind(estado, 'textContent', () => tr(aviso));
+      if (rotuloSegundoPlano) idiomaUI.bind(estado, 'textContent', () => rotuloDeSegundoPlano(aba, esperando));
+      else idiomaUI.bind(estado, 'textContent', () => tr(aviso));
       rodape.append(estado);
       botao.append(rodape);
     }
@@ -959,6 +988,11 @@ function desenharAbas() {
   pintarResumoVazio();
   pintarBarraDeAgentes();
   pintarBarraDeLeituras();
+  // O rótulo de segundo plano do painel aberto acompanha a lista que ACABOU de chegar (card
+  // trabalhando-nao-distingue-subagente) — mesmo ciclo de 5 s, sem relógio novo (D21).
+  for (const [chave, painel] of paineis) {
+    if (painel.tipo !== 'job') marcarSegundoPlano(painel, abasDoTerminal.find((a) => a.chave === chave));
+  }
 }
 
 /**
@@ -1153,12 +1187,23 @@ function criarPainel(chave, info) {
   agente.dataset.agente = info?.agente || '';
   agente.hidden = !info?.agente;
   nomeLinha.append(titulo, agente);
+  // "livre · N agente(s) em background" / "te esperando · N agente(s) em background" (card
+  // trabalhando-nao-distingue-subagente) — fora da fita de propósito (#97/D80 L2): fica no
+  // cabeçalho, como `aviso-agente`. `marcarSegundoPlano` escreve nele a cada `desenharAbas()`.
+  const segundoPlano = document.createElement('div');
+  segundoPlano.className = 'chat-segundo-plano';
+  segundoPlano.hidden = true;
+  // D3 do card `ver-os-subagentes-da-aba`: tocar no rótulo rola a fita até o sub-agente que
+  // está rodando.
+  segundoPlano.setAttribute('role', 'button');
+  segundoPlano.tabIndex = 0;
+  idiomaUI.attr(segundoPlano, 'aria-label', () => tr('Ir até o agente que está rodando'));
   const caminho = document.createElement('div');
   caminho.className = 'caminho chat-caminho';
   const aviso = document.createElement('div');
   aviso.className = 'aviso-agente';
   aviso.hidden = true;
-  identidade.append(nomeLinha, caminho, aviso);
+  identidade.append(nomeLinha, segundoPlano, caminho, aviso);
 
   const medidorTrilho = document.createElement('span');
   medidorTrilho.className = 'medidor-barra medidor-trilho';
@@ -1269,7 +1314,17 @@ function criarPainel(chave, info) {
     $('dialogo-matar-aba').showModal();
   };
 
-  topo.append(voltar, identidade, medidorEl, faixaEl, btnParar, btnRecarregar, divisorTopo, btnFecharPainel, btnMatarAba);
+  // Ver a diff do código (card `ver-a-diff-do-codigo`, D95; mesma aba desde D96): só no painel de um job — o
+  // que o merge deste job na base traria. `cockpitDiffEntrada`/`cockpitDentro` só são lidos DENTRO do `onclick`
+  // (R4). A `volta` (o painel focado, `job-…`) vem de `cockpitVolta`, abaixo — sem extra aqui.
+  const btnMudancas = document.createElement('button');
+  btnMudancas.className = 'btn btn-mudancas';
+  btnMudancas.type = 'button';
+  idiomaUI.bind(btnMudancas, 'textContent', () => tr('Ver mudanças'));
+  btnMudancas.hidden = tipo !== 'job';
+  btnMudancas.onclick = () => globalThis.cockpitDentro.abrir(globalThis.cockpitDiffEntrada.urlDaDiff({ job: chave.slice(4) }), null);
+
+  topo.append(voltar, identidade, medidorEl, faixaEl, btnParar, btnMudancas, btnRecarregar, divisorTopo, btnFecharPainel, btnMatarAba);
 
   // ── .mensagens ──────────────────────────────────────────────────────
   const mensagens = document.createElement('div');
@@ -1368,10 +1423,17 @@ function criarPainel(chave, info) {
   avisoGancho.hidden = true;
   idiomaUI.bind(avisoGancho, 'textContent', () => tr('Cartão da pergunta desligado: o hook não está instalado (DECISOES.md, D74).'));
 
+  // Pasta que a config do CLI diz não ser confiável (spec 2026-10-13, §5.1): o fato + o que o "Yes" faz, antes de
+  // apertar. Só aparece em `pre-sessao` com `pedeConfianca` (`pintarAvisoConfianca`). No DOM, nunca em `title` (#31).
+  const avisoConfianca = document.createElement('div');
+  avisoConfianca.className = 'aviso-confianca';
+  avisoConfianca.hidden = true;
+  idiomaUI.bind(avisoConfianca, 'textContent', () => tr('Esta pasta ainda não é confiável para o agente. Quando ele perguntar, "Yes" faz ele confiar nela de vez: as próximas abas aqui abrem sem essa pergunta. "No" fecha o agente.'));
+
   const pergunta = document.createElement('div');
   pergunta.className = 'pergunta';
   pergunta.hidden = true;
-  pergunta.append(cartaoEl, terminalPergunta, perguntaTeclas, avisoEscrita, avisoGancho);
+  pergunta.append(cartaoEl, terminalPergunta, avisoConfianca, perguntaTeclas, avisoEscrita, avisoGancho);
 
   mensagens.append(puxarSelo, fitaEl, pergunta);
 
@@ -1535,14 +1597,14 @@ function criarPainel(chave, info) {
   }
 
   const painel = {
-    chave, raiz, tipo, topo, titulo, caminho, agente, aviso, voltar,
+    chave, raiz, tipo, topo, titulo, caminho, agente, aviso, segundoPlano, voltar,
     medidor: {
       el: medidorEl, trilho: medidorTrilho, cheio: medidorCheio,
       modelo: medidorModelo, effort: medidorEffort, pct: medidorPct,
     },
     faixa: { el: faixaEl, pino: faixaPino, conta: faixaConta, titulos: faixaTitulos, etapa: faixaEtapa },
     btnParar, pararRotulo, btnRecarregar, btnFecharPainel, btnMatarAba,
-    mensagens, fita: fitaEl, selo: puxarSelo, pergunta, telaDaPane, avisoEscrita, avisoGancho,
+    mensagens, fita: fitaEl, selo: puxarSelo, pergunta, telaDaPane, avisoEscrita, avisoGancho, avisoConfianca,
     // O cartão da pergunta: `cartao` é o último `{ toolUseId, perguntas }` pintado,
     // `respostasCartao` o que o usuário marcou (uma entrada por pergunta) e `estadoCartao` em
     // que pé está o envio ('editando' | 'enviando' | 'enviado' | 'erro').
@@ -1557,7 +1619,7 @@ function criarPainel(chave, info) {
     grupoFerramentas: null, ferramentaSolta: null, desenhandoDeFora: false,
     // `motivoPergunta` só tem sentido com `perguntando` true; fora disso é o valor de
     // repouso `'menu'`, para nenhum texto ter que tratar `null` (ver `marcarPergunta`).
-    ocupado: false, perguntando: false, motivoPergunta: 'menu',
+    ocupado: false, perguntando: false, motivoPergunta: 'menu', pedeConfianca: false,
     catalogo: null, anexos: [], contexto: null,
     textoNaCaixa: '', historicoEntrada: [], posHistorico: null, rascunho: '',
     rolagemGuardada: null, timerTerminou: null,
@@ -1581,6 +1643,11 @@ function criarPainel(chave, info) {
     // elemento da marca (para mover/atualizar) e a bandeira que neutraliza o replay.
     inicioDoHistorico: 0, carregandoHistorico: false, geracaoHistorico: 0,
     sessaoDaConversa: null, marcaDeInicio: null, replayAntigo: false,
+    // D80: o eco que a próxima saída do `!` pode usar de cabeçalho — `{ bolha, marco }`, gravado no `case 'humano'`.
+    parDaSaida: null,
+    // Card `ver-os-subagentes-da-aba` (spec 2026-10-16 §6.3): fins e resultados de sub-agente que chegaram SEM o
+    // cartão na fita (paginação do histórico) — o cartão que nascer depois consulta os dois.
+    fimDasTarefas: new Map(), agentesSemCartao: new Map(), geracaoFita: 0,
   };
 
   pintarDicaNo(painel);
@@ -1619,6 +1686,15 @@ function criarPainel(chave, info) {
   P = painel;
   atualizarBotaoFecharPainel();
   pintarFaixaDe(painel);
+
+  // D3 do card `ver-os-subagentes-da-aba`: o rótulo "livre · N agente(s) em background" leva
+  // até o cartão. Registrado aqui, com `painel` já pronto — `rolarAteAgenteRodando` lê a fita
+  // DESTE painel, nunca `P`.
+  const irAteOAgente = () => rolarAteAgenteRodando(painel);
+  segundoPlano.addEventListener('click', irAteOAgente);
+  segundoPlano.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault?.(); irAteOAgente(); }
+  });
 
   return painel;
 }
@@ -2097,6 +2173,11 @@ function limparFita() {
   P.ultimaHora = null;   // fita nova, minuto nenhum desenhado ainda
   P.grupoFerramentas = null;
   P.ferramentaSolta = null;
+  // Card `ver-os-subagentes-da-aba`: zera junto da fita (sessão nova, `/clear`) — nunca no lote
+  // antigo. `geracaoFita` é o que faz um cartão removido por aqui desistir de recarregar.
+  P.fimDasTarefas = new Map();
+  P.agentesSemCartao = new Map();
+  P.geracaoFita += 1;
   // O `/status` do Codex (develop, 08/09) guardava estes quatro em variáveis de MÓDULO. São
   // estado de CONVERSA — com N painéis, o bloco de status do painel B apareceria no A e a
   // dedupe por `id` de um comeria a do outro. Mesma regra do resto do arquivo: campo do painel.
@@ -2219,6 +2300,7 @@ function estaNoFim(painel) {
  * assim mesmo: o texto TEM duas linhas na tela.
  */
 function pintarTextoDaBolha(el, texto) {
+  el.textoDaBolha = String(texto); // D79: o texto CRU, para o cartão da saída achar o comando (o textContent ganha "ver tudo" acima de 12 linhas)
   const linhas = String(texto).split('\n');
   if (linhas.length <= 12) { el.textContent = texto; return; }
   idiomaUI.bind(el, 'textContent', () => tr(''));
@@ -2367,8 +2449,8 @@ function formaDeCasar(texto) {
   return String(texto || '').split('\n').map((l) => l.trimEnd()).filter(Boolean).join('\n').trim();
 }
 // O grau do casamento: 1 = idêntico, 2 = igual sem linha em branco (ou sem o espaço do "!"
-// inicial), 3 = termina igual sem linha em branco (#21: foto/rascunho na frente), 0 = não casa.
-// Menor é melhor.
+// inicial, ou sem a "\" final do enviado), 3 = termina igual sem linha em branco (#21:
+// foto/rascunho na frente), 0 = não casa. Menor é melhor.
 function casaComEnviado(doDisco, enviado) {
   const cru = String(doDisco || '').trim();
   const alvo = String(enviado || '').trim();
@@ -2379,7 +2461,11 @@ function casaComEnviado(doDisco, enviado) {
   if (!a || !b) return 0;
   // "! cmd" que passou pela fila do CLI volta "!cmd" (#95).
   if (a === b || a.replace(/^! +/, '!') === b.replace(/^! +/, '!')) return 2;
-  return a.endsWith(b) ? 3 : 0;
+  // A TUI do Claude come a "\" final ("\" + Enter = continuação de linha): "/handoff \" volta
+  // "/handoff" (#100). Tolerância A MAIS, só do lado enviado.
+  const semBarra = formaDeCasar(alvo.replace(/\\$/, ''));
+  if (semBarra && a === semBarra) return 2;
+  return a.endsWith(b) || (semBarra && a.endsWith(semBarra)) ? 3 : 0;
 }
 
 /**
@@ -2476,17 +2562,96 @@ function resumirEntrada(entrada) {
   return JSON.stringify(entrada, null, 2);
 }
 
+/** L3 do card `subagente-cartao-legivel` (D93): só os campos LIGADOS. `subagent_type` já é o nome do cartão e
+ * `description`/`prompt` têm lugar próprio. `run_in_background` verdadeiro vira `null` — a marca do único pedaço
+ * de interface, traduzido na hora de pintar; o resto é dado (`chave: valor`) e nunca passa pelo `tr`. */
+function extrasDoPedido(entrada) {
+  const extras = [];
+  for (const [chave, valor] of Object.entries(entrada)) {
+    if (chave === 'description' || chave === 'prompt' || chave === 'subagent_type') continue;
+    if (valor === false || valor === 'false' || valor === '' || valor === null || valor === undefined) continue;
+    if (chave === 'run_in_background') {
+      if (valor === true || valor === 'true') extras.push(null);
+      continue;
+    }
+    extras.push(`${chave}: ${typeof valor === 'string' ? valor : JSON.stringify(valor)}`);
+  }
+  return extras;
+}
+
+/** O pedido do sub-agente, legível (D93): `description` como título, os extras ligados numa linha pequena e o
+ * `prompt` pelo MESMO `markdown()` das bolhas — só `createElement`/`textContent` (regra do arquivo, :9). O corpo
+ * nasce limitado em altura (`data-recolhido`); quem decide se há corte é `medirPedido`, com layout. */
+function blocoPedido(entrada) {
+  const caixa = document.createElement('div');
+  caixa.className = 'sub-pedido';
+  caixa.dataset.recolhido = '1';
+  const rotulo = document.createElement('div');
+  rotulo.className = 'sub-pedido-rotulo';
+  idiomaUI.bind(rotulo, 'textContent', () => tr('pedido'));
+  caixa.append(rotulo);
+  if (typeof entrada.description === 'string' && entrada.description.trim()) {
+    const titulo = document.createElement('div');
+    titulo.className = 'sub-pedido-titulo';
+    titulo.textContent = entrada.description;
+    caixa.append(titulo);
+  }
+  const extras = extrasDoPedido(entrada);
+  if (extras.length) {
+    const linha = document.createElement('div');
+    linha.className = 'sub-pedido-extras';
+    idiomaUI.bind(linha, 'textContent', () => extras.map((x) => (x === null ? tr('em background') : x)).join(' · '));
+    caixa.append(linha);
+  }
+  const corpo = document.createElement('div');
+  corpo.className = 'sub-pedido-corpo';
+  markdown(entrada.prompt, corpo);
+  caixa.append(corpo);
+  caixa.corpoEl = corpo;
+  return caixa;
+}
+
+/** L4 (D93): o botão só existe se o corte EXISTE. Mede na 1ª abertura do cartão COM layout — cartão sem layout tem
+ * `clientHeight` 0: não marca nada e mede na próxima. Uma vez só (`data-medido`). */
+function medirPedido(caixa) {
+  if (caixa.dataset.medido || !caixa.dataset.recolhido) return;
+  const corpo = caixa.corpoEl;
+  if (!corpo.clientHeight) return;
+  caixa.dataset.medido = '1';
+  if (corpo.scrollHeight <= corpo.clientHeight + 1) { delete caixa.dataset.recolhido; return; }
+  caixa.dataset.cortado = '1';
+  const mais = document.createElement('button');
+  mais.type = 'button';
+  mais.className = 'sub-pedido-mais';
+  idiomaUI.bind(mais, 'textContent', () => tr('mostrar o pedido inteiro'));
+  mais.addEventListener('click', () => {
+    delete caixa.dataset.recolhido;
+    delete caixa.dataset.cortado;
+    mais.remove();
+  });
+  caixa.append(mais);
+}
+
 /** Chamada de ferramenta: bastidor. Fica recolhida para não competir com a conversa. */
 function blocoFerramenta(evento) {
   const det = document.createElement('details');
   det.className = P.desenhandoDeFora ? 'ferramenta de-fora' : 'ferramenta';
   det.dataset.ferramentaId = evento.id || '';
   det.dataset.estado = 'rodando';
+  // Card `ver-os-subagentes-da-aba`: o NOME da ferramenta, sempre — é por ele que o grupo conta
+  // "Agent ×N", mesmo quando `.fer-nome` passa a mostrar o `subagent_type`.
+  det.dataset.ferramenta = evento.nome || '';
   if (evento.t) det.dataset.t = evento.t;
   // A marca de subagente TAMBÉM vai no cartão de ferramenta (§4.5 item 6 do plano): num job,
   // ferramenta é o que domina a fita — sem a marca aqui, a cauda ficaria cheia de cartões
   // anônimos, e é justamente neles que a tabela de riscos apoia a mitigação declarada.
   if (evento.sub) det.dataset.sub = evento.sub;
+
+  // O painel do DESENHO, capturado numa constante (card `ver-os-subagentes-da-aba`, spec §6.1):
+  // todo callback assíncrono deste cartão (toggle, fetch, relógio) usa ESTE painel, nunca `P` —
+  // que é reatribuído a cada `aplicarNoPainel` e pode já ser outro quando o callback rodar.
+  const painelDoCartao = P;
+  const ehAgente = painelDoCartao.tipo !== 'job' && (evento.nome === 'Agent' || evento.nome === 'Task');
 
   const sum = document.createElement('summary');
 
@@ -2496,7 +2661,7 @@ function blocoFerramenta(evento) {
 
   const nome = document.createElement('span');
   nome.className = 'fer-nome';
-  nome.textContent = evento.nome;
+  nome.textContent = ehAgente && evento.entrada?.subagent_type ? evento.entrada.subagent_type : evento.nome;
 
   const alvo = document.createElement('span');
   alvo.className = 'fer-alvo';
@@ -2507,6 +2672,22 @@ function blocoFerramenta(evento) {
   estado.textContent = '·';
 
   sum.append(icone, nome, alvo, estado);
+  // O cartão vivo do sub-agente (card `ver-os-subagentes-da-aba`, D86): 2ª linha de estado
+  // ("rodando · 12s", "terminou em 1min 5s", …), atualizada pelo relógio e pelo fim de verdade.
+  if (ehAgente) {
+    const vivo = document.createElement('span');
+    vivo.className = 'fer-agente';
+    sum.append(vivo);
+    det.vivoEl = vivo;               // `pintarAgente` escreve AQUI — o `sum` ainda não está no `det`.
+    det.painelDoAgente = painelDoCartao;
+    det.geracaoFita = painelDoCartao.geracaoFita;
+    det.dataset.agente = 'rodando';
+    pintarAgente(det);
+    det.addEventListener('toggle', () => aoAbrirAgente(painelDoCartao, det));
+    // `data-tocado` do GRUPO vem de clique de verdade no summary (nunca do `toggle` programático,
+    // D2b/3.2): abrir o cartão de um agente que mora num grupo também marca o grupo tocado.
+    sum.addEventListener('click', () => { if (det.grupo) det.grupo.el.dataset.tocado = '1'; });
+  }
   // O NOME do subagente, visível — não só o `data-sub` de cima. A tabela de riscos do plano
   // justifica contar os dois lados na cauda dizendo que "40 passos rotulados └ executor-plano
   // contam a verdade", e passo, na fita, é ESTE cartão: sem o rótulo aqui, a mitigação
@@ -2520,9 +2701,17 @@ function blocoFerramenta(evento) {
   }
   det.append(sum);
 
-  const pre = document.createElement('pre');
-  pre.textContent = resumirEntrada(evento.entrada);
-  det.append(pre);
+  // Card `subagente-cartao-legivel` (D93): o cartão de agente da ABA mostra o pedido legível no lugar do JSON cru.
+  // Job, Bash/Read/… e entrada sem `prompt` (L6) seguem no <pre> de sempre.
+  if (ehAgente && typeof evento.entrada?.prompt === 'string' && evento.entrada.prompt.trim()) {
+    det.pedidoEl = blocoPedido(evento.entrada);
+    det.append(det.pedidoEl);
+    det.addEventListener('toggle', () => { if (det.open) medirPedido(det.pedidoEl); });
+  } else {
+    const pre = document.createElement('pre');
+    pre.textContent = resumirEntrada(evento.entrada);
+    det.append(pre);
+  }
 
   // Decisão de destino (D2): grupo vivo → entra nele; ferramenta solta viva → nasce o
   // grupo, promovendo a solta; senão → o caminho de hoje, intacto.
@@ -2535,6 +2724,7 @@ function blocoFerramenta(evento) {
     fita().append(det);
     P.ferramentaSolta = det;
   }
+  if (ehAgente) { reconciliarAgente(painelDoCartao, det); ligarRelogioDosAgentes(); }
   return det;
 }
 
@@ -2554,6 +2744,128 @@ function marcaDeCorte(qual, texto) {
   nota.className = 'corte-nota';
   idiomaUI.bind(nota, 'textContent', () => tr(CORTES[qual] || texto));
   div.append(rotulo, nota);
+  fita().append(div);
+  return div;
+}
+
+/** Acima disto a saída recolhe (D79): 10 linhas cabem no celular com o balão do comando acima. */
+const LINHAS_SAIDA = 10;
+
+/** `<pre>` da saída, recolhido em LINHAS_SAIDA com um "mostrar tudo (N linhas)". Só `textContent`. */
+function preDeSaida(texto) {
+  const pre = document.createElement('pre');
+  const linhas = texto.split('\n');
+  if (linhas.length <= LINHAS_SAIDA) { pre.textContent = texto; return [pre]; }
+  pre.textContent = linhas.slice(0, LINHAS_SAIDA).join('\n');
+  const mais = document.createElement('button');
+  mais.type = 'button';
+  mais.className = 'saida-mais';
+  idiomaUI.bind(mais, 'textContent', () => tr`mostrar tudo (${linhas.length} linhas)`);
+  mais.addEventListener('click', () => { pre.textContent = texto; mais.remove(); });
+  return [pre, mais];
+}
+
+/** Teto ABSOLUTO do texto indentado (D80 L7): passou disto, desiste e mostra cru — aninhamento fundo multiplica o recuo. */
+const TETO_JSON = 200000;
+
+/**
+ * Saída que é JSON objeto/array INTEIRO sai indentada com 2 espaços (card `saida-do-comando-legivel`, D80). O
+ * `JSON.parse` só VALIDA: quem indenta anda pelos caracteres, então número, escape e chave saem como o comando
+ * imprimiu — `stringify(parse(x))` trocaria `12345678901234567890` e `\u00e9`. Espaço fora de string é descartado
+ * (JSON que já veio indentado não soma recuo). Qualquer outra coisa, ou resultado acima do teto, volta igual.
+ */
+function jsonIndentado(texto) {
+  if (!/^\s*[[{]/.test(texto)) return texto;
+  try { JSON.parse(texto); } catch { return texto; }
+  let saida = '';
+  let nivel = 0;
+  let emString = false;
+  const quebra = () => `\n${'  '.repeat(nivel)}`;
+  const branco = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+  for (let i = 0; i < texto.length; i += 1) {
+    const ch = texto[i];
+    if (emString) {
+      saida += ch;
+      // O escape copia o caractere seguinte sem olhar: `\"` não fecha a string, `\\` não escapa a aspa de depois.
+      if (ch === '\\') { i += 1; saida += texto[i]; } else if (ch === '"') emString = false;
+      continue;
+    }
+    if (branco(ch)) continue;
+    if (ch === '"') { emString = true; saida += ch; } else if (ch === '{' || ch === '[') {
+      let j = i + 1;
+      while (j < texto.length && branco(texto[j])) j += 1;
+      if (texto[j] === (ch === '{' ? '}' : ']')) { saida += ch + texto[j]; i = j; } else { nivel += 1; saida += ch + quebra(); }
+    } else if (ch === '}' || ch === ']') { nivel -= 1; saida += quebra() + ch; } else if (ch === ',') saida += `,${quebra()}`;
+    else if (ch === ':') saida += ': ';
+    else saida += ch;
+    if (saida.length > TETO_JSON) return texto;
+  }
+  return saida;
+}
+
+/**
+ * O último nó de CONVERSA da fita (D80 L2): o "trabalhando" é estado da aba — nasce depois da bolha do envio e fica
+ * parado onde nasceu até o turno acabar —, não conversa. Laço por índice: no navegador `children` é HTMLCollection.
+ */
+function ultimoDaConversa() {
+  const nos = fita().children;
+  for (let i = nos.length - 1; i >= 0; i -= 1) {
+    if (!String(nos[i].className || '').split(' ').includes('trabalhando')) return nos[i];
+  }
+  return null;
+}
+
+/**
+ * Cartão de terminal da saída de um `!` ou de um comando de barra (card `saida-do-comando-em-cartao`, D79).
+ *
+ * É da MÁQUINA: largura cheia, paleta de terminal fixa, sem o lado nem a cor do balão do dono. O par com o
+ * comando vem do FLUXO de eventos (`parDaSaida`, gravado pelo eco no `case 'humano'`, D80) — não do nó anterior
+ * da fita, que ao vivo pode ser a fala do agente ou o "trabalhando" (#97). Só cola (`colado`) quando a bolha do
+ * par é o nó logo acima; com algo no meio o cabeçalho diz o comando e o cartão fica solto.
+ * Saída de comando é dado não confiável: tudo por `textContent`.
+ */
+function cartaoDeSaida(evento) {
+  // O par vem do FLUXO de eventos (D80 L1): o eco é o par se nada de conversa entrou na fita depois dele. A posição
+  // não serve — ao vivo, a pendente absorvida fica onde nasceu e o "trabalhando" ocupa um nó (#97). O par se gasta.
+  const par = P.parDaSaida;
+  P.parDaSaida = null;
+  const bolhaPar = par && par.marco === ultimoDaConversa() ? par.bolha : null;
+  const cru = bolhaPar ? String(bolhaPar.textoDaBolha ?? '') : '';
+  const comando = evento.origem === 'barra'
+    ? (cru.startsWith('/') ? cru.trim() : '')
+    : (cru.startsWith('!') ? `$ ${cru.slice(1).trim()}` : '');
+  const div = document.createElement('div');
+  // `colado` é desenho (D80 L3): só quando a bolha do par é o nó logo acima. Com fala ou "trabalhando" no meio, o
+  // cabeçalho diz o comando e o cartão fica solto.
+  const colado = Boolean(comando) && fita().lastChild === bolhaPar;
+  div.className = ['saida-comando', colado && 'colado', P.desenhandoDeFora && 'de-fora'].filter(Boolean).join(' ');
+  const cabeca = document.createElement('div');
+  cabeca.className = 'saida-cabeca';
+  const rotulo = document.createElement('span');
+  rotulo.className = 'saida-comando-texto';
+  if (comando) rotulo.textContent = comando;
+  else idiomaUI.bind(rotulo, 'textContent', () => tr('saída'));
+  cabeca.append(rotulo);
+  div.append(cabeca);
+  // JSON inteiro sai indentado (D80): indentar é desenho, mora aqui; o evento leva o texto como o comando imprimiu.
+  const stdout = jsonIndentado(String(evento.stdout || ''));
+  const stderr = jsonIndentado(String(evento.stderr || ''));
+  if (stdout) div.append(...preDeSaida(stdout));
+  if (stderr) {
+    const faixa = document.createElement('div');
+    faixa.className = 'saida-stderr';
+    const marca = document.createElement('span');
+    marca.className = 'saida-stderr-rotulo';
+    marca.textContent = 'stderr';
+    faixa.append(marca, ...preDeSaida(stderr));
+    div.append(faixa);
+  }
+  if (!stdout && !stderr) {
+    const vazia = document.createElement('span');
+    vazia.className = 'saida-vazia';
+    idiomaUI.bind(vazia, 'textContent', () => tr('(sem saída)'));
+    div.append(vazia);
+  }
   fita().append(div);
   return div;
 }
@@ -2689,6 +3001,7 @@ function desenharLoteAntigo(painel, r) {
     ultimaFala: painel.ultimaFala, grupoFerramentas: painel.grupoFerramentas,
     ferramentaSolta: painel.ferramentaSolta, ultimaHora: painel.ultimaHora,
     desenhandoDeFora: painel.desenhandoDeFora, destinoFita: painel.destinoFita,
+    parDaSaida: painel.parDaSaida, // D80: o eco do lote não pode virar o par da saída viva
   };
   // A marca SE MOVE, não duplica — mas ela só sai DEPOIS de a nova entrar na fita (lá
   // embaixo, junto do `prepend`). Removê-la aqui, antes do desenho, deixava o usuário SEM o
@@ -2866,7 +3179,9 @@ function entrarNoGrupo(det) {
   P.grupoFerramentas.passosEl.append(det);
   det.grupo = P.grupoFerramentas;
   P.grupoFerramentas.passos.push(det);
-  const nome = det.querySelector('.fer-nome').textContent;
+  // `data-ferramenta` (card `ver-os-subagentes-da-aba`): o grupo conta pelo NOME da ferramenta,
+  // não pelo que `.fer-nome` mostra — um Agent com `subagent_type` ainda entra como "Agent ×N".
+  const nome = det.dataset.ferramenta || det.querySelector('.fer-nome').textContent;
   P.grupoFerramentas.tipos.set(nome, (P.grupoFerramentas.tipos.get(nome) || 0) + 1);
   atualizarResumoGrupo(P.grupoFerramentas);
 }
@@ -2927,6 +3242,315 @@ function atualizarGrupoDoPasso(passo) {
   const g = passo.grupo;
   if (!g) return;
   atualizarResumoGrupo(g);
+}
+
+// ── Cartão vivo do sub-agente (card ver-os-subagentes-da-aba, spec 2026-10-16) ──
+//
+// O cartão `Agent`/`Task` de uma fita de ABA (nunca de job) ganha uma 2ª linha de estado — e o
+// FIM de uma tarefa em background só é de verdade com a notificação `tarefa_fim` (D86/#105): o
+// `tool_result` de um lançamento assíncrono chega em frações de segundo e NÃO é o fim.
+
+/** Quanto tempo o agente rodou: `data-duracao-ms` (quando o servidor já deu o número) ou a
+ * diferença entre `data-t-fim` e `data-t` (os dois carimbos do disco). `null` sem os dois. */
+function duracaoDoAgente(det) {
+  if (det.dataset.duracaoMs) return Number(det.dataset.duracaoMs);
+  const fim = Date.parse(det.dataset.tFim || '');
+  const ini = Date.parse(det.dataset.t || '');
+  if (Number.isFinite(fim) && Number.isFinite(ini)) return Math.max(0, fim - ini);
+  return null;
+}
+
+/** `null` vira `null` (sem texto); o resto reusa `formatarDuracaoGrupo` (mesma régua do grupo). */
+function textoDaDuracao(ms) {
+  return ms === null ? null : formatarDuracaoGrupo(ms);
+}
+
+/** Escreve (ou reescreve, a cada tique do relógio) a 2ª linha do cartão — em `det.vivoEl`, NUNCA
+ * `det.querySelector('.fer-agente')`: na 1ª pintura (nascimento) o `summary` ainda não entrou
+ * no `det` (painel do plano r1, Codex #1). */
+function pintarAgente(det) {
+  idiomaUI.bind(det.vivoEl, 'textContent', () => {
+    const estado = det.dataset.agente;
+    if (estado === 'rodando') {
+      const ms = Math.max(0, Date.now() - Date.parse(det.dataset.t || ''));
+      const t = Number.isFinite(ms) && ms >= 1000 ? textoDaDuracao(ms) : null;
+      return t ? tr`rodando · ${t}` : tr('rodando');
+    }
+    const d = textoDaDuracao(duracaoDoAgente(det));
+    if (estado === 'terminou') return d ? tr`terminou em ${d}` : tr('terminou');
+    if (estado === 'falhou') return d ? tr`falhou em ${d}` : tr('falhou');
+    return d ? tr`parado em ${d}` : tr('parado');
+  });
+}
+
+/** O fim de verdade (síncrono ou a notificação de um em background): grava os carimbos, pinta
+ * o `✓`/`✕`/`—`, atualiza o grupo do passo e — cartão aberto — recarrega os passos uma última
+ * vez (o painel gravado no NASCIMENTO, nunca `P`). */
+function encerrarAgente(det, { estado, agente, marca, t, duracaoMs }) {
+  det.dataset.estado = estado;
+  det.dataset.agente = agente;
+  if (t) det.dataset.tFim = t;
+  if (Number.isFinite(duracaoMs)) det.dataset.duracaoMs = String(duracaoMs);
+  idiomaUI.bind(det.querySelector('.fer-estado'), 'textContent', () => tr(marca));
+  pintarAgente(det);
+  atualizarGrupoDoPasso(det);
+  if (det.open) carregarPassos(det.painelDoAgente, det);
+  desligarRelogioSeVazio();
+}
+
+/** A notificação `tarefa_fim` (D86): só age em cartão de FUNDO ainda `rodando` — idempotente,
+ * a segunda notificação da mesma tarefa é no-op. "outro" status (killed/stopped) não é `✓`: a
+ * notificação é o sinal positivo de fim, o `status` só diz COMO acabou. */
+function aplicarFimDeTarefa(det, fim) {
+  if (det.dataset.fundo !== '1' || det.dataset.agente !== 'rodando') return;
+  if (fim.status === 'completed') encerrarAgente(det, { estado: 'feita', agente: 'terminou', marca: '✓', t: fim.t });
+  else if (fim.status === 'failed') encerrarAgente(det, { estado: 'erro', agente: 'falhou', marca: '✕', t: fim.t });
+  else encerrarAgente(det, { estado: 'parada', agente: 'parado', marca: '—', t: fim.t });
+}
+
+/** `resultado_ferramenta` de um cartão de agente — SEMPRE três argumentos (painel do plano r2,
+ * Claude [Alta]: nenhum `senão` pendurado que daria `✓` ao lançamento de um background). */
+function aplicarResultadoDeAgente(painel, det, evento) {
+  det.dataset.agenteId = evento.agente.id;
+  if (evento.agente.fundo) {
+    det.dataset.fundo = '1';               // continua `rodando`; NÃO grava tFim, NÃO marca ✓ (SA2)
+    const fim = painel.fimDasTarefas.get(det.dataset.ferramentaId) || painel.fimDasTarefas.get(evento.agente.id);
+    if (fim) aplicarFimDeTarefa(det, fim); // o fim já passou (paginação) — SA10/SA11
+    return;
+  }
+  encerrarAgente(det, { estado: evento.erro ? 'erro' : 'feita', agente: evento.erro ? 'falhou' : 'terminou',
+    marca: evento.erro ? '✕' : '✓', t: evento.t, duracaoMs: evento.agente.duracaoMs });  // síncrono
+}
+
+/** No nascimento do cartão: um resultado ou um fim podem ter chegado ANTES dele existir
+ * (paginação do histórico, §6.3 da spec) — consulta os dois mapas do painel, nessa ordem. */
+function reconciliarAgente(painel, det) {
+  const id = det.dataset.ferramentaId;
+  const r = painel.agentesSemCartao.get(id);
+  if (r) {
+    painel.agentesSemCartao.delete(id);
+    aplicarResultadoDeAgente(painel, det, r);
+  } else if (painel.fimDasTarefas.has(id) && !det.dataset.fundo) {
+    // Sem resultado não se sabe se é background — o fim fica guardado para quando ele chegar.
+  }
+}
+
+// O relógio de 1s é da PÁGINA (um só, cobre todos os painéis) — nasce com o primeiro cartão
+// `rodando`, morre com o último.
+let relogioAgentes = null;
+
+/** Os `[data-agente="rodando"]` da fita DE VERDADE (`p.fita`) MAIS os do fragmento em
+ * construção (`p.destinoFita`, durante um lote antigo) — NUNCA só `fitaDe(p)`: durante o lote
+ * antigo ela é só o fragmento, e um agente vivo na fita real ficaria invisível para o relógio
+ * (painel do plano r2, Codex #1). */
+function cartoesRodando(p) {
+  const reais = [...p.fita.querySelectorAll('[data-agente="rodando"]')];
+  const doFragmento = p.destinoFita ? [...p.destinoFita.querySelectorAll('[data-agente="rodando"]')] : [];
+  return [...reais, ...doFragmento];
+}
+
+function ligarRelogioDosAgentes() {
+  if (relogioAgentes) return;
+  let algum = false;
+  for (const p of paineis.values()) if (cartoesRodando(p).length) { algum = true; break; }
+  if (!algum) return;
+  relogioAgentes = setInterval(() => {
+    let vivo = false;
+    for (const p of paineis.values()) for (const d of cartoesRodando(p)) { vivo = true; pintarAgente(d); }
+    if (!vivo) desligarRelogioSeVazio();
+  }, 1000);
+}
+
+function desligarRelogioSeVazio() {
+  if (!relogioAgentes) return;
+  for (const p of paineis.values()) if (cartoesRodando(p).length) return;
+  clearInterval(relogioAgentes);
+  relogioAgentes = null;
+}
+
+/** O cartão ainda pertence ao painel vivo e à MESMA fita em que nasceu — uma fita trocada
+ * (`limparFita`, reconexão, `/clear`) sem o cartão ter sido removido da tela não deixa um
+ * callback atrasado recarregar um cartão fantasma (painel do plano r1, Codex #3). */
+function cartaoVivo(painel, det) {
+  return paineis.get(painel.chave) === painel && det.geracaoFita === painel.geracaoFita;
+}
+
+/** `toggle` do cartão de agente (D2 da spec): D9 (sem `data-agente`) não expande nada — o
+ * cartão voltou ao comportamento de hoje (painel do plano r2, Codex #2). Fechar cancela a
+ * recarga agendada; abrir busca os passos. */
+function aoAbrirAgente(painel, det) {
+  if (!det.dataset.agente) return;
+  if (!det.open) { clearTimeout(det.timerPassos); return; }
+  carregarPassos(painel, det);
+}
+
+/** `GET /api/subagente` — os passos do sub-agente, redesenhados ANTES do `<pre>` que já existe.
+ * Recarrega a cada 5s enquanto aberto E rodando; para quando fecha, termina, ou o painel fecha.
+ * Resposta MAIS VELHA que a última pintada nunca pinta (cada pedido leva um número de
+ * sequência do cartão — painel do plano r2, Codex #1). */
+function carregarPassos(painel, det) {
+  if (!cartaoVivo(painel, det)) return;
+  clearTimeout(det.timerPassos);
+  const seq = (det.seqPassos = (det.seqPassos || 0) + 1);
+  if (!det.subEl) {
+    det.subEl = document.createElement('div');
+    det.subEl.className = 'sub-agente';
+    // D93: com o pedido em markdown, o 1º <pre> do cartão pode ser uma cerca de código DENTRO do pedido.
+    det.insertBefore(det.subEl, det.pedidoEl || det.querySelector('pre'));
+  }
+  if (!det.seqPintado) idiomaUI.bind(det.subEl, 'textContent', () => tr('carregando os passos…'));
+  // Só o pedido MAIS NOVO agenda, e agendar cancela o anterior (painel de execução, Codex): com dois pedidos em
+  // voo (abrir → fechar → reabrir) nasciam dois timers, e fechar só cancelava um.
+  const agendar = () => {
+    if (seq !== det.seqPassos) return;
+    clearTimeout(det.timerPassos);
+    if (det.open && det.dataset.agente === 'rodando' && cartaoVivo(painel, det)) {
+      det.timerPassos = setTimeout(() => {
+        if (document.hidden) { agendar(); return; }
+        carregarPassos(painel, det);
+      }, 5000);
+    }
+  };
+  const idQS = det.dataset.agenteId ? `&id=${encodeURIComponent(det.dataset.agenteId)}` : '';
+  const sessaoQS = painel.sessaoDaConversa ? `&sessao=${encodeURIComponent(painel.sessaoDaConversa)}` : '';
+  const rota = `api/subagente?chave=${encodeURIComponent(painel.chave)}&ferramenta=${encodeURIComponent(det.dataset.ferramentaId)}${idQS}${sessaoQS}`;
+  api(rota).then((dados) => {
+    // Fita trocada enquanto o pedido voava (`limparFita`): a resposta é de um cartão que já saiu da tela.
+    if (!cartaoVivo(painel, det)) return;
+    if (seq < (det.seqPintado || 0)) return;
+    det.seqPintado = seq;
+    desenharPassos(det, dados);
+    if (dados.terminou && det.dataset.fundo === '1' && det.dataset.agente === 'rodando') {
+      aplicarFimDeTarefa(det, { status: 'completed', t: dados.fim });
+    }
+    agendar();
+  }).catch((e) => {
+    if (!cartaoVivo(painel, det)) return;
+    if (seq < (det.seqPintado || 0)) return;
+    det.seqPintado = seq;
+    idiomaUI.bind(det.subEl, 'textContent', () => tr(e.status === 409 ? 'a conversa mudou' : 'não deu para ler os passos agora'));
+    if (e.status !== 409) agendar();
+  });
+}
+
+/** Desenha o resumo (conta, tipos, tempo), os passos (só leitura, sem expandir cada um) e a
+ * resposta final — que só aparece quando o PRÓPRIO ARQUIVO do sub-agente terminou (D2/§6.5 da
+ * spec: um cartão que o pai já marcou `✓` mas cujo arquivo ainda termina em `tool_use` não tem
+ * resposta final de verdade). Só `textContent`/`markdown()` — nunca HTML cru (regra do arquivo inteiro, :9). */
+function desenharPassos(det, dados) {
+  const alvo = det.subEl;
+  // D93: o resumo é refeito a cada recarga de 5 s — quem estava com o foco nele continua com o foco no novo.
+  const resumoFocado = Boolean(det.resumoEl) && document.activeElement === det.resumoEl;
+  alvo.textContent = '';
+
+  // D93 (Y1/L1): o resumo é o BOTÃO que recolhe só a lista de passos. Nasce recolhida; a escolha mora no cartão
+  // (`det.passosAbertos`) e por isso sobrevive à recarga e a fechar/reabrir o cartão.
+  const resumo = document.createElement('button');
+  resumo.type = 'button';
+  resumo.className = 'sub-resumo';
+  const seta = document.createElement('span');
+  seta.className = 'sub-seta';
+  seta.setAttribute('aria-hidden', 'true');
+  const conta = document.createElement('span');
+  conta.className = 'grupo-conta';
+  idiomaUI.bind(conta, 'textContent', () => tr`${dados.total} passos`);
+  const tipos = document.createElement('span');
+  tipos.className = 'grupo-tipos';
+  idiomaUI.bind(tipos, 'textContent', () => tr((dados.tipos || []).map(([n, q]) => (q > 1 ? `${n} ×${q}` : n)).join(' · ')));
+  resumo.append(seta, conta, tipos);
+  const inicioMs = Date.parse(dados.inicio || '');
+  const fimMs = Date.parse(dados.fim || '');
+  if (Number.isFinite(inicioMs) && Number.isFinite(fimMs) && fimMs - inicioMs >= 0) {
+    const textoTempo = formatarDuracaoGrupo(fimMs - inicioMs);
+    if (textoTempo) {
+      const tempo = document.createElement('span');
+      tempo.className = 'grupo-tempo';
+      idiomaUI.bind(tempo, 'textContent', () => tr(textoTempo));
+      resumo.append(tempo);
+    }
+  }
+  const lista = document.createElement('div');
+  lista.className = 'sub-passos';
+  const pintarLista = () => {
+    const aberta = Boolean(det.passosAbertos);
+    lista.hidden = !aberta;
+    resumo.setAttribute('aria-expanded', String(aberta));
+    seta.textContent = aberta ? '▾' : '▸';
+  };
+  pintarLista();
+  resumo.addEventListener('click', () => { det.passosAbertos = !det.passosAbertos; pintarLista(); });
+  alvo.append(resumo, lista);
+
+  if (dados.total > dados.passos.length) {
+    const nota = document.createElement('div');
+    nota.className = 'sub-nota';
+    idiomaUI.bind(nota, 'textContent', () => tr`mostrando os últimos ${dados.passos.length} de ${dados.total} passos`);
+    lista.append(nota);
+  } else if (dados.passos.length === 0) {
+    const nota = document.createElement('div');
+    nota.className = 'sub-nota';
+    idiomaUI.bind(nota, 'textContent', () => tr('nenhum passo ainda'));
+    lista.append(nota);
+  }
+
+  for (const passo of dados.passos) {
+    const linha = document.createElement('div');
+    linha.className = 'sub-passo';
+    linha.dataset.estado = passo.estado;
+    const icone = document.createElement('span');
+    icone.className = 'fer-icone';
+    icone.textContent = ICONES[passo.nome] || '◇';
+    const nome = document.createElement('span');
+    nome.className = 'fer-nome';
+    nome.textContent = passo.nome;
+    const alvoPasso = document.createElement('span');
+    alvoPasso.className = 'fer-alvo';
+    alvoPasso.textContent = alvoDaFerramenta(passo.entrada);
+    const estadoEl = document.createElement('span');
+    estadoEl.className = 'fer-estado';
+    estadoEl.textContent = passo.estado === 'feita' ? '✓' : passo.estado === 'erro' ? '✕' : '·';
+    linha.append(icone, nome, alvoPasso, estadoEl);
+    lista.append(linha);
+  }
+
+  if (dados.terminou && dados.resposta) {
+    const resposta = document.createElement('div');
+    resposta.className = 'sub-resposta';
+    const rotulo = document.createElement('div');
+    rotulo.className = 'sub-resposta-rotulo';
+    idiomaUI.bind(rotulo, 'textContent', () => tr('resposta final'));
+    const corpo = document.createElement('div');
+    corpo.className = 'sub-resposta-corpo';
+    resposta.append(rotulo, corpo);
+    alvo.append(resposta);
+    markdown(dados.resposta, corpo);
+  }
+  if (dados.respostaCortada) {
+    const nota = document.createElement('div');
+    nota.className = 'sub-nota';
+    idiomaUI.bind(nota, 'textContent', () => tr('resposta cortada'));
+    alvo.append(nota);
+  }
+  det.resumoEl = resumo;
+  // `preventScroll` (painel do plano r1, Codex 🔴): quem focou o resumo e rolou para ler não pode ser puxado de volta
+  // até ele a cada recarga de 5 s.
+  if (resumoFocado) resumo.focus({ preventScroll: true });
+}
+
+/** D3 do card: o toque no "livre · N agente(s) em background" rola até o último cartão de
+ * fundo ainda rodando — abrindo o grupo dele se precisar. Sem cartão na fita (agente lançado
+ * antes do pedaço carregado), no-op. */
+function rolarAteAgenteRodando(painel) {
+  const vivos = fitaDe(painel).querySelectorAll('[data-agente="rodando"][data-fundo="1"]');
+  const alvo = vivos[vivos.length - 1];
+  if (!alvo) return;
+  if (alvo.grupo && !alvo.grupo.el.open) {
+    alvo.grupo.el.open = true;
+    alvo.grupo.el.dataset.tocado = '1';
+  }
+  alvo.scrollIntoView({ block: 'center' });
+  alvo.className += ' destaque';
+  setTimeout(() => { alvo.className = String(alvo.className).replace(/ ?destaque/, ''); }, 2000);
 }
 
 /**
@@ -3143,7 +3767,7 @@ function abrirContexto(painel) {
 // aqui, cada atualização do medidor partia em dois o grupo aberto na fita. Defeito
 // PRÉ-EXISTENTE (a aba emite `contexto` desde 24/08): esta entrada não o cria, ela o conserta —
 // nas duas superfícies, aba e job.
-const NEUTROS_DO_GRUPO = new Set(['ferramenta', 'resultado_ferramenta', 'turno_fim', 'job_estado', 'contexto']);
+const NEUTROS_DO_GRUPO = new Set(['ferramenta', 'resultado_ferramenta', 'turno_fim', 'job_estado', 'contexto', 'tarefa_fim']);
 
 /**
  * A casca fina que as 176 chamadas `cliente.aplicar({...})` do gate continuam falando com:
@@ -3259,12 +3883,26 @@ function aplicarNoPainel(painel, evento) {
       if (minha) {
         // /clear vira régua, não bolha: a hora que nasceu com a pendente sai junto com ela.
         if (corte) { if (minha.horaEl) minha.horaEl.remove(); minha.remove(); }
-        else { pintarTextoDaBolha(minha, rotulo); break; }
+        else {
+          pintarTextoDaBolha(minha, rotulo);
+          // D80: absorvida LÁ EM CIMA (na fila, a fala do agente entrou depois dela) — o marco é o que está no fim agora.
+          painel.parDaSaida = { bolha: minha, marco: ultimoDaConversa() };
+          break;
+        }
       }
-      if (corte) marcaDeCorte(corte[1], texto.trim());
-      else bolha('bolha-eu', rotulo, evento.quando);
+      if (corte) { marcaDeCorte(corte[1], texto.trim()); painel.parDaSaida = null; } else {
+        const nova = bolha('bolha-eu', rotulo, evento.quando);
+        painel.parDaSaida = { bolha: nova, marco: nova };
+      }
       break;
     }
+    // A saída de um `!` (ou de um comando de barra) — a MÁQUINA respondendo, D79. Não é fala do dono:
+    // não passa por `lembrar`, `absorverPendente` nem `bolha()`. Zera `ultimaFala` para a próxima fala do
+    // agente não colar em nada acima.
+    case 'saida_comando':
+      painel.ultimaFala = null;
+      cartaoDeSaida(evento);
+      break;
     case 'texto': {
       // Blocos de texto seguidos do mesmo turno pertencem à mesma fala — MAS só quando são
       // do MESMO autor. `sub` é a identidade do subagente (job) ou `null` (todo mundo mais):
@@ -3294,16 +3932,52 @@ function aplicarNoPainel(painel, evento) {
       break;
     case 'resultado_ferramenta': {
       const cartao = fita().querySelector(`[data-ferramenta-id="${CSS.escape(evento.id || '')}"]`);
-      if (!cartao) break;
+      if (!cartao) {
+        // Paginação (spec 2026-10-16 §6.3): o lançamento pode estar numa página mais velha,
+        // carregada depois.
+        if (evento.agente && evento.id) painel.agentesSemCartao.set(evento.id, evento);
+        break;
+      }
+      if (cartao.dataset.agente && evento.agente) {
+        aplicarResultadoDeAgente(painel, cartao, evento);
+        break;
+      }
+      // D9: sem `evento.agente` o cartão volta ao comportamento de hoje — e não expande (os
+      // passos vêm da expansão, que `aoAbrirAgente` recusa sem `data-agente`).
+      if (cartao.dataset.agente) { cartao.vivoEl.hidden = true; delete cartao.dataset.agente; }
       cartao.dataset.estado = evento.erro ? 'erro' : 'feita';
       idiomaUI.bind(cartao.querySelector('.fer-estado'), 'textContent', () => tr(evento.erro ? '✕' : '✓'));
-      const alvo = cartao.querySelector('pre');
-      if (alvo && evento.saida) {
-        alvo.textContent += `\n\n${String(evento.saida).slice(0, 4000)}`;
-        if (evento.erro) alvo.style.color = 'var(--perigo)';
+      if (cartao.pedidoEl) {
+        // D93 (L7): o cartão com pedido legível não tem o <pre> da entrada — e o 1º <pre> dele pode ser uma cerca de
+        // código do prompt. A saída ganha o seu, no fim do cartão.
+        if (evento.saida) {
+          const saida = document.createElement('pre');
+          saida.className = 'sub-saida';
+          saida.textContent = String(evento.saida).slice(0, 4000);
+          if (evento.erro) saida.style.color = 'var(--perigo)';
+          cartao.append(saida);
+        }
+      } else {
+        const alvo = cartao.querySelector('pre');
+        if (alvo && evento.saida) {
+          alvo.textContent += `\n\n${String(evento.saida).slice(0, 4000)}`;
+          if (evento.erro) alvo.style.color = 'var(--perigo)';
+        }
       }
       if (evento.t) cartao.dataset.tFim = evento.t;
       atualizarGrupoDoPasso(cartao);
+      break;
+    }
+    // O fim de um sub-agente em background (spec 2026-10-16 §6.3). PRIMEIRO grava, depois
+    // aplica: o cartão pode ainda não estar na fita (paginação). Para Bash/Monitor em
+    // background é no-op — só cartão de agente age.
+    case 'tarefa_fim': {
+      const fim = { status: evento.status, t: evento.t };
+      if (evento.id) painel.fimDasTarefas.set(evento.id, fim);
+      if (evento.tarefa) painel.fimDasTarefas.set(evento.tarefa, fim);
+      const cartaoDaTarefa = (evento.id && fita().querySelector(`[data-ferramenta-id="${CSS.escape(evento.id)}"]`))
+        || (evento.tarefa && fita().querySelector(`[data-agente-id="${CSS.escape(evento.tarefa)}"]`));
+      if (cartaoDaTarefa && cartaoDaTarefa.dataset.agente) aplicarFimDeTarefa(cartaoDaTarefa, fim);
       break;
     }
     case 'erro':
@@ -3357,11 +4031,16 @@ function aplicarNoPainel(painel, evento) {
       // Fim de turno é quando o contexto muda. Vem carona no evento que já chegava aqui:
       // relógio novo para isto seria repetir o problema dos dois relógios da D21.
       desenharMedidor(painel, evento.contexto);
-      // Ferramenta sem resultado quando o turno acabou: o turno morreu no meio dela.
+      // Ferramenta sem resultado quando o turno acabou: o turno morreu no meio dela. Um
+      // agente em BACKGROUND não para com ele (D83/§6.4 da spec): o principal terminar o
+      // turno não encerra uma tarefa que continua rodando por fora.
       for (const cartao of fita().querySelectorAll('[data-estado="rodando"]')) {
+        if (cartao.dataset.fundo === '1') continue;
         cartao.dataset.estado = 'parada';
         idiomaUI.bind(cartao.querySelector('.fer-estado'), 'textContent', () => tr('—'));
+        if (cartao.dataset.agente === 'rodando') { cartao.dataset.agente = 'parado'; pintarAgente(cartao); }
       }
+      desligarRelogioSeVazio();
       marcarOcupado(painel, false);
       // O que muda na lista quando o turno acaba é o estado da aba: de "trabalhando" para
       // "no terminal". Contexto e arquivos eram da sessão do cockpit e não existem mais.
@@ -3438,6 +4117,9 @@ function marcarOcupado(painel, valor) {
     for (const p of painel.pendentes) if (p.ocioso === null) p.ocioso = Date.now();
   }
   painel.ocupado = valor;
+  // O "trabalhando" do SSE manda sobre o rótulo de segundo plano: a lista pode estar até 5 s
+  // atrasada, e o SSE é a fonte mais fresca (card trabalhando-nao-distingue-subagente).
+  if (valor && painel.segundoPlano) painel.segundoPlano.hidden = true;
   // Parar vale com turno rodando E com pergunta aberta: nos dois casos a tecla é o Escape.
   // Num painel de JOB não há turno para parar — a guarda entra AQUI, no escritor, e não só
   // no nascimento do painel: `sincronizado { turnoEmAndamento: true }` para job `running`
@@ -3461,6 +4143,23 @@ function marcarOcupado(painel, valor) {
   } else if (!valor && existente) {
     existente.remove();
   }
+}
+
+/**
+ * Escreve (ou esconde) o "livre · N agente(s) em background" no cabeçalho do painel aberto
+ * (card trabalhando-nao-distingue-subagente). `aba` é a linha que `desenharAbas()` acabou de
+ * receber de `/api/abas` — pode ser `undefined` quando a lista falhou com o painel aberto
+ * (achado X1 do painel): aí o elemento só some.
+ *
+ * No cabeçalho o "te esperando" não se aplica — a conversa já está aberta, então sempre
+ * `esperando: false` aqui; é a MESMA regra da lista (`rotuloDeSegundoPlano`), só que sem o
+ * parâmetro que ali distingue lida/não-lida.
+ */
+function marcarSegundoPlano(painel, aba) {
+  if (!painel.segundoPlano || painel.tipo === 'job') return;
+  const texto = painel.ocupado ? null : rotuloDeSegundoPlano(aba, false);
+  painel.segundoPlano.hidden = !texto;
+  if (texto) idiomaUI.bind(painel.segundoPlano, 'textContent', () => rotuloDeSegundoPlano(aba, false));
 }
 
 /**
@@ -3507,16 +4206,26 @@ function marcarPergunta(painel, valor, motivo = 'menu') {
   // no `pre-sessao` o Enviar continua travado, e este texto não se aplica.
   painel.avisoEscrita.hidden = !valor || preSessao;
   if (valor) {
+    // O SSE pode trocar o motivo para `menu`: o aviso esconde na hora, sem esperar a resposta da tela.
+    pintarAvisoConfianca(painel);
     atualizarTelaDaPane(painel);
   } else {
     idiomaUI.bind(painel.telaDaPane, 'textContent', () => tr(''));
     // Pergunta fechada: o cartão (e o que o usuário marcou nele) vai junto — reabrir, mesmo
     // com o mesmo `toolUseId`, monta de novo do zero.
     painel.avisoGancho.hidden = true;
+    painel.pedeConfianca = false;
+    pintarAvisoConfianca(painel);
     limparCartao(painel);
   }
   // A lista também muda: a aba aberta passa a mostrar (ou deixa de mostrar) o `?`.
   carregarAbas();
+}
+
+/** O aviso de confiança só vale em `pre-sessao` com a config dizendo que a pasta não é confiável. */
+function pintarAvisoConfianca(painel) {
+  if (!painel || !painel.avisoConfianca) return;
+  painel.avisoConfianca.hidden = !(painel.perguntando && painel.motivoPergunta === 'pre-sessao' && painel.pedeConfianca);
 }
 
 /**
@@ -3783,10 +4492,12 @@ async function enviarCartao(painel) {
 async function atualizarTelaDaPane(painel) {
   if (!painel || !painel.perguntando) return;
   try {
-    const { tela, cartao, semGancho } = await api(`api/abas/${painel.chave}/tela`);
+    const { tela, cartao, semGancho, pedeConfianca } = await api(`api/abas/${painel.chave}/tela`);
     // ANTES de pintar: o `rolarFim` da 1ª pintura mede o `scrollHeight` naquela hora — desesconder depois
     // deixaria o aviso abaixo da dobra (card pergunta-sem-gancho-avisa, achado do painel da spec).
     painel.avisoGancho.hidden = !(semGancho === true && painel.perguntando);
+    painel.pedeConfianca = pedeConfianca === true;
+    pintarAvisoConfianca(painel);
     pintarTelaDaPane(painel, tela);
     // Se a pergunta fechou enquanto a resposta voltava, o cartão não pode renascer.
     if (painel.perguntando) pintarCartao(painel, cartao || null);
@@ -3834,6 +4545,8 @@ async function apertarTecla(painel, nome) {
     if (r.esperando === false) marcarPergunta(painel, false);
     else {
       marcarPergunta(painel, true, r.motivo || 'menu');
+      painel.pedeConfianca = r.pedeConfianca === true;
+      pintarAvisoConfianca(painel);
       pintarTelaDaPane(painel, r.tela);
     }
   } catch (erro) {
@@ -3917,6 +4630,8 @@ let agentePadraoDaAba = 'claude';
 // recusar nome, e só troca quando o GET responde (S4 da spec): o Criar clicado durante o `fetch`
 // não pode validar contra lista vazia. O servidor valida de novo de qualquer jeito (#22).
 let projetosDaAba = [];
+// Nomes dos projetos que o Codex vai pedir confiança (`codexPedeConfianca` de /api/projetos). Dono: `pintarNotaConfianca`.
+let codexPedeNaPasta = new Set();
 let escolhidosProjeto = [];
 let indiceProjeto = 0;
 // Criar pasta pela aba nova (card `criar-pasta-na-aba-nova`). A MESMA régua do servidor (`server.js`,
@@ -3955,6 +4670,7 @@ async function carregarProjetos() {
     projetos = (await api('api/projetos')).projetos || [];
     if (abertura !== aberturaDaAba) return;   // S17a: uma abertura mais nova já cuida da tela
     projetosDaAba = projetos.map((p) => p.nome);
+    codexPedeNaPasta = new Set(projetos.filter((p) => p.codexPedeConfianca === true).map((p) => p.nome));
     aberturaLida = abertura;                  // S17b: agora dá para oferecer criar pasta
   } catch (erro) {
     if (abertura !== aberturaDaAba) return;   // S17a
@@ -4061,6 +4777,7 @@ function escolherProjeto(i) {
   $('sel-projeto-novo').value = nome;
   fecharListaProjetos();
   idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(''));
+  pintarNotaConfianca();
 }
 
 /**
@@ -4122,16 +4839,25 @@ async function criarPasta() {
   try {
     const criada = await api('api/projetos', { method: 'POST', corpo: { nome } });
     let lista = null;
-    try { lista = ((await api('api/projetos')).projetos || []).map((p) => p.nome); }
-    catch { /* S9: o 201 já provou que a pasta existe */ }
+    let completa = null;
+    try {
+      completa = (await api('api/projetos')).projetos || [];
+      lista = completa.map((p) => p.nome);
+    } catch { /* S9: o 201 já provou que a pasta existe */ }
     if (abertura !== aberturaDaAba) return;
-    if (lista) projetosDaAba = lista;
+    if (lista) {
+      projetosDaAba = lista;
+      codexPedeNaPasta = new Set(completa.filter((p) => p.codexPedeConfianca === true).map((p) => p.nome));
+    }
     if (!projetosDaAba.includes(criada.nome)) projetosDaAba.push(criada.nome);
     $('sel-projeto-novo').value = criada.nome;
     fecharListaProjetos();
     idiomaUI.bind($('nota-nova-aba'), 'textContent', () => tr(''));
     // Com a pasta de projetos vazia o Criar nascia travado; a primeira pasta o destrava.
     $('btn-criar-aba').disabled = projetosDaAba.length === 0;
+    // GET falhou (S9): a pasta fica fora do Set — a confiança dela é desconhecida (pode herdar de uma raiz
+    // git) e, na dúvida, a nota cala.
+    pintarNotaConfianca();
   } catch (erro) {
     if (abertura !== aberturaDaAba) return;
     // A lista fecha para a nota ficar à vista no celular; o texto digitado fica.
@@ -4173,8 +4899,9 @@ async function carregarAgentes() {
     if (a.id === padrao) opcao.selected = true;
     alvo.append(opcao);
   }
-  alvo.onchange = mostrarModelos;
+  alvo.onchange = () => { mostrarModelos(); pintarNotaConfianca(); };
   mostrarModelos();
+  pintarNotaConfianca();
 }
 
 /**
@@ -4203,6 +4930,26 @@ function mostrarModelos() {
   }
   alvo.value = '';
   campo.hidden = modelos.length === 0;
+}
+
+/**
+ * DONA ÚNICA do texto de `#nota-trust-nova-aba` (#40). Claude: a frase fixa de sempre (é verdade — o cockpit
+ * grava a confiança). Codex: só o Codex pergunta, e só nas pastas que a config dele não confia
+ * (`codexPedeNaPasta`); nos outros casos a nota esconde SEM apagar o texto.
+ */
+function pintarNotaConfianca() {
+  const nota = $('nota-trust-nova-aba');
+  if (!nota) return;
+  const agente = $('sel-agente-novo')?.value || agentePadraoDaAba;
+  if (agente !== 'codex') {
+    idiomaUI.bind(nota, 'textContent', () => tr('Abrir aqui marca a pasta como confiável para o agente. Sem isso a aba nasce travada no aviso de segurança dele, e o cockpit não consegue responder por você.'));
+    nota.hidden = false;
+  } else if (codexPedeNaPasta.has($('sel-projeto-novo').value)) {
+    idiomaUI.bind(nota, 'textContent', () => tr('O Codex vai perguntar se você confia nesta pasta. Responda pelas setas na aba: "Yes" confia nela de vez, "No" fecha o agente.'));
+    nota.hidden = false;
+  } else {
+    nota.hidden = true;
+  }
 }
 
 /**
@@ -4315,7 +5062,8 @@ function desenharAvisoDoAgente(painel, info) {
       linhas.push({ texto: tr('não deu para saber qual conversa é desta aba (duas abas de Codex no mesmo projeto)') });
     } else if (info.reiniciada) {
       linhas.push({ texto: tr('Conversa limpa. Envie uma mensagem para começar.') });
-    } else if (info.casamento === 'nenhum') {
+    } else if (info.casamento === 'nenhum' && !(info.preSessao && info.pedeConfianca)) {
+      // Com `pedeConfianca` o motivo é o `.aviso-confianca` do bloco da pane, não "ainda não achei".
       linhas.push({ texto: tr('ainda não achei a conversa desta aba de Codex') });
     }
   }
@@ -4357,6 +5105,14 @@ function estadoParaMatar(aba) {
   if (!aba) return tr('Esta aba não está mais na lista.');
   if (aba.rodando) return tr('Esta aba está TRABALHANDO agora. Fechar mata o turno em andamento.');
   if (aba.esperando) return tr('Esta aba está com uma pergunta aberta no terminal.');
+  // Com o principal livre e sub-agente(s) em background (card trabalhando-nao-distingue-subagente):
+  // "Fechar encerra o agente desta aba" é fraco demais — fechar mata quem está em voo também (R3).
+  const emSegundoPlano = agentesEmSegundoPlano(aba);
+  if (emSegundoPlano > 0) {
+    return emSegundoPlano === 1
+      ? tr`Esta aba tem ${emSegundoPlano} agente em background. Fechar mata ele junto.`
+      : tr`Esta aba tem ${emSegundoPlano} agentes em background. Fechar mata eles junto.`;
+  }
   if (aba.temAgente ?? aba.temClaude) return tr('Fechar encerra o agente desta aba.');
   if (aba.nascendo) return tr('O agente desta aba ainda está subindo.');
   if (aba.falhou) return tr('O agente não subiu nesta aba — ela ficou como um terminal comum.');
@@ -4656,7 +5412,9 @@ async function enviar(painel) {
   // (Escape → reconfere → cola → Enter, `lib/abas.js` `digitarNaAba`) em vez de recusar de
   // cara — o POST segue, e é o servidor quem decide.
   if (painel.perguntando && painel.motivoPergunta === 'pre-sessao') {
-    const recado = tr('O agente está pedindo uma confirmação no terminal e ainda não abriu conversa. ')
+    const recado = (painel.pedeConfianca
+      ? tr('Esta pasta ainda não é confiável para o agente, e ele ainda não abriu conversa. ')
+      : tr('O agente está pedindo uma confirmação no terminal e ainda não abriu conversa. '))
       + tr('Responda pelas setas e o Enter aqui em cima — o Esc FECHA o agente.');
     noPainel(painel, () => bolha('bolha-erro', recado));
     rolarFim(painel);
@@ -4773,13 +5531,19 @@ async function enviar(painel) {
   rolarFim(painel);
 
   try {
-    await api(`api/abas/${painel.chave}/turnos`, {
+    const resposta = await api(`api/abas/${painel.chave}/turnos`, {
       method: 'POST',
       corpo: caminhos.length ? { texto, anexos: caminhos, id: idEnvio } : { texto, id: idEnvio },
     });
     // Sucesso: os anexos não voltam para lugar nenhum — SÓ agora as `objectURL` são
     // revogadas (`limparAnexos`, acima, deixou de fazer isso — card menu-da-tui-do-codex-na-tela).
     for (const a of anexosDoEnvio) if (a.url) URL.revokeObjectURL(a.url);
+    // D85c: o terminal tinha um menu aberto que o dono não estava vendo (o Claude abre o "Teach auto
+    // mode" sozinho, com o status idle) — o servidor mandou Esc antes do texto e diz isso aqui.
+    if (resposta && resposta.menuFechado) {
+      noPainel(painel, () => bolha('bolha-aviso', tr('O terminal tinha um menu aberto; mandei Esc antes do seu texto.')));
+      rolarFim(painel);
+    }
   } catch (erro) {
     marcarOcupado(painel, jaRodava);
     // D-l: o servidor já desfez o registro dele (rollback do envio que falhou). Falta a
@@ -6392,15 +7156,6 @@ function desenharConsumoDoCodex(lista, codex) {
   for (const item of codex.limites) lista.append(nodeJanela(item));
 }
 
-function linhaUso(grade, rotulo, valor, mono) {
-  const dt = document.createElement('dt');
-  idiomaUI.bind(dt, 'textContent', () => tr(rotulo));
-  const dd = document.createElement('dd');
-  if (mono) dd.className = 'mono';
-  idiomaUI.bind(dd, 'textContent', () => tr(valor));
-  grade.append(dt, dd);
-}
-
 // ── Lateral recolhível ──────────────────────────────────────────────────
 // Só governa o desktop. No celular a lista é uma tela inteira e quem manda é `data-vista`.
 
@@ -6995,7 +7750,7 @@ let fechaProjetoNoBlur = null;
 $('sel-projeto-novo').addEventListener('focus', () => { clearTimeout(fechaProjetoNoBlur); abrirListaProjetos(); });
 // Campo JÁ focado não recebe `focus` de novo: sem o clique, a lista escolhida não reabre (S8).
 $('sel-projeto-novo').addEventListener('click', () => { if ($('lista-projeto-novo').hidden) abrirListaProjetos(); });
-$('sel-projeto-novo').addEventListener('input', filtrarProjetos);
+$('sel-projeto-novo').addEventListener('input', () => { filtrarProjetos(); pintarNotaConfianca(); });
 // O mesmo atraso da paleta: dá tempo do `mousedown` de uma opção escolher antes de fechar.
 $('sel-projeto-novo').addEventListener('blur', () => { fechaProjetoNoBlur = setTimeout(fecharListaProjetos, 120); });
 $('sel-projeto-novo').addEventListener('keydown', (e) => {
@@ -7142,6 +7897,8 @@ const DIALOGOS = [
   'dialogo-revisar',
   // O 14º (card do monitor, D64): mesmo motivo dos treze anteriores.
   'dialogo-monitor',
+  // O 15º (card `grafo-do-projeto-no-cockpit`): mesmo motivo dos catorze anteriores.
+  'dialogo-grafos',
 ];
 
 // Combinações que o navegador já usa (§3.5): recusadas por igualdade exata. Existe para dar
@@ -8502,7 +9259,7 @@ try { localStorage.removeItem('cockpit-lidas'); } catch { /* sem armazenamento: 
 // se ninguém a remover. Mesmo tratamento da `cockpit-lidas`: remove sem ler, sem migrar.
 try { localStorage.removeItem('cockpit-projetos'); } catch { /* sem armazenamento: nada a apagar */ }
 
-carregarAbas().then(abrirPeloEndereco).catch(() => { /* pedirToken já avisou */ });
+carregarAbas().then(() => { if (!abrirPeloEndereco()) voltarDeOutraPagina(); }).catch(() => { /* pedirToken já avisou */ });
 atualizarFaixaJobs();
 
 // ── O relógio da lista ────────────────────────────────────────
@@ -8568,12 +9325,23 @@ document.addEventListener('visibilitychange', () => {
   atualizarFaixaJobs();
   atualizarTelaDaPane(paineis.get(atual));
 });
+
+// D96/M11: a volta de uma página do app pelo bfcache devolve o cano VELHO — medido: nenhum pedido novo a
+// `api/eventos` na ida-e-volta. O que chegou enquanto a página estava guardada não é garantido; religa como o
+// botão de recarregar (sem apagar rascunho). Sem painel aberto não há cano.
+window.addEventListener('pageshow', (e) => {
+  if (e && e.persisted && paineis.size) religarFluxo();
+});
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(pintarBotaoAvisos).catch((erro) => {
     erroDoServiceWorker = erro;
     pintarBotaoAvisos();
   });
 }
+
+// D96/M2: o que `cockpitDentro.abrir` (public/dentro-do-app.js) guarda na saída pra uma página do app — o painel
+// focado e se a tela era a conversa. Lido só NA HORA do toque.
+globalThis.cockpitVolta = () => ({ chave: atual, emChat: app.dataset.vista === 'chat' });
 
 // A notificação abre o cockpit em `#c=<id>`: entra direto na conversa que chamou.
 function abrirPeloEndereco({ jaEmpilhou = false } = {}) {
@@ -8590,6 +9358,30 @@ function abrirPeloEndereco({ jaEmpilhou = false } = {}) {
   abrirAba(casou[1]);
   return true;
 }
+
+// D96/M7: voltou de uma página do app (`cockpitDentro.abrir`, public/dentro-do-app.js) numa página RECARREGADA —
+// sem bfcache o navegador refaz o cockpit na lista, mas a entrada do histórico é a da conversa (`emChat`), e o
+// voltar seguinte do Android não faria nada (#36, `popstate` sai cedo na lista). Reabre o painel que estava
+// focado SEM empilhar outra entrada (o mesmo `pulaProximoEmpilhar` do deep link, #37). Saiu da lista (`emChat`
+// falso) → nada reabre: no celular o `atual` continua apontando o painel escondido. Aba que fechou no terminal
+// no meio-tempo → nada reabre (R9). Com bfcache isto nem roda: a página volta inteira.
+function voltarDeOutraPagina() {
+  const dentro = globalThis.cockpitDentro;
+  if (!dentro) return false;
+  const chave = dentro.tomarVolta('chave');
+  const emChat = dentro.tomarVolta('emChat');
+  if (emChat !== true || typeof chave !== 'string' || !chave) return false;
+  if (chave.startsWith('job-')) {
+    pulaProximoEmpilhar = true;
+    abrirJob(chave.slice(4));
+    return true;
+  }
+  if (!abasDoTerminal.some((a) => a.chave === chave)) return false;
+  pulaProximoEmpilhar = true;
+  abrirAba(chave);
+  return true;
+}
+
 window.addEventListener('hashchange', () => abrirPeloEndereco({ jaEmpilhou: true }));
 
 // A escolha afeta só este navegador. Nenhum reload, reconexão ou alteração do composer.

@@ -57,7 +57,7 @@ async function withServer(extra, test) {
     assert.equal(semContato.status, 503);
     assert.match(semContato.text, /COCKPIT_CONTATO/);
     assert.equal(fs.existsSync(path.join(temp, '.cockpit/push/vapid.json')), false);
-    assert.deepEqual(JSON.parse(r.text), { projetos: [{ nome: 'exemplo' }] });
+    assert.deepEqual(JSON.parse(r.text), { projetos: [{ nome: 'exemplo', codexPedeConfianca: true }] });
     assert.deepEqual(JSON.parse((await request(p, '/api/jobs?tudo=1')).text), { jobs: [], painel: null, habilitado: false });
     assert.equal(r.headers['referrer-policy'], 'no-referrer');
     assert.equal((await request(p, '/health', { Host: 'rebinding.example' })).status, 403);
